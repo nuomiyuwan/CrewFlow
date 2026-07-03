@@ -34,12 +34,12 @@ test('local team server urls prefer non-internal IPv4 addresses', () => {
     port: 8787,
     interfaces: {
       lo0: [{ address: '127.0.0.1', family: 'IPv4', internal: true }],
-      en0: [{ address: '192.168.31.163', family: 'IPv4', internal: false }],
-      en1: [{ address: '10.0.0.12', family: 'IPv4', internal: false }],
+      en0: [{ address: '192.0.2.10', family: 'IPv4', internal: false }],
+      en1: [{ address: '198.51.100.12', family: 'IPv4', internal: false }],
     },
   })
 
-  assert.deepEqual(urls, ['http://192.168.31.163:8787', 'http://10.0.0.12:8787', 'http://127.0.0.1:8787'])
+  assert.deepEqual(urls, ['http://192.0.2.10:8787', 'http://198.51.100.12:8787', 'http://127.0.0.1:8787'])
 })
 
 test('server modules can be imported when process argv has no script path', () => {

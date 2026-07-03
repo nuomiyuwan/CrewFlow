@@ -941,6 +941,7 @@ function App() {
   const canCreateProject = canRoleCreateProject(role)
   const canManageWorkflowOptions = role === 'controller' || role === 'admin'
   const canEditProjectTaskBoard = role === 'controller' || role === 'admin'
+  const canEditArchivedProjects = role === 'controller' || role === 'admin'
   const activeStaffMembers = useMemo(() => appStaffMembers.filter(isAssignableStaff), [appStaffMembers])
 
   async function handleLogin() {
@@ -997,6 +998,11 @@ function App() {
     setLoginPassword('')
     setLoginError('')
     localStorage.removeItem(sessionStorageKey)
+  }
+
+  function openProjectEditor(project: Project) {
+    if (isArchivedProject(project) && !canEditArchivedProjects) return
+    setEditingProject(project)
   }
 
   function closeWelcomeGuide() {
@@ -1851,8 +1857,9 @@ function App() {
             selectedProject={selectedProject}
             setSelectedProjectId={setSelectedProjectId}
             canEditTaskBoard={canEditProjectTaskBoard}
+            canEditArchivedProjects={canEditArchivedProjects}
             canDeleteProject={canDeleteProject}
-            onEditProject={setEditingProject}
+            onEditProject={openProjectEditor}
             onDeleteProject={handleDeleteProject}
             onUpdateTaskStatus={handleUpdateTaskStatus}
             onUpdateTask={handleUpdateTask}
@@ -1892,7 +1899,15 @@ function App() {
             onDeleteAccount={handleDeleteAccount}
           />
         )}
-        {section === 'archive' && <ArchiveView projects={archivedProjects} allTasks={appTasks} financeRecords={appFinanceRecords} onEditProject={setEditingProject} />}
+        {section === 'archive' && (
+          <ArchiveView
+            projects={archivedProjects}
+            allTasks={appTasks}
+            financeRecords={appFinanceRecords}
+            canEditArchivedProjects={canEditArchivedProjects}
+            onEditProject={openProjectEditor}
+          />
+        )}
         {section === 'finance' && (
           <FinanceView
             projects={roleVisibleProjects}
@@ -2170,7 +2185,7 @@ function DataModeModal({
         </section>
         <label className="dataModeField">
           <span>团队服务器地址</span>
-          <input value={teamServerUrl} onChange={(event) => onTeamServerUrlChange(event.target.value)} placeholder="例如：http://192.168.31.20:8787" />
+          <input value={teamServerUrl} onChange={(event) => onTeamServerUrlChange(event.target.value)} placeholder="例如：http://HOST_LAN_IP:8787" />
         </label>
         <div className={`dataModeConnection ${teamConnectionStatus}`}>
           {connectionStatusText(teamConnectionStatus, teamConnectionMessage)}
@@ -2693,6 +2708,7 @@ function Projects({
   selectedProject,
   setSelectedProjectId,
   canEditTaskBoard,
+  canEditArchivedProjects,
   canDeleteProject,
   onEditProject,
   onDeleteProject,
@@ -2709,6 +2725,7 @@ function Projects({
   selectedProject: Project | null
   setSelectedProjectId: (id: string) => void
   canEditTaskBoard: boolean
+  canEditArchivedProjects: boolean
   canDeleteProject: (project: Project) => boolean
   onEditProject: (project: Project) => void
   onDeleteProject: (project: Project) => void
@@ -2770,9 +2787,11 @@ function Projects({
           </div>
           <div className="panelActions">
             <span className={`pill ${statusTone[projectDisplayStatus(selectedProject)]}`}>{statusLabel[projectDisplayStatus(selectedProject)]}</span>
-            <button type="button" onClick={() => onEditProject(selectedProject)}>
-              编辑项目
-            </button>
+            {(!isArchivedProject(selectedProject) || canEditArchivedProjects) && (
+              <button type="button" onClick={() => onEditProject(selectedProject)}>
+                编辑项目
+              </button>
+            )}
             {canDeleteSelectedProject && (
               <button className="dangerButton" type="button" onClick={() => onDeleteProject(selectedProject)}>
                 删除项目
@@ -2938,11 +2957,13 @@ function ArchiveView({
   projects,
   allTasks,
   financeRecords,
+  canEditArchivedProjects,
   onEditProject,
 }: {
   projects: Project[]
   allTasks: Task[]
   financeRecords: FinanceRecord[]
+  canEditArchivedProjects: boolean
   onEditProject: (project: Project) => void
 }) {
   return (
@@ -2984,9 +3005,11 @@ function ArchiveView({
                   <button type="button" onClick={() => openProjectPath(project.path)}>
                     打开 NAS
                   </button>
-                  <button type="button" onClick={() => onEditProject(project)}>
-                    编辑项目
-                  </button>
+                  {canEditArchivedProjects && (
+                    <button type="button" onClick={() => onEditProject(project)}>
+                      编辑项目
+                    </button>
+                  )}
                 </div>
               </article>
             )
@@ -3111,7 +3134,7 @@ function NewProjectModal({
 
     onCreateProject({
       name: name.trim(),
-      path: path || '\\\\Synology\\projects\\待选择项目文件夹',
+      path: path || '\\\\ProjectHost\\projects\\待选择项目文件夹',
       type,
       client,
       clientContact: clientContact.trim(),

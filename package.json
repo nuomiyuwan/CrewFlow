@@ -1,7 +1,7 @@
 {
   "name": "crewflow",
   "private": true,
-  "version": "0.9.11",
+  "version": "1.0.0",
   "description": "CrewFlow video project management desktop beta",
   "author": "nuomiyuwan",
   "type": "module",
