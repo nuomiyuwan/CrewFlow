@@ -3360,6 +3360,85 @@ h1 {
   color: #ffb4b4;
 }
 
+.teamHostPanel {
+  display: grid;
+  gap: 12px;
+  margin: 16px 20px 0;
+  border: 1px solid rgba(112, 225, 231, 0.18);
+  border-radius: 16px;
+  background:
+    linear-gradient(145deg, rgba(112, 225, 231, 0.08), rgba(255, 255, 255, 0.035)),
+    rgba(18, 26, 39, 0.78);
+  padding: 14px;
+}
+
+.teamHostHeader {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.teamHostHeader div {
+  display: grid;
+  gap: 4px;
+}
+
+.teamHostHeader strong {
+  color: #f7fbff;
+  font-size: 15px;
+}
+
+.teamHostHeader span,
+.teamHostMessage {
+  margin: 0;
+  color: rgba(210, 222, 235, 0.62);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.teamHostHeader em {
+  flex: 0 0 auto;
+  border: 1px solid rgba(180, 202, 216, 0.2);
+  border-radius: 999px;
+  color: rgba(244, 248, 255, 0.72);
+  background: rgba(255, 255, 255, 0.06);
+  font-style: normal;
+  padding: 5px 10px;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.teamHostHeader em.running {
+  border-color: rgba(35, 154, 96, 0.34);
+  color: #9ff0c7;
+}
+
+.teamHostAddress {
+  padding: 0;
+}
+
+.teamHostActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.teamHostActions button {
+  min-height: 36px;
+  border: 1px solid rgba(180, 202, 216, 0.18);
+  border-radius: 11px;
+  color: rgba(244, 248, 255, 0.84);
+  background: rgba(255, 255, 255, 0.06);
+  cursor: pointer;
+  padding: 0 12px;
+}
+
+.teamHostActions button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
 .workflowOptionsModal {
   width: min(780px, calc(100vw - 48px));
 }

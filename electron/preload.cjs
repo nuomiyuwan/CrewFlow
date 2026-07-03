@@ -7,4 +7,9 @@ contextBridge.exposeInMainWorld('desktopBridge', {
   openProjectFile: (filePath) => ipcRenderer.invoke('project-file:open', filePath),
   loadAppData: () => ipcRenderer.invoke('app-data:load'),
   saveAppData: (data) => ipcRenderer.invoke('app-data:save', data),
+  getTeamServiceInfo: () => ipcRenderer.invoke('team-service:info'),
+  installTeamService: () => ipcRenderer.invoke('team-service:install'),
+  restartTeamService: () => ipcRenderer.invoke('team-service:restart'),
+  stopTeamService: () => ipcRenderer.invoke('team-service:stop'),
+  copyText: (value) => ipcRenderer.invoke('clipboard:write-text', value),
 })

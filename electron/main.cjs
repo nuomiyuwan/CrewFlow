@@ -1,8 +1,11 @@
-const { app, BrowserWindow, dialog, ipcMain, shell } = require('electron')
+const { app, BrowserWindow, clipboard, dialog, ipcMain, shell } = require('electron')
 const fs = require('fs')
+const os = require('os')
 const path = require('path')
+const { pathToFileURL } = require('url')
 
 const isDev = !app.isPackaged
+const isTeamServerMode = process.argv.includes('--team-server')
 let saveQueue = Promise.resolve()
 
 app.setName('CrewFlow')
@@ -41,6 +44,77 @@ function queueWriteAppData(data) {
   return saveQueue
 }
 
+function serverModuleUrl(fileName) {
+  return pathToFileURL(path.join(__dirname, '../server', fileName)).href
+}
+
+async function startTeamServerMode() {
+  process.env.CREWFLOW_HOST = process.env.CREWFLOW_HOST || '0.0.0.0'
+  const { startCrewFlowServer } = await import(serverModuleUrl('crewflow-server.mjs'))
+  startCrewFlowServer()
+}
+
+function localTeamServerUrls(port = process.env.CREWFLOW_PORT || '8787') {
+  const urls = []
+
+  Object.values(os.networkInterfaces()).forEach((items = []) => {
+    items.forEach((item) => {
+      if (item.family !== 'IPv4' || item.internal || !item.address) return
+      urls.push(`http://${item.address}:${port}`)
+    })
+  })
+
+  urls.push(`http://127.0.0.1:${port}`)
+  return Array.from(new Set(urls))
+}
+
+async function fetchLocalTeamHealth() {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), 1200)
+
+  try {
+    const response = await fetch(`http://127.0.0.1:${process.env.CREWFLOW_PORT || '8787'}/health`, {
+      signal: controller.signal,
+    })
+    if (!response.ok) return null
+    return response.json()
+  } catch {
+    return null
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+async function getTeamServiceInfo(message = '') {
+  const urls = localTeamServerUrls()
+  const health = await fetchLocalTeamHealth()
+  const running = Boolean(health?.ok)
+
+  return {
+    supported: process.platform === 'darwin' || process.platform === 'win32',
+    platform: process.platform,
+    running,
+    localUrl: `http://127.0.0.1:${process.env.CREWFLOW_PORT || '8787'}`,
+    connectionUrl: urls[0],
+    urls,
+    dataFile: health?.dataFile,
+    updatedAt: health?.updatedAt,
+    message: message || (running ? '团队服务正在运行' : '团队服务未运行'),
+  }
+}
+
+async function manageTeamService(action) {
+  if (process.platform !== 'darwin' && process.platform !== 'win32') {
+    return getTeamServiceInfo('当前系统暂不支持一键安装团队服务')
+  }
+
+  const { manageCrewFlowService } = await import(serverModuleUrl('service-manager.mjs'))
+  await manageCrewFlowService(action, {
+    appExecutablePath: app.isPackaged ? process.execPath : undefined,
+  })
+  return getTeamServiceInfo(action === 'stop' || action === 'uninstall' ? '团队服务已停止' : '团队服务已开启')
+}
+
 async function createWindow() {
   const mainWindow = new BrowserWindow({
     width: 1440,
@@ -69,66 +143,95 @@ async function createWindow() {
   })
 }
 
-app.whenReady().then(() => {
-  ipcMain.handle('project-folder:select', async () => {
-    const result = await dialog.showOpenDialog({
-      title: '选择项目文件夹',
-      properties: ['openDirectory', 'createDirectory'],
+if (isTeamServerMode) {
+  startTeamServerMode().catch((error) => {
+    console.error(error)
+    app.quit()
+  })
+} else {
+  app.whenReady().then(() => {
+    ipcMain.handle('project-folder:select', async () => {
+      const result = await dialog.showOpenDialog({
+        title: '选择项目文件夹',
+        properties: ['openDirectory', 'createDirectory'],
+      })
+
+      if (result.canceled || result.filePaths.length === 0) return null
+
+      return result.filePaths[0]
     })
 
-    if (result.canceled || result.filePaths.length === 0) return null
+    ipcMain.handle('project-folder:open', async (_event, folderPath) => {
+      if (!folderPath || typeof folderPath !== 'string') return false
 
-    return result.filePaths[0]
-  })
-
-  ipcMain.handle('project-folder:open', async (_event, folderPath) => {
-    if (!folderPath || typeof folderPath !== 'string') return false
-
-    const error = await shell.openPath(folderPath)
-    return error === ''
-  })
-
-  ipcMain.handle('project-file:select', async (_event, title = '选择文件') => {
-    const result = await dialog.showOpenDialog({
-      title,
-      properties: ['openFile'],
-      filters: [
-        { name: '常用文件', extensions: ['pdf', 'doc', 'docx', 'xls', 'xlsx', 'numbers'] },
-        { name: '所有文件', extensions: ['*'] },
-      ],
+      const error = await shell.openPath(folderPath)
+      return error === ''
     })
 
-    if (result.canceled || result.filePaths.length === 0) return null
+    ipcMain.handle('project-file:select', async (_event, title = '选择文件') => {
+      const result = await dialog.showOpenDialog({
+        title,
+        properties: ['openFile'],
+        filters: [
+          { name: '常用文件', extensions: ['pdf', 'doc', 'docx', 'xls', 'xlsx', 'numbers'] },
+          { name: '所有文件', extensions: ['*'] },
+        ],
+      })
 
-    return result.filePaths[0]
+      if (result.canceled || result.filePaths.length === 0) return null
+
+      return result.filePaths[0]
+    })
+
+    ipcMain.handle('project-file:open', async (_event, filePath) => {
+      if (!filePath || typeof filePath !== 'string') return false
+
+      const error = await shell.openPath(filePath)
+      return error === ''
+    })
+
+    ipcMain.handle('app-data:load', async () => {
+      return readAppData()
+    })
+
+    ipcMain.handle('app-data:save', async (_event, data) => {
+      return queueWriteAppData(data)
+    })
+
+    ipcMain.handle('team-service:info', async () => {
+      return getTeamServiceInfo()
+    })
+
+    ipcMain.handle('team-service:install', async () => {
+      return manageTeamService('install')
+    })
+
+    ipcMain.handle('team-service:restart', async () => {
+      return manageTeamService('restart')
+    })
+
+    ipcMain.handle('team-service:stop', async () => {
+      return manageTeamService('stop')
+    })
+
+    ipcMain.handle('clipboard:write-text', async (_event, value) => {
+      if (typeof value !== 'string') return false
+      clipboard.writeText(value)
+      return true
+    })
+
+    createWindow()
+
+    app.on('activate', () => {
+      if (BrowserWindow.getAllWindows().length === 0) {
+        createWindow()
+      }
+    })
   })
-
-  ipcMain.handle('project-file:open', async (_event, filePath) => {
-    if (!filePath || typeof filePath !== 'string') return false
-
-    const error = await shell.openPath(filePath)
-    return error === ''
-  })
-
-  ipcMain.handle('app-data:load', async () => {
-    return readAppData()
-  })
-
-  ipcMain.handle('app-data:save', async (_event, data) => {
-    return queueWriteAppData(data)
-  })
-
-  createWindow()
-
-  app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) {
-      createWindow()
-    }
-  })
-})
+}
 
 app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') {
+  if (!isTeamServerMode && process.platform !== 'darwin') {
     app.quit()
   }
 })

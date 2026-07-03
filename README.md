@@ -44,7 +44,9 @@ npm run team:server
 
 团队服务端说明见 `server/README.md`。
 
-安装团队服务端后台常驻服务：
+正式使用时建议在常驻电脑的 CrewFlow “工作模式”里点击“开启团队服务”，App 会自动安装后台服务并显示给其他电脑填写的局域网地址。
+
+开发或排障时也可以用命令安装团队服务端后台常驻服务：
 
 ```bash
 npm run team:install-service

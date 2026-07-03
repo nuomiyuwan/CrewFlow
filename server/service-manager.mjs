@@ -1,29 +1,98 @@
 import { mkdir, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { spawnSync } from 'node:child_process'
 
 const serverDir = path.dirname(fileURLToPath(import.meta.url))
 const projectRoot = path.resolve(serverDir, '..')
-const serverScript = path.join(serverDir, 'crewflow-server.mjs')
-const nodePath = process.execPath
+const defaultServerScript = path.join(serverDir, 'crewflow-server.mjs')
 const command = process.argv[2] || 'status'
 const serviceLabel = 'local.crewflow.server'
 const taskName = 'CrewFlow Server'
 const port = process.env.CREWFLOW_PORT || '8787'
 const host = process.env.CREWFLOW_HOST || '0.0.0.0'
 
+export function serviceRuntime({
+  appExecutablePath = process.env.CREWFLOW_APP_EXECUTABLE,
+  nodePath = process.execPath,
+  serverScript = defaultServerScript,
+} = {}) {
+  if (appExecutablePath) {
+    return {
+      mode: 'app',
+      executable: appExecutablePath,
+      args: ['--team-server'],
+      processMatch: '*--team-server*',
+    }
+  }
+
+  return {
+    mode: 'node',
+    executable: nodePath,
+    args: [serverScript],
+    processMatch: '*crewflow-server.mjs*',
+  }
+}
+
+export function localTeamServerUrls({ interfaces = os.networkInterfaces(), port: serverPort = port } = {}) {
+  const urls = []
+
+  Object.values(interfaces).forEach((items = []) => {
+    items.forEach((item) => {
+      if (item.family !== 'IPv4' || item.internal || !item.address) return
+      urls.push(`http://${item.address}:${serverPort}`)
+    })
+  })
+
+  urls.push(`http://127.0.0.1:${serverPort}`)
+  return Array.from(new Set(urls))
+}
+
+function commandWorkingDirectory(runtime) {
+  return runtime.mode === 'app' ? path.dirname(runtime.executable) : projectRoot
+}
+
+function escapePlistValue(value) {
+  return String(value)
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&apos;')
+}
+
+function quoteWindowsArgument(value) {
+  return `"${String(value).replaceAll('"', '\\"')}"`
+}
+
 function run(cmd, args, options = {}) {
-  const result = spawnSync(cmd, args, { stdio: 'inherit', shell: false, ...options })
-  if (result.status !== 0 && !options.allowFailure) process.exit(result.status ?? 1)
+  const result = spawnSync(cmd, args, {
+    stdio: options.stdio ?? 'inherit',
+    shell: false,
+    env: {
+      ...process.env,
+      ...(options.env ?? {}),
+    },
+  })
+
+  if (result.status !== 0 && !options.allowFailure) {
+    const stderr = result.stderr ? result.stderr.toString('utf8').trim() : ''
+    const detail = stderr ? `: ${stderr}` : ''
+    throw new Error(`${cmd} ${args.join(' ')} failed${detail}`)
+  }
+
   return result
 }
 
-async function macInstall() {
+async function macInstall(options = {}) {
+  const runtime = serviceRuntime(options)
   const launchAgentsDir = path.join(os.homedir(), 'Library', 'LaunchAgents')
   const logsDir = path.join(os.homedir(), 'Library', 'Logs', 'CrewFlow Server')
   const plistPath = path.join(launchAgentsDir, `${serviceLabel}.plist`)
+  const programArguments = [runtime.executable, ...runtime.args]
+    .map((item) => `    <string>${escapePlistValue(item)}</string>`)
+    .join('\n')
   const plist = `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -32,11 +101,10 @@ async function macInstall() {
   <string>${serviceLabel}</string>
   <key>ProgramArguments</key>
   <array>
-    <string>${nodePath}</string>
-    <string>${serverScript}</string>
+${programArguments}
   </array>
   <key>WorkingDirectory</key>
-  <string>${projectRoot}</string>
+  <string>${escapePlistValue(commandWorkingDirectory(runtime))}</string>
   <key>EnvironmentVariables</key>
   <dict>
     <key>CREWFLOW_HOST</key>
@@ -49,9 +117,9 @@ async function macInstall() {
   <key>KeepAlive</key>
   <true/>
   <key>StandardOutPath</key>
-  <string>${path.join(logsDir, 'server.log')}</string>
+  <string>${escapePlistValue(path.join(logsDir, 'server.log'))}</string>
   <key>StandardErrorPath</key>
-  <string>${path.join(logsDir, 'server-error.log')}</string>
+  <string>${escapePlistValue(path.join(logsDir, 'server-error.log'))}</string>
 </dict>
 </plist>
 `
@@ -77,17 +145,25 @@ function macStatus() {
   run('launchctl', ['print', `gui/${process.getuid()}/${serviceLabel}`], { allowFailure: true })
 }
 
-async function windowsInstall() {
+async function windowsInstall(options = {}) {
+  const runtime = serviceRuntime(options)
   const logsDir = path.join(process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming'), 'CrewFlow Server', 'logs')
   const scriptDir = path.join(process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming'), 'CrewFlow Server')
   const cmdPath = path.join(scriptDir, 'start-crewflow-server.cmd')
-  const commandLine = `"${nodePath}" "${serverScript}" >> "${path.join(logsDir, 'server.log')}" 2>> "${path.join(logsDir, 'server-error.log')}"`
+  const commandLine = [
+    quoteWindowsArgument(runtime.executable),
+    ...runtime.args.map(quoteWindowsArgument),
+    '>>',
+    quoteWindowsArgument(path.join(logsDir, 'server.log')),
+    '2>>',
+    quoteWindowsArgument(path.join(logsDir, 'server-error.log')),
+  ].join(' ')
 
   await mkdir(logsDir, { recursive: true })
   await mkdir(scriptDir, { recursive: true })
   await writeFile(
     cmdPath,
-    `@echo off\r\nset CREWFLOW_HOST=${host}\r\nset CREWFLOW_PORT=${port}\r\ncd /d "${projectRoot}"\r\n${commandLine}\r\n`,
+    `@echo off\r\nset CREWFLOW_HOST=${host}\r\nset CREWFLOW_PORT=${port}\r\ncd /d "${commandWorkingDirectory(runtime)}"\r\n${commandLine}\r\n`,
     'utf8',
   )
   run('schtasks', ['/Create', '/TN', taskName, '/TR', `"${cmdPath}"`, '/SC', 'ONLOGON', '/RL', 'HIGHEST', '/F'])
@@ -95,8 +171,9 @@ async function windowsInstall() {
   console.log(`CrewFlow Server task installed: ${taskName}`)
 }
 
-function windowsStopProcess() {
-  const ps = `Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '*crewflow-server.mjs*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }`
+function windowsStopProcess(options = {}) {
+  const runtime = serviceRuntime(options)
+  const ps = `Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '${runtime.processMatch}' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }`
   run('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', ps], { allowFailure: true })
 }
 
@@ -104,59 +181,64 @@ function windowsStart() {
   run('schtasks', ['/Run', '/TN', taskName])
 }
 
-function windowsStop() {
-  windowsStopProcess()
+function windowsStop(options = {}) {
+  windowsStopProcess(options)
 }
 
-function windowsStatus() {
+function windowsStatus(options = {}) {
+  const runtime = serviceRuntime(options)
   run('schtasks', ['/Query', '/TN', taskName, '/V', '/FO', 'LIST'], { allowFailure: true })
-  const ps = `Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '*crewflow-server.mjs*' } | Select-Object ProcessId,CommandLine`
+  const ps = `Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '${runtime.processMatch}' } | Select-Object ProcessId,CommandLine`
   run('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', ps], { allowFailure: true })
 }
 
-function windowsUninstall() {
-  windowsStopProcess()
+function windowsUninstall(options = {}) {
+  windowsStopProcess(options)
   run('schtasks', ['/Delete', '/TN', taskName, '/F'], { allowFailure: true })
 }
 
-async function main() {
-  const platform = process.platform
-  if (!['install', 'start', 'stop', 'restart', 'status', 'uninstall'].includes(command)) {
-    console.error('Usage: node server/service-manager.mjs install|start|stop|restart|status|uninstall')
-    process.exit(1)
+export async function manageCrewFlowService(action, options = {}) {
+  const platform = options.platform ?? process.platform
+  if (!['install', 'start', 'stop', 'restart', 'status', 'uninstall'].includes(action)) {
+    throw new Error('Usage: node server/service-manager.mjs install|start|stop|restart|status|uninstall')
   }
 
   if (platform === 'darwin') {
-    if (command === 'install') await macInstall()
-    if (command === 'start') macStart()
-    if (command === 'stop') macStop()
-    if (command === 'restart') {
+    if (action === 'install') await macInstall(options)
+    if (action === 'start') macStart()
+    if (action === 'stop') macStop()
+    if (action === 'restart') {
       macStop()
-      await macInstall()
+      await macInstall(options)
     }
-    if (command === 'status') macStatus()
-    if (command === 'uninstall') macStop()
+    if (action === 'status') macStatus()
+    if (action === 'uninstall') macStop()
     return
   }
 
   if (platform === 'win32') {
-    if (command === 'install') await windowsInstall()
-    if (command === 'start') windowsStart()
-    if (command === 'stop') windowsStop()
-    if (command === 'restart') {
-      windowsStop()
+    if (action === 'install') await windowsInstall(options)
+    if (action === 'start') windowsStart()
+    if (action === 'stop') windowsStop(options)
+    if (action === 'restart') {
+      windowsStop(options)
       windowsStart()
     }
-    if (command === 'status') windowsStatus()
-    if (command === 'uninstall') windowsUninstall()
+    if (action === 'status') windowsStatus(options)
+    if (action === 'uninstall') windowsUninstall(options)
     return
   }
 
-  console.error(`Unsupported platform for service install: ${platform}`)
-  process.exit(1)
+  throw new Error(`Unsupported platform for service install: ${platform}`)
 }
 
-main().catch((error) => {
-  console.error(error)
-  process.exit(1)
-})
+async function main() {
+  await manageCrewFlowService(command)
+}
+
+if (import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main().catch((error) => {
+    console.error(error)
+    process.exit(1)
+  })
+}

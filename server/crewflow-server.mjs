@@ -79,12 +79,22 @@ export function createCrewFlowServer({ store }) {
   })
 }
 
-if (import.meta.url === pathToFileURL(process.argv[1]).href) {
-  const store = createTeamStore({ dataDir: defaultDataDir })
+export function startCrewFlowServer({
+  dataDir = defaultDataDir,
+  host = defaultHost,
+  port = defaultPort,
+  onReady = ({ store }) => {
+    console.log(`CrewFlow Server listening on http://${host}:${port}`)
+    console.log(`Data file: ${store.dataFile}`)
+  },
+} = {}) {
+  const store = createTeamStore({ dataDir })
   const server = createCrewFlowServer({ store })
 
-  server.listen(defaultPort, defaultHost, () => {
-    console.log(`CrewFlow Server listening on http://${defaultHost}:${defaultPort}`)
-    console.log(`Data file: ${store.dataFile}`)
-  })
+  server.listen(port, host, () => onReady({ server, store, host, port }))
+  return { server, store }
+}
+
+if (import.meta.url === pathToFileURL(process.argv[1]).href) {
+  startCrewFlowServer()
 }

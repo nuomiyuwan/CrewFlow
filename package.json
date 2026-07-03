@@ -30,6 +30,7 @@
     "files": [
       "dist/**/*",
       "electron/**/*",
+      "server/**/*",
       "package.json"
     ],
     "directories": {

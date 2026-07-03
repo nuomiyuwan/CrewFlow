@@ -63,6 +63,18 @@ type StaffMember = {
   tasks: number
 }
 
+type TeamServiceInfo = {
+  supported: boolean
+  platform: string
+  running: boolean
+  localUrl: string
+  connectionUrl: string
+  urls: string[]
+  dataFile?: string
+  updatedAt?: string
+  message: string
+}
+
 type DesktopBridge = {
   selectProjectFolder: () => Promise<string | null>
   openProjectFolder: (folderPath: string) => Promise<boolean>
@@ -70,6 +82,11 @@ type DesktopBridge = {
   openProjectFile: (filePath: string) => Promise<boolean>
   loadAppData: () => Promise<AppData | null>
   saveAppData: (data: Partial<AppData>) => Promise<boolean>
+  getTeamServiceInfo: () => Promise<TeamServiceInfo>
+  installTeamService: () => Promise<TeamServiceInfo>
+  restartTeamService: () => Promise<TeamServiceInfo>
+  stopTeamService: () => Promise<TeamServiceInfo>
+  copyText: (value: string) => Promise<boolean>
 }
 
 declare global {
@@ -499,6 +516,9 @@ function App() {
   const [teamServerUrl, setTeamServerUrl] = useState(() => loadStoredTeamServerUrl())
   const [teamConnectionStatus, setTeamConnectionStatus] = useState<TeamConnectionStatus>('idle')
   const [teamConnectionMessage, setTeamConnectionMessage] = useState('')
+  const [teamServiceInfo, setTeamServiceInfo] = useState<TeamServiceInfo | null>(null)
+  const [teamServiceBusy, setTeamServiceBusy] = useState(false)
+  const [teamServiceMessage, setTeamServiceMessage] = useState('')
   const [showDataModeModal, setShowDataModeModal] = useState(false)
   const [currentAccountId, setCurrentAccountId] = useState(() => loadStoredAccountId())
   const [appProjects, setAppProjects] = useState<Project[]>(() => loadStoredProjects())
@@ -705,6 +725,11 @@ function App() {
 
     return () => window.clearInterval(timer)
   }, [dataMode, dataReady, loadCurrentAppData])
+
+  useEffect(() => {
+    if (!showDataModeModal) return
+    refreshTeamServiceInfo()
+  }, [showDataModeModal])
 
   const activeNavItems = useMemo(() => navItemsForRole(role), [role])
   const currentUser =
@@ -924,6 +949,91 @@ function App() {
     } catch (error) {
       setTeamConnectionStatus('error')
       setTeamConnectionMessage(error instanceof Error ? error.message : '导入团队库失败')
+    }
+  }
+
+  async function refreshTeamServiceInfo() {
+    if (!window.desktopBridge?.getTeamServiceInfo) {
+      setTeamServiceInfo({
+        supported: false,
+        platform: 'browser',
+        running: false,
+        localUrl: defaultTeamServerUrl,
+        connectionUrl: defaultTeamServerUrl,
+        urls: [defaultTeamServerUrl],
+        message: '请在 CrewFlow 桌面 App 中开启团队服务',
+      })
+      setTeamServiceMessage('请在 CrewFlow 桌面 App 中开启团队服务')
+      return
+    }
+
+    setTeamServiceBusy(true)
+    try {
+      const info = await window.desktopBridge.getTeamServiceInfo()
+      setTeamServiceInfo(info)
+      setTeamServiceMessage(info.message)
+    } catch (error) {
+      setTeamServiceMessage(error instanceof Error ? error.message : '团队服务状态读取失败')
+    } finally {
+      setTeamServiceBusy(false)
+    }
+  }
+
+  async function installLocalTeamService() {
+    if (!window.desktopBridge?.installTeamService) {
+      setTeamServiceMessage('请在 CrewFlow 桌面 App 中开启团队服务')
+      return
+    }
+
+    setTeamServiceBusy(true)
+    setTeamServiceMessage('正在开启团队服务')
+    try {
+      const info = await window.desktopBridge.installTeamService()
+      setTeamServiceInfo(info)
+      setTeamServiceMessage(info.message)
+      if (info.connectionUrl) updateTeamServerUrl(info.connectionUrl)
+      updateDataMode('team')
+      setTeamConnectionStatus(info.running ? 'connected' : 'idle')
+      setTeamConnectionMessage(info.running ? `本机团队服务已开启：${info.connectionUrl}` : info.message)
+    } catch (error) {
+      setTeamServiceMessage(error instanceof Error ? error.message : '团队服务开启失败')
+    } finally {
+      setTeamServiceBusy(false)
+    }
+  }
+
+  async function stopLocalTeamService() {
+    if (!window.desktopBridge?.stopTeamService) {
+      setTeamServiceMessage('请在 CrewFlow 桌面 App 中管理团队服务')
+      return
+    }
+
+    setTeamServiceBusy(true)
+    setTeamServiceMessage('正在停止团队服务')
+    try {
+      const info = await window.desktopBridge.stopTeamService()
+      setTeamServiceInfo(info)
+      setTeamServiceMessage(info.message)
+    } catch (error) {
+      setTeamServiceMessage(error instanceof Error ? error.message : '团队服务停止失败')
+    } finally {
+      setTeamServiceBusy(false)
+    }
+  }
+
+  async function copyLocalTeamServiceUrl() {
+    const url = teamServiceInfo?.connectionUrl || teamServerUrl
+    if (!url) return
+
+    try {
+      if (window.desktopBridge?.copyText) {
+        await window.desktopBridge.copyText(url)
+      } else {
+        await navigator.clipboard.writeText(url)
+      }
+      setTeamServiceMessage(`已复制：${url}`)
+    } catch {
+      setTeamServiceMessage(`复制失败，请手动复制：${url}`)
     }
   }
 
@@ -1406,11 +1516,18 @@ function App() {
             teamServerUrl={teamServerUrl}
             teamConnectionStatus={teamConnectionStatus}
             teamConnectionMessage={teamConnectionMessage}
+            teamServiceInfo={teamServiceInfo}
+            teamServiceBusy={teamServiceBusy}
+            teamServiceMessage={teamServiceMessage}
             onClose={() => setShowDataModeModal(false)}
             onDataModeChange={updateDataMode}
             onTeamServerUrlChange={updateTeamServerUrl}
             onCheckTeamConnection={checkTeamConnection}
             onImportSingleDataToTeam={importSingleDataToTeam}
+            onRefreshTeamService={refreshTeamServiceInfo}
+            onInstallTeamService={installLocalTeamService}
+            onStopTeamService={stopLocalTeamService}
+            onCopyTeamServiceUrl={copyLocalTeamServiceUrl}
           />
         )}
       </>
@@ -1678,11 +1795,18 @@ function App() {
           teamServerUrl={teamServerUrl}
           teamConnectionStatus={teamConnectionStatus}
           teamConnectionMessage={teamConnectionMessage}
+          teamServiceInfo={teamServiceInfo}
+          teamServiceBusy={teamServiceBusy}
+          teamServiceMessage={teamServiceMessage}
           onClose={() => setShowDataModeModal(false)}
           onDataModeChange={updateDataMode}
           onTeamServerUrlChange={updateTeamServerUrl}
           onCheckTeamConnection={checkTeamConnection}
           onImportSingleDataToTeam={importSingleDataToTeam}
+          onRefreshTeamService={refreshTeamServiceInfo}
+          onInstallTeamService={installLocalTeamService}
+          onStopTeamService={stopLocalTeamService}
+          onCopyTeamServiceUrl={copyLocalTeamServiceUrl}
         />
       )}
       {showWorkflowOptionsModal && (
@@ -1725,7 +1849,8 @@ function WelcomeGuideModal({ onClose, onDismiss }: { onClose: () => void; onDism
             <span>工作模式</span>
             <ol>
               <li>单人模式：数据只保存在当前电脑，适合个人试用或单机管理。</li>
-              <li>团队模式：选择一台常驻 Mac 或 Windows 电脑运行 CrewFlow Server，其他电脑通过局域网 IP 连接。</li>
+              <li>团队模式：选择一台常驻 Mac 或 Windows 电脑，在“工作模式”里点击“开启团队服务”。</li>
+              <li>开启后把自动显示的局域网地址复制给其他电脑，其他电脑选择团队模式并填写这个地址。</li>
               <li>常驻电脑安装后台服务后，终端关闭也不会影响其他人连接。</li>
             </ol>
           </div>
@@ -1796,22 +1921,40 @@ function DataModeModal({
   teamServerUrl,
   teamConnectionStatus,
   teamConnectionMessage,
+  teamServiceInfo,
+  teamServiceBusy,
+  teamServiceMessage,
   onClose,
   onDataModeChange,
   onTeamServerUrlChange,
   onCheckTeamConnection,
   onImportSingleDataToTeam,
+  onRefreshTeamService,
+  onInstallTeamService,
+  onStopTeamService,
+  onCopyTeamServiceUrl,
 }: {
   dataMode: DataMode
   teamServerUrl: string
   teamConnectionStatus: TeamConnectionStatus
   teamConnectionMessage: string
+  teamServiceInfo: TeamServiceInfo | null
+  teamServiceBusy: boolean
+  teamServiceMessage: string
   onClose: () => void
   onDataModeChange: (mode: DataMode) => void
   onTeamServerUrlChange: (url: string) => void
   onCheckTeamConnection: () => void
   onImportSingleDataToTeam: () => void
+  onRefreshTeamService: () => void
+  onInstallTeamService: () => void
+  onStopTeamService: () => void
+  onCopyTeamServiceUrl: () => void
 }) {
+  const hostUrl = teamServiceInfo?.connectionUrl ?? defaultTeamServerUrl
+  const hostStatus = teamServiceInfo?.running ? '运行中' : '未开启'
+  const canManageLocalService = Boolean(teamServiceInfo?.supported)
+
   return (
     <div className="modalBackdrop" role="presentation" onMouseDown={onClose}>
       <section className="financeEntryModal dataModeModal" role="dialog" aria-modal="true" aria-label="工作模式设置" onMouseDown={(event) => event.stopPropagation()}>
@@ -1833,9 +1976,37 @@ function DataModeModal({
           <button className={dataMode === 'team' ? 'active' : ''} type="button" onClick={() => onDataModeChange('team')}>
             <Users size={18} />
             <strong>团队模式</strong>
-            <span>连接常开 Mac 上的 CrewFlow Server。</span>
+            <span>连接常驻电脑上的 CrewFlow Server。</span>
           </button>
         </div>
+        <section className="teamHostPanel">
+          <div className="teamHostHeader">
+            <div>
+              <strong>本机作为团队主机</strong>
+              <span>只在常驻电脑操作。开启后，把下面地址发给其他电脑填写。</span>
+            </div>
+            <em className={teamServiceInfo?.running ? 'running' : ''}>{hostStatus}</em>
+          </div>
+          <label className="dataModeField teamHostAddress">
+            <span>其他电脑填写这个地址</span>
+            <input value={hostUrl} readOnly />
+          </label>
+          <div className="teamHostActions">
+            <button type="button" onClick={onInstallTeamService} disabled={teamServiceBusy || !canManageLocalService}>
+              {teamServiceInfo?.running ? '修复/重启服务' : '开启团队服务'}
+            </button>
+            <button type="button" onClick={onRefreshTeamService} disabled={teamServiceBusy}>
+              刷新状态
+            </button>
+            <button type="button" onClick={onCopyTeamServiceUrl} disabled={!hostUrl}>
+              复制地址
+            </button>
+            <button type="button" onClick={onStopTeamService} disabled={teamServiceBusy || !teamServiceInfo?.running}>
+              停止服务
+            </button>
+          </div>
+          <p className="teamHostMessage">{teamServiceMessage || teamServiceInfo?.message || '打开后会自动显示本机局域网地址。'}</p>
+        </section>
         <label className="dataModeField">
           <span>团队服务器地址</span>
           <input value={teamServerUrl} onChange={(event) => onTeamServerUrlChange(event.target.value)} placeholder="例如：http://192.168.31.20:8787" />
