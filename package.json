@@ -1,0 +1,61 @@
+{
+  "name": "crewflow",
+  "private": true,
+  "version": "0.9.11",
+  "description": "CrewFlow video project management desktop beta",
+  "author": "四海博艺",
+  "type": "module",
+  "main": "electron/main.cjs",
+  "scripts": {
+    "dev": "vite",
+    "desktop": "concurrently \"npm run dev -- --host 127.0.0.1\" \"wait-on http://127.0.0.1:5173 && electron .\"",
+    "team:server": "node server/crewflow-server.mjs",
+    "team:install-service": "node server/service-manager.mjs install",
+    "team:start-service": "node server/service-manager.mjs start",
+    "team:stop-service": "node server/service-manager.mjs stop",
+    "team:restart-service": "node server/service-manager.mjs restart",
+    "team:service-status": "node server/service-manager.mjs status",
+    "team:uninstall-service": "node server/service-manager.mjs uninstall",
+    "test": "node --test server/*.test.mjs",
+    "build": "tsc -b && vite build",
+    "lint": "oxlint",
+    "preview": "vite preview",
+    "package:mac": "npm run build && electron-builder --mac --dir",
+    "package:win": "npm run build && electron-builder --win --x64 --dir",
+    "package:all": "npm run package:mac && npm run package:win"
+  },
+  "build": {
+    "appId": "local.crewflow",
+    "productName": "CrewFlow",
+    "files": [
+      "dist/**/*",
+      "electron/**/*",
+      "package.json"
+    ],
+    "directories": {
+      "output": "release"
+    },
+    "mac": {
+      "icon": "build/icon.icns"
+    }
+  },
+  "dependencies": {
+    "lucide-react": "^1.21.0",
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.61.1",
+    "@types/node": "^24.13.2",
+    "@types/react": "^19.2.17",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^6.0.2",
+    "concurrently": "^10.0.3",
+    "electron": "^42.5.0",
+    "electron-builder": "^26.15.3",
+    "oxlint": "^1.69.0",
+    "typescript": "~6.0.2",
+    "vite": "^8.1.0",
+    "wait-on": "^9.0.10"
+  }
+}
