@@ -41,6 +41,16 @@ type WorkStatus = string
 type TaskStatus = '未开始' | '制作中' | '修改中' | '已完成'
 type AssignmentMode = 'internal' | 'external'
 type ProjectFilterStatus = 'all' | 'normal' | 'risk' | 'late' | 'waiting' | 'archived'
+type WelcomeGuideContent = {
+  eyebrow: string
+  title: string
+  intro: string
+  sections: Array<{
+    title: string
+    items: string[]
+  }>
+  note?: string
+}
 
 type Account = {
   id: string
@@ -329,7 +339,7 @@ const defaultWorkflowOptions: WorkflowOptions = {
 const financeStorageVersion = 'finance-ledger-v5'
 const projectDataStorageVersion = 'project-flow-v1'
 const sessionStorageKey = 'crewflow-session-account'
-const welcomeGuideStorageKey = 'crewflow-welcome-dismissed'
+const welcomeGuideStorageKeyPrefix = 'crewflow-welcome-dismissed'
 const dataModeStorageKey = 'crewflow-data-mode'
 const teamServerUrlStorageKey = 'crewflow-team-server-url'
 const workflowOptionsStorageKey = 'crewflow-workflow-options'
@@ -352,6 +362,123 @@ const holidayItems: HolidayItem[] = []
 const loginAccounts: Account[] = [
   { id: 'zk', password: '123456', role: 'controller', userName: '', label: '总控', title: '' },
 ]
+
+const welcomeGuides: Record<Role, WelcomeGuideContent> = {
+  controller: {
+    eyebrow: '首次使用',
+    title: '总控使用说明',
+    intro: '总控负责 CrewFlow 的初始化、团队数据和全局配置。',
+    sections: [
+      {
+        title: '第一次进入',
+        items: [
+          '系统默认总控账号：zk，密码：123456。',
+          '先在左侧“账号管理”修改总控用户名和密码。',
+          '在“工作模式”选择单人模式或团队模式；团队模式需要在一台常驻电脑开启团队服务，再把显示的地址发给其他电脑连接。',
+        ],
+      },
+      {
+        title: '基础设置',
+        items: [
+          '在“人员管理”添加团队成员、设置标签，并到“账号管理”创建成员账号。',
+          '在“选项管理”维护项目类型、任务工种、流程节点、人员标签。',
+          '完成基础设置后，可在右上角“新建项目”，再进入项目设置交付节点和任务负责人。',
+        ],
+      },
+    ],
+    note: '团队模式常用地址格式：http://常驻电脑局域网IP:8787。',
+  },
+  admin: {
+    eyebrow: '使用说明',
+    title: '管理员使用说明',
+    intro: '管理员负责日常项目推进、团队排期和基础资料维护。',
+    sections: [
+      {
+        title: '日常查看',
+        items: [
+          '在“首页控制台”查看今日必须处理的项目、任务和交付节点。',
+          '在“交付日历”查看项目交付时间和关键节点。',
+          '在“团队负载”查看每个人当前任务量和风险集中情况。',
+        ],
+      },
+      {
+        title: '项目和团队维护',
+        items: [
+          '在“项目中心”新建项目、查看项目详情、维护任务和流程进度。',
+          '在“人员管理”维护团队成员、人员标签和账号关联。',
+          '在“选项管理”维护项目类型、任务工种、流程节点、人员标签。',
+        ],
+      },
+    ],
+  },
+  manager: {
+    eyebrow: '使用说明',
+    title: '项目经理使用说明',
+    intro: '项目经理负责自己项目的录入、任务拆分和交付跟进。',
+    sections: [
+      {
+        title: '新建和设置项目',
+        items: [
+          '在“首页控制台”查看自己负责的项目和近期交付节点。',
+          '点击右上角“新建项目”，录入客户、项目类型、项目路径和交付日期。',
+          '项目创建后，在“设置交付和任务”里选择流程节点、任务工种和负责人。',
+        ],
+      },
+      {
+        title: '推进项目',
+        items: [
+          '在“项目中心”查看自己负责的项目详情，跟进任务状态和交付进度。',
+          '在“交付日历”查看项目节点，安排当天和本周需要处理的事项。',
+          '在“项目归档”查看已经完成和归档的项目。',
+        ],
+      },
+    ],
+  },
+  member: {
+    eyebrow: '使用说明',
+    title: '成员使用说明',
+    intro: '成员主要查看和更新分配给自己的工作。',
+    sections: [
+      {
+        title: '处理任务',
+        items: [
+          '在“我的任务”查看分配给自己的任务。',
+          '每个任务会显示项目、工种、截止时间和当前状态。',
+          '做任务时按实际进度更新状态，例如“制作中”“修改中”“已完成”。',
+        ],
+      },
+      {
+        title: '查看节点',
+        items: [
+          '在“交付日历”查看和自己任务相关的项目节点。',
+          '在“项目归档”查看已经完成的项目资料。',
+        ],
+      },
+    ],
+  },
+  finance: {
+    eyebrow: '使用说明',
+    title: '财务使用说明',
+    intro: '财务主要维护项目商务信息、收款、开票和结算状态。',
+    sections: [
+      {
+        title: '财务结算',
+        items: [
+          '在“财务结算”查看项目合同金额、已收金额、未收金额和开票状态。',
+          '点击项目后，在“项目商务详情”里录入收款、开票和结算情况。',
+          '使用“新增收款”“新增开票”记录每次到账和开票信息。',
+        ],
+      },
+      {
+        title: '辅助核对',
+        items: [
+          '在“项目中心”查看项目基础信息和客户信息。',
+          '在“交付日历”查看项目交付时间，辅助安排收款和开票节点。',
+        ],
+      },
+    ],
+  },
+}
 
 const projects: Project[] = []
 
@@ -416,12 +543,8 @@ function loadStoredAccountId() {
   }
 }
 
-function shouldShowWelcomeGuide() {
-  try {
-    return localStorage.getItem(welcomeGuideStorageKey) !== 'true'
-  } catch {
-    return true
-  }
+function welcomeGuideStorageKey(account: Account) {
+  return `${welcomeGuideStorageKeyPrefix}-${account.id}-${account.role}`
 }
 
 function loadStoredDataMode(): DataMode {
@@ -500,6 +623,7 @@ function App() {
   const [appHolidayItems, setAppHolidayItems] = useState<HolidayItem[]>(() => loadStoredHolidayItems())
   const [appWorkflowOptions, setAppWorkflowOptions] = useState<WorkflowOptions>(() => loadStoredWorkflowOptions())
   const currentAccount = useMemo(() => appAccounts.find((account) => account.id === currentAccountId) ?? null, [appAccounts, currentAccountId])
+  const currentWelcomeGuideKey = currentAccount ? welcomeGuideStorageKey(currentAccount) : ''
   const role = currentAccount?.role ?? 'controller'
   const [section, setSection] = useState<Section>(() => navItemsForRole(loadStoredAccounts().find((account) => account.id === loadStoredAccountId())?.role ?? 'controller')[0]?.id ?? 'dashboard')
   const [selectedProjectId, setSelectedProjectId] = useState(projects[0]?.id ?? '')
@@ -518,7 +642,7 @@ function App() {
   const [loginAccountId, setLoginAccountId] = useState('')
   const [loginPassword, setLoginPassword] = useState('')
   const [loginError, setLoginError] = useState('')
-  const [showWelcomeGuide, setShowWelcomeGuide] = useState(() => shouldShowWelcomeGuide())
+  const [showWelcomeGuide, setShowWelcomeGuide] = useState(false)
   const loadCurrentAppData = useCallback<AppDataLoader>(async () => {
     if (dataMode === 'team') return fetchTeamAppData(teamServerUrl)
     return window.desktopBridge?.loadAppData?.() ?? null
@@ -712,6 +836,19 @@ function App() {
     setSection(activeNavItems[0]?.id ?? 'dashboard')
   }, [activeNavItems, section])
 
+  useEffect(() => {
+    if (!currentWelcomeGuideKey) {
+      setShowWelcomeGuide(false)
+      return
+    }
+
+    try {
+      setShowWelcomeGuide(localStorage.getItem(currentWelcomeGuideKey) !== 'true')
+    } catch {
+      setShowWelcomeGuide(true)
+    }
+  }, [currentWelcomeGuideKey])
+
   const roleVisibleProjects = useMemo(() => {
     if (role === 'controller' || role === 'admin' || role === 'finance') return appProjects
     if (!currentUser) return []
@@ -868,7 +1005,7 @@ function App() {
 
   function dismissWelcomeGuide() {
     try {
-      localStorage.setItem(welcomeGuideStorageKey, 'true')
+      if (currentAccount) localStorage.setItem(welcomeGuideStorageKey(currentAccount), 'true')
     } catch {
       // localStorage may be unavailable in unusual preview contexts; closing still works.
     }
@@ -1858,54 +1995,37 @@ function App() {
           onReset={() => handleUpdateWorkflowOptions(defaultWorkflowOptions)}
         />
       )}
-      {showWelcomeGuide && <WelcomeGuideModal onClose={closeWelcomeGuide} onDismiss={dismissWelcomeGuide} />}
+      {currentAccount && showWelcomeGuide && <WelcomeGuideModal guide={welcomeGuides[currentAccount.role]} onClose={closeWelcomeGuide} onDismiss={dismissWelcomeGuide} />}
     </div>
   )
 }
 
-function WelcomeGuideModal({ onClose, onDismiss }: { onClose: () => void; onDismiss: () => void }) {
+function WelcomeGuideModal({ guide, onClose, onDismiss }: { guide: WelcomeGuideContent; onClose: () => void; onDismiss: () => void }) {
   return (
     <div className="modalBackdrop" role="presentation" onMouseDown={onClose}>
       <section className="financeEntryModal welcomeGuideModal" role="dialog" aria-modal="true" aria-label="CrewFlow 使用提示" onMouseDown={(event) => event.stopPropagation()}>
         <header>
           <div>
-            <span className="eyebrow">首次使用</span>
-            <h2>欢迎使用 CrewFlow</h2>
+            <span className="eyebrow">{guide.eyebrow}</span>
+            <h2>{guide.title}</h2>
           </div>
           <button type="button" onClick={onClose} title="关闭">
             <X size={18} />
           </button>
         </header>
         <div className="welcomeGuideBody">
-          <p>CrewFlow 用来管理视频项目的立项、任务、交付日历、人员和财务结算。</p>
-          <div className="welcomeSteps">
-            <span>默认账号</span>
-            <ol>
-              <li>系统默认内置总控账号：zk，密码：123456。</li>
-              <li>进入后可在左侧“账号管理”修改总控用户名和密码。</li>
-              <li>其他成员账号建议先在“人员管理”新增人员，再到“账号管理”创建并关联。</li>
-            </ol>
-          </div>
-          <div className="welcomeSteps">
-            <span>工作模式</span>
-            <ol>
-              <li>单人模式：数据只保存在当前电脑，适合个人试用或单机管理。</li>
-              <li>团队模式：选择一台常驻 Mac 或 Windows 电脑，在“工作模式”里点击“开启团队服务”。</li>
-              <li>开启后把自动显示的局域网地址复制给其他电脑，其他电脑选择团队模式并填写这个地址。</li>
-              <li>常驻电脑安装后台服务后，终端关闭也不会影响其他人连接。</li>
-            </ol>
-          </div>
-          <div className="welcomeSteps">
-            <span>第一次使用建议按这个顺序开始：</span>
-            <ol>
-              <li>先在“人员管理”确认团队成员、标签和账号关联。</li>
-              <li>再到右上角点击“新建项目”，填写客户、项目经理、NAS 路径和交付日期。</li>
-              <li>项目创建后，在“设置交付和任务”里分派工种和负责人。</li>
-              <li>执行成员可在“我的任务”查看个人任务；管理人员可在“团队负载”和“交付日历”查看排期压力。</li>
-              <li>财务只维护合同金额、收款、开票和结算状态。</li>
-            </ol>
-          </div>
-          <div className="welcomeNote">团队模式常用地址格式：http://常驻电脑局域网IP:8787。不要让多人直接读写同一个共享文件。</div>
+          <p>{guide.intro}</p>
+          {guide.sections.map((section) => (
+            <div className="welcomeSteps" key={section.title}>
+              <span>{section.title}</span>
+              <ol>
+                {section.items.map((item) => (
+                  <li key={item}>{item}</li>
+                ))}
+              </ol>
+            </div>
+          ))}
+          {guide.note && <div className="welcomeNote">{guide.note}</div>}
         </div>
         <footer>
           <button type="button" onClick={onDismiss}>
@@ -3019,7 +3139,7 @@ function NewProjectModal({
         <div className="structuredForm">
           <label className="textField">
             <span>项目名称</span>
-            <input value={name} onChange={(event) => setName(event.target.value)} placeholder="例如：北京公司服务队宣传片" />
+            <input value={name} onChange={(event) => setName(event.target.value)} placeholder="例如：客户项目名称" />
           </label>
           <label className="textField">
             <span>甲方对接人</span>
@@ -5699,7 +5819,7 @@ function assistantReply(
       '也可以按这个格式发我，我后续会继续增强为项目草稿：',
       '项目名称：',
       '客户单位：',
-      '项目类型：纪录片/宣传片/短视频/总结片/微电影',
+      '项目类型：自定义项目类型',
       '项目经理：',
       '成片交付日期：2026-07-03',
       '任务工种：剪辑、包装、调色',

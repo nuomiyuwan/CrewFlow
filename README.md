@@ -1,6 +1,6 @@
 # CrewFlow
 
-传媒公司视频项目管理桌面端。当前版本为 `v0.9.11` 内测版，用于管理项目立项、任务分派、交付日历、团队负载、人员账号和财务结算。
+CrewFlow is a desktop command center for project intake, task assignment, delivery calendars, team workload, user accounts, and finance tracking. It is built with Electron, React, and Vite.
 
 ## 当前定位
 
@@ -14,9 +14,9 @@
 ~/Library/Application Support/CrewFlow/crewflow-data.json
 ```
 
-当前干净初始状态只保留总控账号：`zk / 123456`。
+Clean initial data keeps only the controller account: `zk / 123456`. Change this account after first login.
 
-## 功能范围
+## Features
 
 - 登录视角：总控、管理员、项目经理、执行成员、财务
 - 首页控制台
@@ -30,7 +30,7 @@
 - 财务结算
 - 本地规则版制片助理
 
-## 开发运行
+## Development
 
 ```bash
 npm run desktop
@@ -42,25 +42,25 @@ npm run desktop
 npm run team:server
 ```
 
-团队服务端说明见 `server/README.md`。
+See `server/README.md` for team server details.
 
-正式使用时建议在常驻电脑的 CrewFlow “工作模式”里点击“开启团队服务”，App 会自动安装后台服务并显示给其他电脑填写的局域网地址。
+For daily use, open CrewFlow on the host computer and click “开启团队服务” in “工作模式”. The app installs the background service and shows the LAN address for other clients.
 
-开发或排障时也可以用命令安装团队服务端后台常驻服务：
+For development or troubleshooting, install the background team service from the terminal:
 
 ```bash
 npm run team:install-service
 ```
 
-Mac 会安装 launchd 后台服务；Windows 会安装计划任务。安装后终端关闭不影响团队模式连接。
+macOS uses a launchd LaunchAgent. Windows uses a scheduled task. After installation, closing the terminal does not stop team mode.
 
-只启动网页调试：
+Start only the Vite dev server:
 
 ```bash
 npm run dev
 ```
 
-## 检查
+## Verification
 
 ```bash
 npm test
@@ -68,7 +68,7 @@ npm run build
 npm run lint
 ```
 
-## 打包
+## Packaging
 
 Mac 解包版：
 
@@ -93,11 +93,15 @@ npm run package:all
 - `release/mac/CrewFlow.app`
 - `release/win-unpacked/CrewFlow.exe`
 
-## 下一阶段
+## Roadmap
 
 `v1.0` 继续完善内网多人协作版：
 
 - 当前已加入第一版团队模式：一台常开 Mac 运行 CrewFlow Server，客户端通过 HTTP 读写同一份团队数据。
 - CrewFlow Server 可在 Mac 或 Windows 常驻电脑上运行。
-- 第一版使用 10 秒轮询和“最后保存生效”策略。
+- Current team mode polls every 2 seconds and uses a last-save-wins strategy.
 - 后续继续完善实时推送、冲突提示、自动备份、启动项安装和更细的服务端权限。
+
+## License
+
+MIT

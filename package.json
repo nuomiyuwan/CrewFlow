@@ -3,7 +3,7 @@
   "private": true,
   "version": "0.9.11",
   "description": "CrewFlow video project management desktop beta",
-  "author": "四海博艺",
+  "author": "nuomiyuwan",
   "type": "module",
   "main": "electron/main.cjs",
   "scripts": {
