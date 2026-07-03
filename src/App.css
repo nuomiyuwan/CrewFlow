@@ -2552,7 +2552,8 @@ h1 {
   margin-bottom: 14px;
 }
 
-.customerPicker {
+.customerPicker,
+.customOptionPicker {
   display: grid;
   gap: 14px;
   border: 1px solid rgba(180, 202, 216, 0.12);

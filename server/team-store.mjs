@@ -22,6 +22,8 @@ export function emptyTeamData() {
     ],
     holidayItems: [],
     workflowOptions: {
+      projectTypes: [],
+      customerGroups: {},
       taskWorkTypes: ['策划', '文案', '拍摄', '剪辑', '后期', '包装', '设计', 'AI', '外包', '行政', '配音', '配乐', '三维', '版权素材', '调色'],
       nodeStatuses: ['未开始', '进行中', '等甲方反馈', '等内部确认', '需修改', '已确认', '已完成', '暂停'],
       staffTags: [

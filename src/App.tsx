@@ -232,13 +232,16 @@ type AppData = {
   workflowOptions?: WorkflowOptions
   updatedAt?: string
 }
+type CustomerGroups = Record<string, string[]>
 type WorkflowOptions = {
   taskWorkTypes: string[]
   nodeStatuses: string[]
   workflowStages: string[]
   staffTags: string[]
+  projectTypes: string[]
+  customerGroups: CustomerGroups
 }
-type WorkflowOptionCategory = keyof WorkflowOptions
+type WorkflowOptionCategory = Exclude<keyof WorkflowOptions, 'customerGroups'>
 type WorkflowOptionRename = {
   category: WorkflowOptionCategory
   from: string
@@ -285,43 +288,8 @@ const roles: Array<{ id: Role; label: string; description: string }> = [
 
 const staffMembers: StaffMember[] = []
 
-const projectTypeOptions = ['短视频', '纪录片', '总结片', '宣传片', '微电影', '平面设计', '自定义']
-const customerGroups: Record<string, string[]> = {
-  北京: [
-    '北京公司',
-    '昌平公司',
-    '海淀公司',
-    '大兴公司',
-    '亦庄公司',
-    '门头沟公司',
-    '电缆公司',
-    '电科院',
-    '城区公司',
-    '丰台公司',
-    '通州公司',
-    '顺义公司',
-    '物资公司',
-    '信通公司',
-    '建设咨询',
-    '承发包',
-    '房山公司',
-    '石景山公司',
-    '怀柔公司',
-    '平谷公司',
-    '延庆公司',
-    '密云公司',
-    '电力党校',
-    '电动车公司',
-    '综合能源',
-    '经研院',
-    '谷新公司',
-    '中电联',
-    '中电传媒',
-  ],
-  新疆: ['新疆公司'],
-  河北: ['河北公司'],
-  江西: ['江西公司'],
-}
+const defaultProjectTypeOptions: string[] = []
+const defaultCustomerGroups: CustomerGroups = {}
 const priorityOptions = ['普通', '重要', '紧急']
 const defaultTaskWorkOptions = ['策划', '文案', '拍摄', '剪辑', '后期', '包装', '设计', 'AI', '外包', '行政', '配音', '配乐', '三维', '版权素材', '调色']
 const defaultStaffTagOptions = [
@@ -355,6 +323,8 @@ const defaultWorkflowOptions: WorkflowOptions = {
   nodeStatuses: defaultNodeStatusOptions,
   workflowStages: defaultWorkflowStageOptions,
   staffTags: defaultStaffTagOptions,
+  projectTypes: defaultProjectTypeOptions,
+  customerGroups: defaultCustomerGroups,
 }
 const financeStorageVersion = 'finance-ledger-v5'
 const projectDataStorageVersion = 'project-flow-v1'
@@ -750,6 +720,15 @@ function App() {
     const memberProjectIds = new Set(appTasks.filter((task) => task.assignee === currentUser).map((task) => task.projectId))
     return appProjects.filter((project) => memberProjectIds.has(project.id))
   }, [appProjects, appTasks, currentUser, role])
+  const projectTypeFilterOptions = useMemo(
+    () => uniqueCleanOptions([...appWorkflowOptions.projectTypes, ...appProjects.map((project) => project.type)], []),
+    [appProjects, appWorkflowOptions.projectTypes],
+  )
+
+  useEffect(() => {
+    if (filterType === '全部类型' || projectTypeFilterOptions.includes(filterType)) return
+    setFilterType('全部类型')
+  }, [filterType, projectTypeFilterOptions])
 
   const roleVisibleTasks = useMemo(() => {
     if (role === 'controller' || role === 'admin' || role === 'finance') return appTasks
@@ -1037,6 +1016,53 @@ function App() {
     }
   }
 
+  function addProjectTypeOption(value: string) {
+    const cleanValue = value.trim()
+    if (!cleanValue) return
+
+    setAppWorkflowOptions((current) => {
+      if (current.projectTypes.includes(cleanValue)) return current
+      return normalizeWorkflowOptions({
+        ...current,
+        projectTypes: [...current.projectTypes, cleanValue],
+      })
+    })
+  }
+
+  function addCustomerProvinceOption(value: string) {
+    const cleanValue = value.trim()
+    if (!cleanValue) return
+
+    setAppWorkflowOptions((current) => {
+      if (current.customerGroups[cleanValue]) return current
+      return normalizeWorkflowOptions({
+        ...current,
+        customerGroups: {
+          ...current.customerGroups,
+          [cleanValue]: [],
+        },
+      })
+    })
+  }
+
+  function addCustomerOption(province: string, value: string) {
+    const cleanProvince = province.trim()
+    const cleanValue = value.trim()
+    if (!cleanProvince || !cleanValue) return
+
+    setAppWorkflowOptions((current) => {
+      const currentCustomers = current.customerGroups[cleanProvince] ?? []
+      if (currentCustomers.includes(cleanValue)) return current
+      return normalizeWorkflowOptions({
+        ...current,
+        customerGroups: {
+          ...current.customerGroups,
+          [cleanProvince]: [...currentCustomers, cleanValue],
+        },
+      })
+    })
+  }
+
   function handleUpdateWorkflowOptions(nextOptions: WorkflowOptions, renames: WorkflowOptionRename[] = []) {
     const normalizedOptions = normalizeWorkflowOptions(nextOptions)
     const taskWorkRename = new Map(
@@ -1051,8 +1077,20 @@ function App() {
     const staffTagRename = new Map(
       renames.filter((item) => item.category === 'staffTags' && item.from !== item.to).map((item) => [item.from, item.to]),
     )
+    const projectTypeRename = new Map(
+      renames.filter((item) => item.category === 'projectTypes' && item.from !== item.to).map((item) => [item.from, item.to]),
+    )
 
     setAppWorkflowOptions(normalizedOptions)
+
+    if (projectTypeRename.size > 0) {
+      setAppProjects((current) =>
+        current.map((project) => ({
+          ...project,
+          type: projectTypeRename.get(project.type) ?? project.type,
+        })),
+      )
+    }
 
     if (taskWorkRename.size > 0) {
       setAppTasks((current) =>
@@ -1630,7 +1668,7 @@ function App() {
                   <span>项目类型</span>
                   <select value={filterType} onChange={(event) => setFilterType(event.target.value)}>
                     <option value="全部类型">全部类型</option>
-                    {projectTypeOptions.map((item) => (
+                    {projectTypeFilterOptions.map((item) => (
                       <option key={item} value={item}>
                         {item}
                       </option>
@@ -1744,10 +1782,13 @@ function App() {
             staffMembers={activeStaffMembers}
             workflowOptions={appWorkflowOptions}
             preferredManager={role === 'manager' ? currentUser ?? undefined : undefined}
-          lockManager={role === 'manager'}
-          onClose={() => setShowNewProjectModal(false)}
-          onCreateProject={handleCreateProject}
-        />
+            lockManager={role === 'manager'}
+            onAddProjectType={addProjectTypeOption}
+            onAddCustomerProvince={addCustomerProvinceOption}
+            onAddCustomer={addCustomerOption}
+            onClose={() => setShowNewProjectModal(false)}
+            onCreateProject={handleCreateProject}
+          />
       )}
       {setupDraft && (
         <ProjectSetupModal
@@ -2078,7 +2119,7 @@ function WorkflowOptionsModal({
 
   function deleteOption(category: WorkflowOptionCategory, value: string) {
     if (isProtectedWorkflowOption(category, value)) return
-    if (draft[category].length <= 1) return
+    if (category !== 'projectTypes' && draft[category].length <= 1) return
     updateList(category, draft[category].filter((item) => item !== value))
   }
 
@@ -2100,6 +2141,15 @@ function WorkflowOptionsModal({
           </button>
         </header>
         <div className="workflowOptionsBody">
+          <WorkflowOptionSection
+            title="项目类型"
+            note="用于新建项目、项目筛选和项目编辑。初始为空，可按公司业务自行添加。"
+            category="projectTypes"
+            values={draft.projectTypes}
+            onAdd={addOption}
+            onRename={renameOption}
+            onDelete={deleteOption}
+          />
           <WorkflowOptionSection
             title="任务工种"
             note="用于新建项目、任务分派和项目详情任务板。"
@@ -2200,7 +2250,7 @@ function WorkflowOptionSection({
             key={value}
             category={category}
             value={value}
-            canDelete={values.length > 1 && !protectedSet.has(value)}
+            canDelete={(category === 'projectTypes' || values.length > 1) && !protectedSet.has(value)}
             isProtected={protectedSet.has(value)}
             onRename={onRename}
             onDelete={onDelete}
@@ -2832,6 +2882,9 @@ function NewProjectModal({
   workflowOptions,
   preferredManager,
   lockManager = false,
+  onAddProjectType,
+  onAddCustomerProvince,
+  onAddCustomer,
   onClose,
   onCreateProject,
 }: {
@@ -2839,23 +2892,28 @@ function NewProjectModal({
   workflowOptions: WorkflowOptions
   preferredManager?: string
   lockManager?: boolean
+  onAddProjectType: (typeName: string) => void
+  onAddCustomerProvince: (provinceName: string) => void
+  onAddCustomer: (provinceName: string, customerName: string) => void
   onClose: () => void
   onCreateProject: (payload: NewProjectPayload) => void
 }) {
   const projectManagers = useMemo(() => staffMembers.filter(canManageProject), [staffMembers])
+  const projectTypeOptions = workflowOptions.projectTypes
+  const customerGroups = workflowOptions.customerGroups
+  const provinceOptions = useMemo(() => Object.keys(customerGroups), [customerGroups])
   const lockedManagerAvailable = Boolean(preferredManager && projectManagers.some((member) => member.name === preferredManager))
   const [name, setName] = useState('')
   const [path, setPath] = useState('')
-  const [type, setType] = useState('宣传片')
-  const [province, setProvince] = useState('北京')
-  const [customProvinces, setCustomProvinces] = useState<string[]>([])
-  const [customCustomers, setCustomCustomers] = useState<Record<string, string[]>>({})
-  const [client, setClient] = useState(customerGroups.北京[0])
+  const [type, setType] = useState(projectTypeOptions[0] ?? '')
+  const [province, setProvince] = useState(provinceOptions[0] ?? '')
+  const [client, setClient] = useState(provinceOptions[0] ? customerGroups[provinceOptions[0]]?.[0] ?? '' : '')
   const [clientContact, setClientContact] = useState('')
   const [manager, setManager] = useState(preferredManager ?? projectManagers[0]?.name ?? '')
   const [priority, setPriority] = useState('重要')
   const [workTypes, setWorkTypes] = useState<string[]>([workflowOptions.taskWorkTypes[0] ?? defaultTaskWorkOptions[0]])
   const [deliveryDate, setDeliveryDate] = useState(defaultDeliveryDate())
+  const customerOptions = useMemo(() => (province ? customerGroups[province] ?? [] : []), [customerGroups, province])
 
   useEffect(() => {
     if (lockManager && preferredManager && lockedManagerAvailable) {
@@ -2866,34 +2924,44 @@ function NewProjectModal({
     setManager(projectManagers[0]?.name ?? '')
   }, [lockManager, lockedManagerAvailable, manager, preferredManager, projectManagers])
 
+  useEffect(() => {
+    if (projectTypeOptions.includes(type)) return
+    setType(projectTypeOptions[0] ?? '')
+  }, [projectTypeOptions, type])
+
+  useEffect(() => {
+    if (province && provinceOptions.includes(province)) return
+    setProvince(provinceOptions[0] ?? '')
+  }, [province, provinceOptions])
+
+  useEffect(() => {
+    if (client && customerOptions.includes(client)) return
+    setClient(customerOptions[0] ?? '')
+  }, [client, customerOptions])
+
   function handleProvinceSelect(nextProvince: string) {
     setProvince(nextProvince)
-    setClient([...(customerGroups[nextProvince] ?? []), ...(customCustomers[nextProvince] ?? [])][0] ?? '')
+    setClient(customerGroups[nextProvince]?.[0] ?? '')
+  }
+
+  function addCustomProjectType(projectTypeName: string) {
+    const cleanName = projectTypeName.trim()
+    if (!cleanName) return
+    onAddProjectType(cleanName)
+    setType(cleanName)
   }
 
   function addCustomCustomer(customerName: string) {
     const cleanName = customerName.trim()
-    if (!cleanName) return
-
-    setCustomCustomers((current) => {
-      const provinceCustomers = current[province] ?? []
-      if (provinceCustomers.includes(cleanName) || customerGroups[province]?.includes(cleanName)) return current
-
-      return {
-        ...current,
-        [province]: [...provinceCustomers, cleanName],
-      }
-    })
+    if (!cleanName || !province) return
+    onAddCustomer(province, cleanName)
     setClient(cleanName)
   }
 
   function addCustomProvince(provinceName: string) {
     const cleanName = provinceName.trim()
     if (!cleanName) return
-    if (customerGroups[cleanName] || customProvinces.includes(cleanName)) return
-
-    setCustomProvinces((current) => [...current, cleanName])
-    setCustomCustomers((current) => ({ ...current, [cleanName]: [] }))
+    onAddCustomerProvince(cleanName)
     setProvince(cleanName)
     setClient('')
   }
@@ -2919,7 +2987,7 @@ function NewProjectModal({
   }
 
   function submitProject() {
-    if (!name.trim()) return
+    if (!name.trim() || !type || !client) return
 
     onCreateProject({
       name: name.trim(),
@@ -2973,11 +3041,11 @@ function NewProjectModal({
             <span>成片交付日期</span>
             <input type="date" value={deliveryDate} onChange={(event) => setDeliveryDate(event.target.value)} />
           </label>
-          <OptionGroup label="项目类型" options={projectTypeOptions} active={type} onSelect={setType} />
+          <ProjectTypePicker options={projectTypeOptions} active={type} onSelect={setType} onAddCustomType={addCustomProjectType} />
           <CustomerPicker
             province={province}
-            provinces={[...Object.keys(customerGroups), ...customProvinces]}
-            customers={[...(customerGroups[province] ?? []), ...(customCustomers[province] ?? [])]}
+            provinces={provinceOptions}
+            customers={customerOptions}
             client={client}
             onProvinceSelect={handleProvinceSelect}
             onClientSelect={setClient}
@@ -2999,11 +3067,57 @@ function NewProjectModal({
           <button type="button" onClick={onClose}>
             取消
           </button>
-          <button className="primaryButton" type="button" onClick={submitProject} disabled={!name.trim()}>
+          <button className="primaryButton" type="button" onClick={submitProject} disabled={!name.trim() || !type || !client}>
             创建项目
           </button>
         </footer>
       </section>
+    </div>
+  )
+}
+
+function ProjectTypePicker({
+  options,
+  active,
+  onSelect,
+  onAddCustomType,
+}: {
+  options: string[]
+  active: string
+  onSelect: (option: string) => void
+  onAddCustomType: (typeName: string) => void
+}) {
+  const [customTypeName, setCustomTypeName] = useState('')
+
+  function addType() {
+    const cleanName = customTypeName.trim()
+    if (!cleanName) return
+    onAddCustomType(cleanName)
+    setCustomTypeName('')
+  }
+
+  return (
+    <div className="customOptionPicker">
+      <div className="optionGroup">
+        <span>项目类型</span>
+        {options.length === 0 ? (
+          <p className="fieldHint">暂无项目类型，请先添加。</p>
+        ) : (
+          <div>
+            {options.map((option) => (
+              <button key={option} className={option === active ? 'active' : ''} type="button" onClick={() => onSelect(option)}>
+                {option}
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+      <div className="customCustomer">
+        <input value={customTypeName} onChange={(event) => setCustomTypeName(event.target.value)} placeholder="添加项目类型" />
+        <button type="button" onClick={addType} disabled={!customTypeName.trim() || options.includes(customTypeName.trim())}>
+          添加类型
+        </button>
+      </div>
     </div>
   )
 }
@@ -3081,7 +3195,7 @@ function CustomerPicker({
   const [customProvinceName, setCustomProvinceName] = useState('')
 
   function addCustomer() {
-    if (!customName.trim()) return
+    if (!province || !customName.trim()) return
     onAddCustomCustomer(customName)
     setCustomName('')
   }
@@ -3096,13 +3210,17 @@ function CustomerPicker({
     <div className="customerPicker">
       <div className="optionGroup">
         <span>客户省份</span>
-        <div>
-          {provinces.map((item) => (
-            <button key={item} className={item === province ? 'active' : ''} type="button" onClick={() => onProvinceSelect(item)}>
-              {item}
-            </button>
-          ))}
-        </div>
+        {provinces.length === 0 ? (
+          <p className="fieldHint">暂无客户省份，请先添加。</p>
+        ) : (
+          <div>
+            {provinces.map((item) => (
+              <button key={item} className={item === province ? 'active' : ''} type="button" onClick={() => onProvinceSelect(item)}>
+                {item}
+              </button>
+            ))}
+          </div>
+        )}
       </div>
       <div className="customCustomer">
         <input value={customProvinceName} onChange={(event) => setCustomProvinceName(event.target.value)} placeholder="添加自定义省份" />
@@ -3122,8 +3240,8 @@ function CustomerPicker({
         </select>
       </div>
       <div className="customCustomer">
-        <input value={customName} onChange={(event) => setCustomName(event.target.value)} placeholder={`添加${province}自定义单位`} />
-        <button type="button" onClick={addCustomer} disabled={!customName.trim()}>
+        <input value={customName} onChange={(event) => setCustomName(event.target.value)} placeholder={province ? `添加${province}客户单位` : '请先添加客户省份'} />
+        <button type="button" onClick={addCustomer} disabled={!province || !customName.trim()}>
           添加自定义
         </button>
       </div>
@@ -3260,7 +3378,7 @@ function ProjectEditModal({
             <label className="textField">
               <span>项目类型</span>
               <select value={type} onChange={(event) => setType(event.target.value)}>
-                {projectTypeOptions.map((item) => (
+                {optionsWithCurrent(workflowOptions.projectTypes, type).map((item) => (
                   <option key={item} value={item}>
                     {item}
                   </option>
@@ -5974,12 +6092,29 @@ function ensureProtectedStaffTags(options: string[]) {
 }
 
 function normalizeWorkflowOptionList(category: WorkflowOptionCategory, options: string[]) {
-  const normalized = uniqueCleanOptions(options, defaultWorkflowOptions[category])
+  const rawOptions = Array.isArray(options) ? options : []
+  const normalized = uniqueCleanOptions(rawOptions, defaultWorkflowOptions[category])
   return category === 'staffTags' ? ensureProtectedStaffTags(normalized) : normalized
 }
 
 function isProtectedWorkflowOption(category: WorkflowOptionCategory, value: string) {
   return category === 'staffTags' && protectedStaffTags.includes(value)
+}
+
+function normalizeCustomerGroups(groups: CustomerGroups | undefined): CustomerGroups {
+  if (!groups || typeof groups !== 'object' || Array.isArray(groups)) return defaultCustomerGroups
+
+  const normalized: CustomerGroups = {}
+  Object.entries(groups).forEach(([province, customers]) => {
+    const cleanProvince = province.trim()
+    if (!cleanProvince) return
+
+    const currentCustomers = normalized[cleanProvince] ?? []
+    const nextCustomers = Array.isArray(customers) ? uniqueCleanOptions([...currentCustomers, ...customers], []) : currentCustomers
+    normalized[cleanProvince] = nextCustomers
+  })
+
+  return normalized
 }
 
 function normalizeWorkflowOptions(options: Partial<WorkflowOptions> | undefined): WorkflowOptions {
@@ -5988,6 +6123,8 @@ function normalizeWorkflowOptions(options: Partial<WorkflowOptions> | undefined)
     nodeStatuses: normalizeWorkflowOptionList('nodeStatuses', options?.nodeStatuses ?? []),
     workflowStages: normalizeWorkflowOptionList('workflowStages', options?.workflowStages ?? []),
     staffTags: normalizeWorkflowOptionList('staffTags', options?.staffTags ?? []),
+    projectTypes: normalizeWorkflowOptionList('projectTypes', options?.projectTypes ?? []),
+    customerGroups: normalizeCustomerGroups(options?.customerGroups),
   }
 }
 
