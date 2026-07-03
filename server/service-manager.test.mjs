@@ -12,8 +12,9 @@ test('service runtime uses packaged app executable when available', () => {
 
   assert.equal(runtime.mode, 'app')
   assert.equal(runtime.executable, '/Applications/CrewFlow.app/Contents/MacOS/CrewFlow')
-  assert.deepEqual(runtime.args, ['--team-server'])
-  assert.equal(runtime.processMatch, '*--team-server*')
+  assert.deepEqual(runtime.args, ['/repo/server/crewflow-server.mjs'])
+  assert.deepEqual(runtime.env, { ELECTRON_RUN_AS_NODE: '1' })
+  assert.equal(runtime.processMatch, '*crewflow-server.mjs*')
 })
 
 test('service runtime falls back to node server script in development', () => {

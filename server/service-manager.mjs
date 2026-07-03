@@ -22,8 +22,9 @@ export function serviceRuntime({
     return {
       mode: 'app',
       executable: appExecutablePath,
-      args: ['--team-server'],
-      processMatch: '*--team-server*',
+      args: [serverScript],
+      env: { ELECTRON_RUN_AS_NODE: '1' },
+      processMatch: '*crewflow-server.mjs*',
     }
   }
 
@@ -31,6 +32,7 @@ export function serviceRuntime({
     mode: 'node',
     executable: nodePath,
     args: [serverScript],
+    env: {},
     processMatch: '*crewflow-server.mjs*',
   }
 }
@@ -111,6 +113,12 @@ ${programArguments}
     <string>${host}</string>
     <key>CREWFLOW_PORT</key>
     <string>${port}</string>
+${Object.entries(runtime.env)
+  .map(
+    ([key, value]) => `    <key>${escapePlistValue(key)}</key>
+    <string>${escapePlistValue(value)}</string>`,
+  )
+  .join('\n')}
   </dict>
   <key>RunAtLoad</key>
   <true/>
@@ -163,7 +171,9 @@ async function windowsInstall(options = {}) {
   await mkdir(scriptDir, { recursive: true })
   await writeFile(
     cmdPath,
-    `@echo off\r\nset CREWFLOW_HOST=${host}\r\nset CREWFLOW_PORT=${port}\r\ncd /d "${commandWorkingDirectory(runtime)}"\r\n${commandLine}\r\n`,
+    `@echo off\r\nset CREWFLOW_HOST=${host}\r\nset CREWFLOW_PORT=${port}\r\n${Object.entries(runtime.env)
+      .map(([key, value]) => `set ${key}=${value}\r\n`)
+      .join('')}cd /d "${commandWorkingDirectory(runtime)}"\r\n${commandLine}\r\n`,
     'utf8',
   )
   run('schtasks', ['/Create', '/TN', taskName, '/TR', `"${cmdPath}"`, '/SC', 'ONLOGON', '/RL', 'HIGHEST', '/F'])
