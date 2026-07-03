@@ -42,9 +42,13 @@ Windows 默认数据文件：
 http://HOST_LAN_IP:8787
 ```
 
+如果使用 App 里的“开启团队服务”，CrewFlow 会同时生成访问密钥。其他电脑需要填写服务器地址和访问密钥后才能读取或保存团队数据。
+
 ## 后台常驻服务
 
 临时运行 `npm run team:server` 时，终端关闭服务就会停止。正式使用建议在常驻电脑打开 CrewFlow，在“工作模式”里点击“开启团队服务”。App 会安装后台服务，并显示其他电脑要填写的局域网地址。
+
+后台服务会自动生成并保存访问密钥，后续重启会继续使用同一个密钥。
 
 打包版会优先把后台服务指向当前 CrewFlow App 的 `--team-server` 模式；开发环境下才使用 Node 运行 `server/crewflow-server.mjs`。
 
@@ -74,6 +78,12 @@ Mac 使用当前用户的 `launchd` LaunchAgent；Windows 使用当前用户登�
 CREWFLOW_HOST=0.0.0.0 CREWFLOW_PORT=8787 npm run team:server
 ```
 
+手动指定访问密钥：
+
+```bash
+CREWFLOW_ACCESS_KEY="change-this-key" npm run team:server
+```
+
 自定义数据目录：
 
 ```bash
@@ -85,7 +95,8 @@ CREWFLOW_DATA_DIR="/path/to/CrewFlow Server Data" npm run team:server
 - 客户端打开团队模式时读取服务端数据。
 - 客户端保存时向服务端写入变更字段。
 - 客户端每 2 秒轮询一次服务端数据。
-- 第一版采用“最后保存生效”，后续再做更细的冲突提示和审计记录。
+- 服务端会校验访问密钥。
+- 服务端会用 `revision` 检查旧版本写入；如果其他电脑已经保存了更新，客户端会重新同步并提示用户再操作一次。
 
 ## 不要这样做
 

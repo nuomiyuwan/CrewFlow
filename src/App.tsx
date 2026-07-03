@@ -80,6 +80,7 @@ type TeamServiceInfo = {
   localUrl: string
   connectionUrl: string
   urls: string[]
+  accessKey?: string
   dataFile?: string
   updatedAt?: string
   message: string
@@ -231,6 +232,7 @@ type DataMode = 'single' | 'team'
 type TeamConnectionStatus = 'idle' | 'checking' | 'connected' | 'error'
 type AppData = {
   version: string
+  revision?: number
   projects: Project[]
   tasks: Task[]
   calendarItems: CalendarItem[]
@@ -259,6 +261,7 @@ type WorkflowOptionRename = {
 }
 type AppDataLoader = () => Promise<AppData | null>
 type AppDataSaver = (data: Partial<AppData>) => Promise<boolean>
+type AppDataSliceKey = 'projects' | 'tasks' | 'calendarItems' | 'financeRecords' | 'staffMembers' | 'accounts' | 'holidayItems' | 'workflowOptions'
 type ProjectPlanPayload = {
   id?: string
   date: string
@@ -342,6 +345,7 @@ const sessionStorageKey = 'crewflow-session-account'
 const welcomeGuideStorageKeyPrefix = 'crewflow-welcome-dismissed'
 const dataModeStorageKey = 'crewflow-data-mode'
 const teamServerUrlStorageKey = 'crewflow-team-server-url'
+const teamAccessKeyStorageKey = 'crewflow-team-access-key'
 const workflowOptionsStorageKey = 'crewflow-workflow-options'
 const defaultTeamServerUrl = 'http://127.0.0.1:8787'
 const legacyLocalStorageKeys = [
@@ -563,6 +567,14 @@ function loadStoredTeamServerUrl() {
   }
 }
 
+function loadStoredTeamAccessKey() {
+  try {
+    return localStorage.getItem(teamAccessKeyStorageKey) || ''
+  } catch {
+    return ''
+  }
+}
+
 function normalizeTeamServerUrl(url: string) {
   const trimmed = url.trim()
   if (!trimmed) return defaultTeamServerUrl
@@ -574,20 +586,44 @@ function teamApiUrl(serverUrl: string, pathname: string) {
   return `${normalizeTeamServerUrl(serverUrl)}${pathname}`
 }
 
-async function fetchTeamAppData(serverUrl: string) {
-  const response = await fetch(teamApiUrl(serverUrl, '/api/app-data'))
+function teamRequestHeaders(accessKey: string, hasBody = false) {
+  const headers: Record<string, string> = hasBody ? { 'Content-Type': 'application/json' } : {}
+  const cleanAccessKey = accessKey.trim()
+  if (cleanAccessKey) headers['X-CrewFlow-Key'] = cleanAccessKey
+  return headers
+}
+
+class TeamDataConflictError extends Error {
+  currentData?: AppData
+
+  constructor(message: string, currentData?: AppData) {
+    super(message)
+    this.name = 'TeamDataConflictError'
+    this.currentData = currentData
+  }
+}
+
+async function fetchTeamAppData(serverUrl: string, accessKey: string) {
+  const response = await fetch(teamApiUrl(serverUrl, '/api/app-data'), {
+    headers: teamRequestHeaders(accessKey),
+  })
   if (!response.ok) throw new Error(`团队数据读取失败：${response.status}`)
   return (await response.json()) as AppData
 }
 
-async function saveTeamAppData(serverUrl: string, data: Partial<AppData>) {
+async function saveTeamAppData(serverUrl: string, accessKey: string, data: Partial<AppData>, baseRevision?: number | null) {
+  const payload = Number.isInteger(baseRevision) ? { ...data, baseRevision } : data
   const response = await fetch(teamApiUrl(serverUrl, '/api/app-data'), {
     method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(data),
+    headers: teamRequestHeaders(accessKey, true),
+    body: JSON.stringify(payload),
   })
+  if (response.status === 409) {
+    const body = (await response.json()) as { current?: AppData; error?: string }
+    throw new TeamDataConflictError(body.error || '团队数据已被其他电脑更新，请重新同步后再试。', body.current)
+  }
   if (!response.ok) throw new Error(`团队数据保存失败：${response.status}`)
-  return true
+  return (await response.json()) as AppData
 }
 
 async function fetchTeamHealth(serverUrl: string) {
@@ -607,6 +643,7 @@ function clearLegacyLocalStorage() {
 function App() {
   const [dataMode, setDataMode] = useState<DataMode>(() => loadStoredDataMode())
   const [teamServerUrl, setTeamServerUrl] = useState(() => loadStoredTeamServerUrl())
+  const [teamAccessKey, setTeamAccessKey] = useState(() => loadStoredTeamAccessKey())
   const [teamConnectionStatus, setTeamConnectionStatus] = useState<TeamConnectionStatus>('idle')
   const [teamConnectionMessage, setTeamConnectionMessage] = useState('')
   const [teamServiceInfo, setTeamServiceInfo] = useState<TeamServiceInfo | null>(null)
@@ -643,16 +680,81 @@ function App() {
   const [loginPassword, setLoginPassword] = useState('')
   const [loginError, setLoginError] = useState('')
   const [showWelcomeGuide, setShowWelcomeGuide] = useState(false)
+  const teamDataRevisionRef = useRef<number | null>(null)
+  const remoteSliceSnapshotsRef = useRef<Partial<Record<AppDataSliceKey, string>>>({})
+  const rememberRemoteSlices = useCallback((savedData: AppData) => {
+    const normalizedTasks = savedData.tasks.map((task) => ({
+      ...task,
+      status: normalizeTaskStatus(task.status),
+    }))
+    remoteSliceSnapshotsRef.current = {
+      projects: JSON.stringify(savedData.projects.map(normalizeProject)),
+      tasks: JSON.stringify(normalizedTasks),
+      calendarItems: JSON.stringify(savedData.calendarItems),
+      financeRecords: JSON.stringify(savedData.financeRecords.map(normalizeFinanceRecord)),
+      staffMembers: JSON.stringify((savedData.staffMembers ?? []).map(normalizeStaffMember)),
+      accounts: JSON.stringify(mergeStoredAccounts(savedData.accounts ?? loginAccounts)),
+      holidayItems: JSON.stringify((savedData.holidayItems ?? []).map(normalizeHolidayItem)),
+      workflowOptions: JSON.stringify(normalizeWorkflowOptions(savedData.workflowOptions)),
+    }
+    teamDataRevisionRef.current = typeof savedData.revision === 'number' ? savedData.revision : null
+  }, [])
+  const shouldSaveSlice = useCallback(
+    (key: AppDataSliceKey, value: unknown) => {
+      if (dataMode !== 'team') return true
+      return remoteSliceSnapshotsRef.current[key] !== JSON.stringify(value)
+    },
+    [dataMode],
+  )
+  const applyAppDataToState = useCallback(
+    (savedData: AppData) => {
+      rememberRemoteSlices(savedData)
+      setAppProjects(savedData.projects.map(normalizeProject))
+      setAppTasks(
+        savedData.tasks.map((task) => ({
+          ...task,
+          status: normalizeTaskStatus(task.status),
+        })),
+      )
+      setAppCalendarItems(savedData.calendarItems)
+      setAppFinanceRecords(savedData.financeRecords.map(normalizeFinanceRecord))
+      setAppStaffMembers((savedData.staffMembers ?? []).map(normalizeStaffMember))
+      setAppAccounts(mergeStoredAccounts(savedData.accounts ?? loginAccounts))
+      setAppHolidayItems((savedData.holidayItems ?? []).map(normalizeHolidayItem))
+      setAppWorkflowOptions(normalizeWorkflowOptions(savedData.workflowOptions))
+    },
+    [rememberRemoteSlices],
+  )
   const loadCurrentAppData = useCallback<AppDataLoader>(async () => {
-    if (dataMode === 'team') return fetchTeamAppData(teamServerUrl)
+    if (dataMode === 'team') {
+      const savedData = await fetchTeamAppData(teamServerUrl, teamAccessKey)
+      rememberRemoteSlices(savedData)
+      return savedData
+    }
     return window.desktopBridge?.loadAppData?.() ?? null
-  }, [dataMode, teamServerUrl])
+  }, [dataMode, rememberRemoteSlices, teamAccessKey, teamServerUrl])
   const saveCurrentAppData = useCallback<AppDataSaver>(
     async (data) => {
-      if (dataMode === 'team') return saveTeamAppData(teamServerUrl, data)
+      if (dataMode === 'team') {
+        try {
+          const savedData = await saveTeamAppData(teamServerUrl, teamAccessKey, data, teamDataRevisionRef.current)
+          rememberRemoteSlices(savedData)
+          setTeamConnectionStatus('connected')
+          setTeamConnectionMessage('团队数据已保存')
+          return true
+        } catch (error) {
+          if (error instanceof TeamDataConflictError && error.currentData) {
+            applyAppDataToState(error.currentData)
+            setTeamConnectionStatus('error')
+            setTeamConnectionMessage('团队数据已被其他电脑更新，已重新同步，请再操作一次。')
+            return false
+          }
+          throw error
+        }
+      }
       return window.desktopBridge?.saveAppData?.(data) ?? false
     },
-    [dataMode, teamServerUrl],
+    [applyAppDataToState, dataMode, rememberRemoteSlices, teamAccessKey, teamServerUrl],
   )
   const currentAppDataSnapshot = useMemo<AppData>(
     () => ({
@@ -688,21 +790,7 @@ function App() {
       const savedData = await loadCurrentAppData()
       if (canceled) return
 
-      if (savedData?.projects) setAppProjects(savedData.projects.map(normalizeProject))
-      if (savedData?.tasks) {
-        setAppTasks(
-          savedData.tasks.map((task) => ({
-            ...task,
-            status: normalizeTaskStatus(task.status),
-          })),
-        )
-      }
-      if (savedData?.calendarItems) setAppCalendarItems(savedData.calendarItems)
-      if (savedData?.financeRecords) setAppFinanceRecords(savedData.financeRecords.map(normalizeFinanceRecord))
-      if (savedData?.staffMembers) setAppStaffMembers(savedData.staffMembers.map(normalizeStaffMember))
-      if (savedData?.accounts) setAppAccounts(mergeStoredAccounts(savedData.accounts))
-      if (savedData?.holidayItems) setAppHolidayItems(savedData.holidayItems.map(normalizeHolidayItem))
-      if (savedData?.workflowOptions) setAppWorkflowOptions(normalizeWorkflowOptions(savedData.workflowOptions))
+      if (savedData) applyAppDataToState(savedData)
       if (dataMode === 'team') {
         setTeamConnectionStatus('connected')
         setTeamConnectionMessage('团队数据已连接')
@@ -722,71 +810,78 @@ function App() {
     return () => {
       canceled = true
     }
-  }, [dataMode, loadCurrentAppData])
+  }, [applyAppDataToState, dataMode, loadCurrentAppData])
 
   useEffect(() => {
     if (!dataReady) return
     localStorage.setItem('crewflow-project-data-version', projectDataStorageVersion)
     localStorage.setItem('crewflow-projects', JSON.stringify(appProjects))
+    if (!shouldSaveSlice('projects', appProjects)) return
     saveCurrentAppData({
       version: projectDataStorageVersion,
       projects: appProjects,
     }).catch(() => undefined)
-  }, [appProjects, dataReady, saveCurrentAppData])
+  }, [appProjects, dataReady, saveCurrentAppData, shouldSaveSlice])
 
   useEffect(() => {
     if (!dataReady) return
     localStorage.setItem('crewflow-tasks', JSON.stringify(appTasks))
+    if (!shouldSaveSlice('tasks', appTasks)) return
     saveCurrentAppData({
       version: projectDataStorageVersion,
       tasks: appTasks,
     }).catch(() => undefined)
-  }, [appTasks, dataReady, saveCurrentAppData])
+  }, [appTasks, dataReady, saveCurrentAppData, shouldSaveSlice])
 
   useEffect(() => {
     if (!dataReady) return
     localStorage.setItem('crewflow-calendar-items', JSON.stringify(appCalendarItems))
+    if (!shouldSaveSlice('calendarItems', appCalendarItems)) return
     saveCurrentAppData({
       version: projectDataStorageVersion,
       calendarItems: appCalendarItems,
     }).catch(() => undefined)
-  }, [appCalendarItems, dataReady, saveCurrentAppData])
+  }, [appCalendarItems, dataReady, saveCurrentAppData, shouldSaveSlice])
 
   useEffect(() => {
     if (!dataReady) return
     localStorage.setItem('crewflow-staff-members', JSON.stringify(appStaffMembers))
+    if (!shouldSaveSlice('staffMembers', appStaffMembers)) return
     saveCurrentAppData({
       version: projectDataStorageVersion,
       staffMembers: appStaffMembers,
     }).catch(() => undefined)
-  }, [appStaffMembers, dataReady, saveCurrentAppData])
+  }, [appStaffMembers, dataReady, saveCurrentAppData, shouldSaveSlice])
 
   useEffect(() => {
     if (!dataReady) return
     localStorage.setItem('crewflow-accounts', JSON.stringify(appAccounts))
+    if (!shouldSaveSlice('accounts', appAccounts)) return
     saveCurrentAppData({
       version: projectDataStorageVersion,
       accounts: appAccounts,
     }).catch(() => undefined)
-  }, [appAccounts, dataReady, saveCurrentAppData])
+  }, [appAccounts, dataReady, saveCurrentAppData, shouldSaveSlice])
 
   useEffect(() => {
     if (!dataReady) return
     localStorage.setItem('crewflow-holiday-items', JSON.stringify(appHolidayItems))
+    if (!shouldSaveSlice('holidayItems', appHolidayItems)) return
     saveCurrentAppData({
       version: projectDataStorageVersion,
       holidayItems: appHolidayItems,
     }).catch(() => undefined)
-  }, [appHolidayItems, dataReady, saveCurrentAppData])
+  }, [appHolidayItems, dataReady, saveCurrentAppData, shouldSaveSlice])
 
   useEffect(() => {
     if (!dataReady) return
     localStorage.setItem(workflowOptionsStorageKey, JSON.stringify(appWorkflowOptions))
+    if (!shouldSaveSlice('workflowOptions', appWorkflowOptions)) return
     saveCurrentAppData({
       version: projectDataStorageVersion,
       workflowOptions: appWorkflowOptions,
     }).catch(() => undefined)
-  }, [appWorkflowOptions, dataReady, saveCurrentAppData])
+  }, [appWorkflowOptions, dataReady, saveCurrentAppData, shouldSaveSlice])
 
   useEffect(() => {
     if (dataMode !== 'team' || !dataReady) return
@@ -795,19 +890,7 @@ function App() {
       loadCurrentAppData()
         .then((savedData) => {
           if (!savedData) return
-          setAppProjects(savedData.projects.map(normalizeProject))
-          setAppTasks(
-            savedData.tasks.map((task) => ({
-              ...task,
-              status: normalizeTaskStatus(task.status),
-            })),
-          )
-          setAppCalendarItems(savedData.calendarItems)
-          setAppFinanceRecords(savedData.financeRecords.map(normalizeFinanceRecord))
-          setAppStaffMembers((savedData.staffMembers ?? []).map(normalizeStaffMember))
-          setAppAccounts(mergeStoredAccounts(savedData.accounts ?? loginAccounts))
-          setAppHolidayItems((savedData.holidayItems ?? []).map(normalizeHolidayItem))
-          setAppWorkflowOptions(normalizeWorkflowOptions(savedData.workflowOptions))
+          applyAppDataToState(savedData)
           setTeamConnectionStatus('connected')
           setTeamConnectionMessage('团队数据已同步')
         })
@@ -818,7 +901,7 @@ function App() {
     }, 2 * 1000)
 
     return () => window.clearInterval(timer)
-  }, [dataMode, dataReady, loadCurrentAppData])
+  }, [applyAppDataToState, dataMode, dataReady, loadCurrentAppData])
 
   useEffect(() => {
     if (!showDataModeModal) return
@@ -953,20 +1036,8 @@ function App() {
       try {
         const savedData = await loadCurrentAppData()
         if (savedData) {
-          setAppProjects(savedData.projects.map(normalizeProject))
-          setAppTasks(
-            savedData.tasks.map((task) => ({
-              ...task,
-              status: normalizeTaskStatus(task.status),
-            })),
-          )
-          setAppCalendarItems(savedData.calendarItems)
-          setAppFinanceRecords(savedData.financeRecords.map(normalizeFinanceRecord))
-          setAppStaffMembers((savedData.staffMembers ?? []).map(normalizeStaffMember))
           latestAccounts = mergeStoredAccounts(savedData.accounts ?? loginAccounts)
-          setAppAccounts(latestAccounts)
-          setAppHolidayItems((savedData.holidayItems ?? []).map(normalizeHolidayItem))
-          setAppWorkflowOptions(normalizeWorkflowOptions(savedData.workflowOptions))
+          applyAppDataToState(savedData)
           setTeamConnectionStatus('connected')
           setTeamConnectionMessage('团队账号已同步')
         }
@@ -1043,12 +1114,23 @@ function App() {
     }
   }
 
+  function updateTeamAccessKey(nextKey: string) {
+    setTeamAccessKey(nextKey)
+    try {
+      localStorage.setItem(teamAccessKeyStorageKey, nextKey)
+    } catch {
+      // Ignore localStorage failures in restricted preview environments.
+    }
+  }
+
   async function checkTeamConnection() {
     setTeamConnectionStatus('checking')
     setTeamConnectionMessage('正在连接团队服务')
     try {
       const health = await fetchTeamHealth(teamServerUrl)
       if (!health.ok) throw new Error('团队服务未返回可用状态')
+      const savedData = await fetchTeamAppData(teamServerUrl, teamAccessKey)
+      applyAppDataToState(savedData)
       setTeamConnectionStatus('connected')
       setTeamConnectionMessage(`已连接：${health.name ?? 'CrewFlow Server'}`)
       return true
@@ -1064,7 +1146,10 @@ function App() {
     setTeamConnectionMessage('正在导入单人数据')
     try {
       const localData = await window.desktopBridge?.loadAppData?.()
-      await saveTeamAppData(teamServerUrl, localData ?? currentAppDataSnapshot)
+      const currentTeamData = await fetchTeamAppData(teamServerUrl, teamAccessKey)
+      rememberRemoteSlices(currentTeamData)
+      const savedData = await saveTeamAppData(teamServerUrl, teamAccessKey, localData ?? currentAppDataSnapshot, currentTeamData.revision)
+      applyAppDataToState(savedData)
       updateDataMode('team')
       setTeamConnectionStatus('connected')
       setTeamConnectionMessage('单人数据已导入团队库')
@@ -1094,6 +1179,7 @@ function App() {
       const info = await window.desktopBridge.getTeamServiceInfo()
       setTeamServiceInfo(info)
       setTeamServiceMessage(info.message)
+      if (info.accessKey) updateTeamAccessKey(info.accessKey)
     } catch (error) {
       setTeamServiceMessage(error instanceof Error ? error.message : '团队服务状态读取失败')
     } finally {
@@ -1114,6 +1200,7 @@ function App() {
       setTeamServiceInfo(info)
       setTeamServiceMessage(info.message)
       if (info.connectionUrl) updateTeamServerUrl(info.connectionUrl)
+      if (info.accessKey) updateTeamAccessKey(info.accessKey)
       updateDataMode('team')
       setTeamConnectionStatus(info.running ? 'connected' : 'idle')
       setTeamConnectionMessage(info.running ? `本机团队服务已开启：${info.connectionUrl}` : info.message)
@@ -1146,16 +1233,17 @@ function App() {
   async function copyLocalTeamServiceUrl() {
     const url = teamServiceInfo?.connectionUrl || teamServerUrl
     if (!url) return
+    const text = teamServiceInfo?.accessKey ? `团队服务器地址：${url}\n访问密钥：${teamServiceInfo.accessKey}` : url
 
     try {
       if (window.desktopBridge?.copyText) {
-        await window.desktopBridge.copyText(url)
+        await window.desktopBridge.copyText(text)
       } else {
-        await navigator.clipboard.writeText(url)
+        await navigator.clipboard.writeText(text)
       }
-      setTeamServiceMessage(`已复制：${url}`)
+      setTeamServiceMessage(teamServiceInfo?.accessKey ? '已复制团队地址和访问密钥' : `已复制：${url}`)
     } catch {
-      setTeamServiceMessage(`复制失败，请手动复制：${url}`)
+      setTeamServiceMessage(`复制失败，请手动复制：${text}`)
     }
   }
 
@@ -1496,9 +1584,15 @@ function App() {
     setAppTasks((current) => current.map((task) => (task.id === updatedTask.id ? updatedTask : task)))
   }
 
+  function canEditCalendarProject(projectId: string) {
+    if (role === 'controller' || role === 'admin') return true
+    if (role !== 'manager' || !currentUser) return false
+    return appProjects.some((project) => project.id === projectId && project.manager === currentUser)
+  }
+
   function handleAddCalendarPlan(plan: ProjectPlanPayload) {
     const project = appProjects.find((item) => item.id === plan.projectId)
-    if (!project) return
+    if (!project || !canEditCalendarProject(plan.projectId)) return
 
     const date = new Date(plan.date)
     setAppCalendarItems((current) => [
@@ -1518,6 +1612,8 @@ function App() {
   }
 
   function handleUpdateCalendarPlan(itemKey: string, plan: ProjectPlanPayload) {
+    const currentItem = appCalendarItems.find((item) => calendarItemKey(item) === itemKey)
+    if (!currentItem || !canEditCalendarProject(currentItem.projectId) || !canEditCalendarProject(plan.projectId)) return
     const project = appProjects.find((item) => item.id === plan.projectId)
     if (!project) return
 
@@ -1542,6 +1638,8 @@ function App() {
   }
 
   function handleDeleteCalendarPlan(itemKey: string) {
+    const currentItem = appCalendarItems.find((item) => calendarItemKey(item) === itemKey)
+    if (!currentItem || !canEditCalendarProject(currentItem.projectId)) return
     setAppCalendarItems((current) => current.filter((item) => calendarItemKey(item) !== itemKey))
   }
 
@@ -1573,7 +1671,7 @@ function App() {
 
   function handleDeleteStaffMember(memberId: string) {
     const targetMember = appStaffMembers.find((member) => member.id === memberId)
-    if (!targetMember || targetMember.name === '王标') return
+    if (!targetMember || targetMember.accountRole === 'controller') return
     if (currentAccount?.staffId === memberId) {
       window.alert('不能删除当前登录账号关联的人员。')
       return
@@ -1695,6 +1793,7 @@ function App() {
           <DataModeModal
             dataMode={dataMode}
             teamServerUrl={teamServerUrl}
+            teamAccessKey={teamAccessKey}
             teamConnectionStatus={teamConnectionStatus}
             teamConnectionMessage={teamConnectionMessage}
             teamServiceInfo={teamServiceInfo}
@@ -1703,6 +1802,7 @@ function App() {
             onClose={() => setShowDataModeModal(false)}
             onDataModeChange={updateDataMode}
             onTeamServerUrlChange={updateTeamServerUrl}
+            onTeamAccessKeyChange={updateTeamAccessKey}
             onCheckTeamConnection={checkTeamConnection}
             onImportSingleDataToTeam={importSingleDataToTeam}
             onRefreshTeamService={refreshTeamServiceInfo}
@@ -1874,6 +1974,7 @@ function App() {
             holidayItems={appHolidayItems}
             now={now}
             staffMembers={activeStaffMembers}
+            canManagePlans={role === 'controller' || role === 'admin' || role === 'manager'}
             canManageHolidays={role === 'controller' || role === 'admin'}
             onHolidayItemsChange={setAppHolidayItems}
             onAddPlan={handleAddCalendarPlan}
@@ -1986,6 +2087,7 @@ function App() {
         <DataModeModal
           dataMode={dataMode}
           teamServerUrl={teamServerUrl}
+          teamAccessKey={teamAccessKey}
           teamConnectionStatus={teamConnectionStatus}
           teamConnectionMessage={teamConnectionMessage}
           teamServiceInfo={teamServiceInfo}
@@ -1994,6 +2096,7 @@ function App() {
           onClose={() => setShowDataModeModal(false)}
           onDataModeChange={updateDataMode}
           onTeamServerUrlChange={updateTeamServerUrl}
+          onTeamAccessKeyChange={updateTeamAccessKey}
           onCheckTeamConnection={checkTeamConnection}
           onImportSingleDataToTeam={importSingleDataToTeam}
           onRefreshTeamService={refreshTeamServiceInfo}
@@ -2095,6 +2198,7 @@ function DataModeStatus({
 function DataModeModal({
   dataMode,
   teamServerUrl,
+  teamAccessKey,
   teamConnectionStatus,
   teamConnectionMessage,
   teamServiceInfo,
@@ -2103,6 +2207,7 @@ function DataModeModal({
   onClose,
   onDataModeChange,
   onTeamServerUrlChange,
+  onTeamAccessKeyChange,
   onCheckTeamConnection,
   onImportSingleDataToTeam,
   onRefreshTeamService,
@@ -2112,6 +2217,7 @@ function DataModeModal({
 }: {
   dataMode: DataMode
   teamServerUrl: string
+  teamAccessKey: string
   teamConnectionStatus: TeamConnectionStatus
   teamConnectionMessage: string
   teamServiceInfo: TeamServiceInfo | null
@@ -2120,6 +2226,7 @@ function DataModeModal({
   onClose: () => void
   onDataModeChange: (mode: DataMode) => void
   onTeamServerUrlChange: (url: string) => void
+  onTeamAccessKeyChange: (key: string) => void
   onCheckTeamConnection: () => void
   onImportSingleDataToTeam: () => void
   onRefreshTeamService: () => void
@@ -2167,6 +2274,10 @@ function DataModeModal({
             <span>其他电脑填写这个地址</span>
             <input value={hostUrl} readOnly />
           </label>
+          <label className="dataModeField teamHostAddress">
+            <span>其他电脑填写这个访问密钥</span>
+            <input value={teamServiceInfo?.accessKey ?? ''} readOnly placeholder="开启团队服务后自动生成" />
+          </label>
           <div className="teamHostActions">
             <button type="button" onClick={onInstallTeamService} disabled={teamServiceBusy || !canManageLocalService}>
               {teamServiceInfo?.running ? '修复/重启服务' : '开启团队服务'}
@@ -2175,7 +2286,7 @@ function DataModeModal({
               刷新状态
             </button>
             <button type="button" onClick={onCopyTeamServiceUrl} disabled={!hostUrl}>
-              复制地址
+              复制地址和密钥
             </button>
             <button type="button" onClick={onStopTeamService} disabled={teamServiceBusy || !teamServiceInfo?.running}>
               停止服务
@@ -2186,6 +2297,10 @@ function DataModeModal({
         <label className="dataModeField">
           <span>团队服务器地址</span>
           <input value={teamServerUrl} onChange={(event) => onTeamServerUrlChange(event.target.value)} placeholder="例如：http://HOST_LAN_IP:8787" />
+        </label>
+        <label className="dataModeField">
+          <span>团队访问密钥</span>
+          <input value={teamAccessKey} onChange={(event) => onTeamAccessKeyChange(event.target.value)} placeholder="主机开启团队服务后显示的访问密钥" />
         </label>
         <div className={`dataModeConnection ${teamConnectionStatus}`}>
           {connectionStatusText(teamConnectionStatus, teamConnectionMessage)}
@@ -3861,28 +3976,6 @@ function ProjectSetupModal({
 }
 
 function suggestedAssigneeForWorkType(workType: string, staffMembers: StaffMember[]) {
-  const suggestions: Record<string, string> = {
-    策划: '黄冠霖',
-    文案: '曾嘉成',
-    拍摄: '陈英琦',
-    剪辑: '郭子铭',
-    后期: '胡晓曼',
-    包装: '胡晓曼',
-    设计: '齐欣蓉',
-    AI: '陈英琦',
-    行政: '杜一迪',
-    配音: '陈英琦',
-    配乐: '陈英琦',
-    三维: '胡晓曼',
-    版权素材: '杜一迪',
-    调色: '胡晓曼',
-    外包: '陈英琦',
-  }
-
-  const suggestedName = suggestions[workType]
-  const suggestedMember = staffMembers.find((member) => member.name === suggestedName)
-  if (suggestedMember) return suggestedMember.name
-
   const byTag = staffMembers.find((member) => member.tags.some((tag) => workType.includes(tag) || tag.includes(workType)))
   return byTag?.name ?? staffMembers[0]?.name ?? ''
 }
@@ -3914,6 +4007,7 @@ function CalendarView({
   holidayItems,
   now,
   staffMembers,
+  canManagePlans,
   canManageHolidays,
   onHolidayItemsChange,
   onAddPlan,
@@ -3925,6 +4019,7 @@ function CalendarView({
   holidayItems: HolidayItem[]
   now: Date
   staffMembers: StaffMember[]
+  canManagePlans: boolean
   canManageHolidays: boolean
   onHolidayItemsChange: (items: HolidayItem[]) => void
   onAddPlan: (plan: ProjectPlanPayload) => void
@@ -4018,7 +4113,7 @@ function CalendarView({
                   .join(' ')}
                 onContextMenu={(event) => {
                   event.preventDefault()
-                  if (projects.length > 0) setPlanDate(date.toISOString().slice(0, 10))
+                  if (canManagePlans && projects.length > 0) setPlanDate(date.toISOString().slice(0, 10))
                 }}
               >
                 <div className="calendarDayHeader">
@@ -4103,23 +4198,25 @@ function CalendarView({
                   负责人：{item.owner} · 项目：{item.project}
                 </span>
               </div>
-              <div className="scheduleActions">
-                <button
-                  type="button"
-                  onClick={() =>
-                    setEditingPlan({
-                      item,
-                      key: itemKey,
-                      date: dateForCalendarItem(now, item),
-                    })
-                  }
-                >
-                  编辑
-                </button>
-                <button type="button" onClick={() => onDeletePlan(itemKey)}>
-                  删除
-                </button>
-              </div>
+              {canManagePlans && (
+                <div className="scheduleActions">
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setEditingPlan({
+                        item,
+                        key: itemKey,
+                        date: dateForCalendarItem(now, item),
+                      })
+                    }
+                  >
+                    编辑
+                  </button>
+                  <button type="button" onClick={() => onDeletePlan(itemKey)}>
+                    删除
+                  </button>
+                </div>
+              )}
             </article>
             )
           })}
@@ -4128,7 +4225,7 @@ function CalendarView({
           )}
         </div>
       </section>
-      {planDate && (
+      {canManagePlans && planDate && (
         <CalendarPlanModal
           date={planDate}
           projects={projects}
@@ -4141,7 +4238,7 @@ function CalendarView({
           }}
         />
       )}
-      {editingPlan && (
+      {canManagePlans && editingPlan && (
         <CalendarPlanModal
           date={editingPlan.date}
           projects={projects}
@@ -4495,7 +4592,7 @@ function PeopleManagement({
   onAddAccount: (account: Account) => void
   onDeleteAccount: (accountId: string) => void
 }) {
-  const editableStaff = staffMembers.filter((person) => person.name !== '王标')
+  const editableStaff = staffMembers.filter((person) => person.accountRole !== 'controller')
   const activeProjects = projects.filter((project) => !isArchivedProject(project))
   const archivedProjects = projects.filter((project) => isArchivedProject(project))
   const peopleRows = editableStaff.map((person) => {
@@ -4997,7 +5094,7 @@ function PeopleRow({
 function TeamLoad({ projects, tasks, staffMembers }: { projects: Project[]; tasks: Task[]; staffMembers: StaffMember[] }) {
   const activeProjects = projects.filter((project) => !isArchivedProject(project))
   const activeProjectIds = new Set(activeProjects.map((project) => project.id))
-  const teamLoad = staffMembers.filter((member) => member.name !== '王标' && member.status === '在职').map((person) => {
+  const teamLoad = staffMembers.filter((member) => member.accountRole !== 'controller' && member.status === '在职').map((person) => {
     const personTasks = tasks.filter((task) => task.assignee === person.name && task.status !== '已完成' && activeProjectIds.has(task.projectId))
     const managedProjects = activeProjects.filter((project) => project.manager === person.name)
     const ownedProjects = activeProjects.filter((project) => project.owner === person.name)
@@ -6496,7 +6593,7 @@ function canManageProject(member: StaffMember) {
 }
 
 function isAssignableStaff(member: StaffMember) {
-  return member.status === '在职' && member.name !== '王标'
+  return member.status === '在职' && member.accountRole !== 'controller'
 }
 
 function replacePersonInProject(project: Project, previousName: string, nextName: string) {

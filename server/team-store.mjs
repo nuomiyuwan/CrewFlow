@@ -4,6 +4,7 @@ import path from 'node:path'
 export function emptyTeamData() {
   return {
     version: 'project-flow-v1',
+    revision: 0,
     projects: [],
     tasks: [],
     calendarItems: [],
@@ -72,6 +73,16 @@ export function emptyTeamData() {
   }
 }
 
+export class StaleTeamDataError extends Error {
+  constructor({ expectedRevision, currentData }) {
+    super('Team data has changed. Reload before saving again.')
+    this.name = 'StaleTeamDataError'
+    this.code = 'STALE_DATA'
+    this.expectedRevision = expectedRevision
+    this.currentData = currentData
+  }
+}
+
 function normalizeTeamData(data) {
   const fallback = emptyTeamData()
   const workflowOptions = data?.workflowOptions && typeof data.workflowOptions === 'object' ? data.workflowOptions : {}
@@ -91,6 +102,7 @@ function normalizeTeamData(data) {
       ...fallback.workflowOptions,
       ...workflowOptions,
     },
+    revision: Number.isInteger(data?.revision) && data.revision >= 0 ? data.revision : fallback.revision,
     updatedAt: typeof data?.updatedAt === 'string' ? data.updatedAt : fallback.updatedAt,
   }
 }
@@ -108,12 +120,23 @@ export function createTeamStore({ dataDir }) {
     }
   }
 
-  async function write(partialData) {
+  async function write(partialData, options = {}) {
     writeQueue = writeQueue.then(async () => {
       const currentData = await read()
+      if (
+        Number.isInteger(options.expectedRevision) &&
+        options.expectedRevision >= 0 &&
+        options.expectedRevision !== currentData.revision
+      ) {
+        throw new StaleTeamDataError({
+          expectedRevision: options.expectedRevision,
+          currentData,
+        })
+      }
       const nextData = normalizeTeamData({
         ...currentData,
         ...partialData,
+        revision: currentData.revision + 1,
         updatedAt: new Date().toISOString(),
       })
       const tempFile = `${dataFile}.tmp`

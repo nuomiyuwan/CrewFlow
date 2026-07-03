@@ -2,7 +2,7 @@
   "name": "crewflow",
   "private": true,
   "version": "1.0.0",
-  "description": "CrewFlow video project management desktop beta",
+  "description": "CrewFlow video project management desktop app",
   "author": "nuomiyuwan",
   "type": "module",
   "main": "electron/main.cjs",

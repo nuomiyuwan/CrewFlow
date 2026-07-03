@@ -86,6 +86,8 @@ async function fetchLocalTeamHealth() {
 }
 
 async function getTeamServiceInfo(message = '') {
+  const { readOrCreateAccessKey } = await import(serverModuleUrl('service-manager.mjs'))
+  const accessKey = await readOrCreateAccessKey()
   const urls = localTeamServerUrls()
   const health = await fetchLocalTeamHealth()
   const running = Boolean(health?.ok)
@@ -97,6 +99,7 @@ async function getTeamServiceInfo(message = '') {
     localUrl: `http://127.0.0.1:${process.env.CREWFLOW_PORT || '8787'}`,
     connectionUrl: urls[0],
     urls,
+    accessKey,
     dataFile: health?.dataFile,
     updatedAt: health?.updatedAt,
     message: message || (running ? '团队服务正在运行' : '团队服务未运行'),
@@ -108,9 +111,10 @@ async function manageTeamService(action) {
     return getTeamServiceInfo('当前系统暂不支持一键安装团队服务')
   }
 
-  const { manageCrewFlowService } = await import(serverModuleUrl('service-manager.mjs'))
+  const { manageCrewFlowService, readOrCreateAccessKey } = await import(serverModuleUrl('service-manager.mjs'))
   await manageCrewFlowService(action, {
     appExecutablePath: app.isPackaged ? process.execPath : undefined,
+    accessKey: await readOrCreateAccessKey(),
   })
   return getTeamServiceInfo(action === 'stop' || action === 'uninstall' ? '团队服务已停止' : '团队服务已开启')
 }

@@ -21,6 +21,21 @@ async function withServer(t, callback) {
   await callback(`http://127.0.0.1:${port}`)
 }
 
+async function withSecuredServer(t, callback) {
+  const dir = await mkdtemp(path.join(tmpdir(), 'crewflow-http-secure-'))
+  const store = createTeamStore({ dataDir: dir })
+  const server = createCrewFlowServer({ store, accessKey: 'team-secret' })
+
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
+  t.after(async () => {
+    await new Promise((resolve) => server.close(resolve))
+    await rm(dir, { recursive: true, force: true })
+  })
+
+  const { port } = server.address()
+  await callback(`http://127.0.0.1:${port}`)
+}
+
 test('server reports health and data file metadata', async (t) => {
   await withServer(t, async (baseUrl) => {
     const response = await fetch(`${baseUrl}/health`)
@@ -51,6 +66,70 @@ test('server reads and merges app data', async (t) => {
     assert.equal(readResponse.status, 200)
     assert.equal(data.projects[0].name, 'Team Project')
     assert.equal(data.accounts[0].id, 'zk')
+  })
+})
+
+test('server rejects app data access without the configured access key', async (t) => {
+  await withSecuredServer(t, async (baseUrl) => {
+    const readResponse = await fetch(`${baseUrl}/api/app-data`)
+    assert.equal(readResponse.status, 401)
+
+    const saveResponse = await fetch(`${baseUrl}/api/app-data`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ projects: [{ id: '001', name: 'Blocked Project' }] }),
+    })
+    assert.equal(saveResponse.status, 401)
+  })
+})
+
+test('server accepts app data access with the configured access key', async (t) => {
+  await withSecuredServer(t, async (baseUrl) => {
+    const saveResponse = await fetch(`${baseUrl}/api/app-data`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', 'X-CrewFlow-Key': 'team-secret' },
+      body: JSON.stringify({ projects: [{ id: '001', name: 'Secured Project' }] }),
+    })
+    const saved = await saveResponse.json()
+
+    assert.equal(saveResponse.status, 200)
+    assert.equal(saved.projects[0].name, 'Secured Project')
+
+    const readResponse = await fetch(`${baseUrl}/api/app-data`, {
+      headers: { 'X-CrewFlow-Key': 'team-secret' },
+    })
+    const data = await readResponse.json()
+
+    assert.equal(readResponse.status, 200)
+    assert.equal(data.projects[0].name, 'Secured Project')
+  })
+})
+
+test('server rejects stale app data writes', async (t) => {
+  await withServer(t, async (baseUrl) => {
+    const firstResponse = await fetch(`${baseUrl}/api/app-data`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ projects: [{ id: '001', name: 'First Project' }] }),
+    })
+    const firstData = await firstResponse.json()
+
+    assert.equal(firstResponse.status, 200)
+    assert.equal(firstData.revision, 1)
+
+    const staleResponse = await fetch(`${baseUrl}/api/app-data`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        baseRevision: 0,
+        projects: [{ id: '001', name: 'Stale Project' }],
+      }),
+    })
+    const staleData = await staleResponse.json()
+
+    assert.equal(staleResponse.status, 409)
+    assert.equal(staleData.code, 'STALE_DATA')
+    assert.equal(staleData.current.revision, 1)
   })
 })
 

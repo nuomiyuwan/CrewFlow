@@ -1,4 +1,5 @@
-import { mkdir, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, writeFile } from 'node:fs/promises'
+import { randomBytes } from 'node:crypto'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -12,6 +13,46 @@ const serviceLabel = 'local.crewflow.server'
 const taskName = 'CrewFlow Server'
 const port = process.env.CREWFLOW_PORT || '8787'
 const host = process.env.CREWFLOW_HOST || '0.0.0.0'
+
+function defaultServiceDataDir({
+  platform = process.platform,
+  homeDir = os.homedir(),
+  env = process.env,
+} = {}) {
+  if (env.CREWFLOW_DATA_DIR) return env.CREWFLOW_DATA_DIR
+  if (platform === 'win32') return path.win32.join(env.APPDATA || path.win32.join(homeDir, 'AppData', 'Roaming'), 'CrewFlow Server')
+  if (platform === 'darwin') return path.join(homeDir, 'Library', 'Application Support', 'CrewFlow Server')
+  return path.join(homeDir, '.crewflow-server')
+}
+
+function normalizeAccessKey(value) {
+  return typeof value === 'string' ? value.trim() : ''
+}
+
+export function serviceAccessKeyPath(options = {}) {
+  return path.join(defaultServiceDataDir(options), 'access-key.txt')
+}
+
+export async function readOrCreateAccessKey(options = {}) {
+  const providedKey = normalizeAccessKey(options.accessKey)
+  if (providedKey) return providedKey
+
+  const explicitKey = normalizeAccessKey((options.env ?? process.env).CREWFLOW_ACCESS_KEY)
+  if (explicitKey) return explicitKey
+
+  const keyPath = serviceAccessKeyPath(options)
+  try {
+    const savedKey = normalizeAccessKey(await readFile(keyPath, 'utf8'))
+    if (savedKey) return savedKey
+  } catch {
+    // Create the key below when the file does not exist or cannot be read.
+  }
+
+  const accessKey = randomBytes(24).toString('base64url')
+  await mkdir(path.dirname(keyPath), { recursive: true })
+  await writeFile(keyPath, `${accessKey}\n`, 'utf8')
+  return accessKey
+}
 
 export function serviceRuntime({
   appExecutablePath = process.env.CREWFLOW_APP_EXECUTABLE,
@@ -89,6 +130,7 @@ function run(cmd, args, options = {}) {
 
 async function macInstall(options = {}) {
   const runtime = serviceRuntime(options)
+  const accessKey = await readOrCreateAccessKey(options)
   const launchAgentsDir = path.join(os.homedir(), 'Library', 'LaunchAgents')
   const logsDir = path.join(os.homedir(), 'Library', 'Logs', 'CrewFlow Server')
   const plistPath = path.join(launchAgentsDir, `${serviceLabel}.plist`)
@@ -113,6 +155,8 @@ ${programArguments}
     <string>${host}</string>
     <key>CREWFLOW_PORT</key>
     <string>${port}</string>
+    <key>CREWFLOW_ACCESS_KEY</key>
+    <string>${escapePlistValue(accessKey)}</string>
 ${Object.entries(runtime.env)
   .map(
     ([key, value]) => `    <key>${escapePlistValue(key)}</key>
@@ -155,6 +199,7 @@ function macStatus() {
 
 async function windowsInstall(options = {}) {
   const runtime = serviceRuntime(options)
+  const accessKey = await readOrCreateAccessKey(options)
   const logsDir = path.join(process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming'), 'CrewFlow Server', 'logs')
   const scriptDir = path.join(process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming'), 'CrewFlow Server')
   const cmdPath = path.join(scriptDir, 'start-crewflow-server.cmd')
@@ -171,7 +216,7 @@ async function windowsInstall(options = {}) {
   await mkdir(scriptDir, { recursive: true })
   await writeFile(
     cmdPath,
-    `@echo off\r\nset CREWFLOW_HOST=${host}\r\nset CREWFLOW_PORT=${port}\r\n${Object.entries(runtime.env)
+    `@echo off\r\nset CREWFLOW_HOST=${host}\r\nset CREWFLOW_PORT=${port}\r\nset CREWFLOW_ACCESS_KEY=${accessKey}\r\n${Object.entries(runtime.env)
       .map(([key, value]) => `set ${key}=${value}\r\n`)
       .join('')}cd /d "${commandWorkingDirectory(runtime)}"\r\n${commandLine}\r\n`,
     'utf8',

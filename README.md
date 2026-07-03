@@ -52,7 +52,7 @@ Default macOS data file:
 
 ### LAN Team Mode
 
-Team mode uses one always-on Mac or Windows computer as the LAN host. Other clients connect to that host through HTTP.
+Team mode uses one always-on Mac or Windows computer as the LAN host. Other clients connect to that host through HTTP with a CrewFlow access key.
 
 Typical connection URL:
 
@@ -60,7 +60,7 @@ Typical connection URL:
 http://HOST_LAN_IP:8787
 ```
 
-For daily use, open CrewFlow on the host computer and click “开启团队服务” in “工作模式”. The app installs a background service and shows the LAN address for other clients.
+For daily use, open CrewFlow on the host computer and click “开启团队服务” in “工作模式”. The app installs a background service and shows the LAN address and access key for other clients.
 
 See [server/README.md](server/README.md) for CrewFlow Server details.
 

@@ -1,7 +1,10 @@
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
+import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import path from 'node:path'
 import test from 'node:test'
-import { localTeamServerUrls, serviceRuntime } from './service-manager.mjs'
+import { localTeamServerUrls, readOrCreateAccessKey, serviceAccessKeyPath, serviceRuntime } from './service-manager.mjs'
 
 test('service runtime uses packaged app executable when available', () => {
   const runtime = serviceRuntime({
@@ -40,6 +43,33 @@ test('local team server urls prefer non-internal IPv4 addresses', () => {
   })
 
   assert.deepEqual(urls, ['http://192.0.2.10:8787', 'http://198.51.100.12:8787', 'http://127.0.0.1:8787'])
+})
+
+test('service access key is created once in the server data directory', async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), 'crewflow-key-'))
+
+  try {
+    const keyPath = serviceAccessKeyPath({ platform: 'darwin', homeDir: dir, env: {} })
+    const firstKey = await readOrCreateAccessKey({ platform: 'darwin', homeDir: dir, env: {} })
+    const secondKey = await readOrCreateAccessKey({ platform: 'darwin', homeDir: dir, env: {} })
+    const savedKey = await readFile(keyPath, 'utf8')
+
+    assert.match(firstKey, /^[A-Za-z0-9_-]{20,}$/)
+    assert.equal(secondKey, firstKey)
+    assert.equal(savedKey.trim(), firstKey)
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('service access key prefers the explicit environment value', async () => {
+  const key = await readOrCreateAccessKey({
+    platform: 'darwin',
+    homeDir: '/Users/example',
+    env: { CREWFLOW_ACCESS_KEY: ' explicit-key ' },
+  })
+
+  assert.equal(key, 'explicit-key')
 })
 
 test('server modules can be imported when process argv has no script path', () => {

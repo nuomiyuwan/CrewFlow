@@ -2,10 +2,11 @@ import http from 'node:http'
 import os from 'node:os'
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { createTeamStore } from './team-store.mjs'
+import { StaleTeamDataError, createTeamStore } from './team-store.mjs'
 
 const defaultPort = Number(process.env.CREWFLOW_PORT || 8787)
 const defaultHost = process.env.CREWFLOW_HOST || '0.0.0.0'
+const defaultAccessKey = process.env.CREWFLOW_ACCESS_KEY || ''
 export function defaultServerDataDir({
   platform = process.platform,
   homeDir = os.homedir(),
@@ -23,10 +24,19 @@ function sendJson(response, statusCode, payload) {
   response.writeHead(statusCode, {
     'Access-Control-Allow-Origin': '*',
     'Access-Control-Allow-Methods': 'GET, PUT, OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type',
+    'Access-Control-Allow-Headers': 'Content-Type, X-CrewFlow-Key',
     'Content-Type': 'application/json; charset=utf-8',
   })
   response.end(JSON.stringify(payload))
+}
+
+function requestAccessKey(request, url) {
+  return request.headers['x-crewflow-key'] || url.searchParams.get('key') || ''
+}
+
+function hasValidAccessKey(request, url, accessKey) {
+  if (!accessKey) return true
+  return requestAccessKey(request, url) === accessKey
 }
 
 async function readRequestJson(request) {
@@ -40,7 +50,7 @@ async function readRequestJson(request) {
   return JSON.parse(Buffer.concat(chunks).toString('utf8'))
 }
 
-export function createCrewFlowServer({ store }) {
+export function createCrewFlowServer({ store, accessKey = defaultAccessKey } = {}) {
   return http.createServer(async (request, response) => {
     try {
       if (request.method === 'OPTIONS') {
@@ -55,20 +65,45 @@ export function createCrewFlowServer({ store }) {
         sendJson(response, 200, {
           ok: true,
           name: 'CrewFlow Server',
+          requiresKey: Boolean(accessKey),
           dataFile: store.dataFile,
           updatedAt: data.updatedAt,
+          revision: data.revision,
         })
         return
       }
 
       if (request.method === 'GET' && url.pathname === '/api/app-data') {
+        if (!hasValidAccessKey(request, url, accessKey)) {
+          sendJson(response, 401, { ok: false, error: 'Invalid CrewFlow access key' })
+          return
+        }
         sendJson(response, 200, await store.read())
         return
       }
 
       if (request.method === 'PUT' && url.pathname === '/api/app-data') {
+        if (!hasValidAccessKey(request, url, accessKey)) {
+          sendJson(response, 401, { ok: false, error: 'Invalid CrewFlow access key' })
+          return
+        }
         const payload = await readRequestJson(request)
-        sendJson(response, 200, await store.write(payload))
+        const { baseRevision, ...partialData } = payload
+        try {
+          sendJson(response, 200, await store.write(partialData, { expectedRevision: baseRevision }))
+        } catch (error) {
+          if (error instanceof StaleTeamDataError) {
+            sendJson(response, 409, {
+              ok: false,
+              code: error.code,
+              error: error.message,
+              expectedRevision: error.expectedRevision,
+              current: error.currentData,
+            })
+            return
+          }
+          throw error
+        }
         return
       }
 
@@ -83,13 +118,14 @@ export function startCrewFlowServer({
   dataDir = defaultDataDir,
   host = defaultHost,
   port = defaultPort,
+  accessKey = defaultAccessKey,
   onReady = ({ store }) => {
     console.log(`CrewFlow Server listening on http://${host}:${port}`)
     console.log(`Data file: ${store.dataFile}`)
   },
 } = {}) {
   const store = createTeamStore({ dataDir })
-  const server = createCrewFlowServer({ store })
+  const server = createCrewFlowServer({ store, accessKey })
 
   server.listen(port, host, () => onReady({ server, store, host, port }))
   return { server, store }
