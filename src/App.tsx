@@ -285,7 +285,7 @@ const roles: Array<{ id: Role; label: string; description: string }> = [
 
 const staffMembers: StaffMember[] = []
 
-const projectTypeOptions = ['短视频', '纪录片', '总结片', '宣传片', '微电影', '平面设计', '其他']
+const projectTypeOptions = ['短视频', '纪录片', '总结片', '宣传片', '微电影', '平面设计', '自定义']
 const customerGroups: Record<string, string[]> = {
   北京: [
     '北京公司',
@@ -721,7 +721,7 @@ function App() {
           setTeamConnectionStatus('error')
           setTeamConnectionMessage(error instanceof Error ? error.message : '团队数据同步失败')
         })
-    }, 10 * 1000)
+    }, 2 * 1000)
 
     return () => window.clearInterval(timer)
   }, [dataMode, dataReady, loadCurrentAppData])
