@@ -95,6 +95,6 @@ export function startCrewFlowServer({
   return { server, store }
 }
 
-if (import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (typeof process.argv[1] === 'string' && import.meta.url === pathToFileURL(process.argv[1]).href) {
   startCrewFlowServer()
 }

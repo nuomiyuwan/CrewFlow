@@ -236,7 +236,7 @@ async function main() {
   await manageCrewFlowService(command)
 }
 
-if (import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (typeof process.argv[1] === 'string' && import.meta.url === pathToFileURL(process.argv[1]).href) {
   main().catch((error) => {
     console.error(error)
     process.exit(1)
