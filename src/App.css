@@ -3274,6 +3274,9 @@ h1 {
 
 .dataModeModal {
   width: min(640px, calc(100vw - 48px));
+  max-height: calc(100vh - 48px);
+  overflow-x: hidden;
+  overflow-y: auto;
 }
 
 .dataModeOptions {
@@ -3421,7 +3424,10 @@ h1 {
 
 .teamHostCandidates {
   display: grid;
-  gap: 8px;
+  gap: 6px;
+  max-height: min(104px, 18vh);
+  overflow-y: auto;
+  padding-right: 2px;
 }
 
 .teamHostCandidates button {
@@ -3429,13 +3435,13 @@ h1 {
   grid-template-columns: auto 1fr auto;
   align-items: center;
   gap: 10px;
-  min-height: 38px;
+  min-height: 34px;
   border: 1px solid rgba(112, 225, 231, 0.16);
   border-radius: 12px;
   background: rgba(6, 12, 22, 0.28);
   color: rgba(244, 248, 255, 0.86);
   cursor: pointer;
-  padding: 8px 10px;
+  padding: 6px 10px;
   text-align: left;
 }
 

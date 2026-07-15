@@ -2249,6 +2249,7 @@ function DataModeModal({
       : hostUrl
         ? [{ url: hostUrl, address: hostUrl, interfaceName: '默认地址', kind: '推荐地址' }]
         : []
+  const alternateHostCandidates = hostCandidates.filter((candidate) => candidate.url !== hostUrl)
 
   return (
     <div className="modalBackdrop" role="presentation" onMouseDown={onClose}>
@@ -2286,11 +2287,11 @@ function DataModeModal({
             <span>其他电脑填写这个地址</span>
             <input value={hostUrl} readOnly />
           </label>
-          {hostCandidates.length > 1 && (
+          {alternateHostCandidates.length > 0 && (
             <div className="teamHostCandidates" aria-label="可用团队服务地址">
-              {hostCandidates.map((candidate, index) => (
+              {alternateHostCandidates.map((candidate) => (
                 <button key={`${candidate.interfaceName}-${candidate.url}`} type="button" onClick={() => onCopyTeamServiceUrl(candidate.url)}>
-                  <strong>{index === 0 ? '推荐' : '候选'}</strong>
+                  <strong>候选</strong>
                   <span>{candidate.url}</span>
                   <em>
                     {candidate.interfaceName} · {candidate.kind}
