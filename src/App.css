@@ -3277,6 +3277,23 @@ h1 {
   max-height: calc(100vh - 48px);
   overflow-x: hidden;
   overflow-y: auto;
+  scrollbar-color: rgba(128, 233, 247, 0.34) transparent;
+}
+
+.dataModeModal::-webkit-scrollbar {
+  width: 10px;
+}
+
+.dataModeModal::-webkit-scrollbar-track {
+  margin: 16px 0;
+  background: transparent;
+}
+
+.dataModeModal::-webkit-scrollbar-thumb {
+  border: 3px solid transparent;
+  border-radius: 999px;
+  background: rgba(128, 233, 247, 0.36);
+  background-clip: content-box;
 }
 
 .dataModeOptions {
@@ -3428,6 +3445,23 @@ h1 {
   max-height: min(104px, 18vh);
   overflow-y: auto;
   padding-right: 2px;
+  scrollbar-color: rgba(128, 233, 247, 0.32) transparent;
+}
+
+.teamHostCandidates::-webkit-scrollbar {
+  width: 8px;
+}
+
+.teamHostCandidates::-webkit-scrollbar-track {
+  margin: 6px 0;
+  background: transparent;
+}
+
+.teamHostCandidates::-webkit-scrollbar-thumb {
+  border: 2px solid transparent;
+  border-radius: 999px;
+  background: rgba(128, 233, 247, 0.36);
+  background-clip: content-box;
 }
 
 .teamHostCandidates button {
@@ -3485,6 +3519,88 @@ h1 {
 .teamHostActions button:disabled {
   cursor: not-allowed;
   opacity: 0.45;
+}
+
+.dataPathPanel {
+  display: grid;
+  gap: 8px;
+  margin: 12px 20px 0;
+  border: 1px solid rgba(180, 202, 216, 0.14);
+  border-radius: 14px;
+  background: rgba(6, 12, 22, 0.22);
+  padding: 12px;
+}
+
+.dataPathHeader {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.dataPathHeader strong {
+  color: #f7fbff;
+  font-size: 14px;
+}
+
+.dataPathHeader span {
+  color: rgba(210, 222, 235, 0.56);
+  font-size: 12px;
+}
+
+.dataPathRow {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 8px;
+  min-height: 40px;
+  border: 1px solid rgba(180, 202, 216, 0.12);
+  border-radius: 11px;
+  background: rgba(255, 255, 255, 0.035);
+  padding: 8px;
+}
+
+.dataPathRow div {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.dataPathRow span {
+  color: #80e9f7;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.dataPathRow strong {
+  min-width: 0;
+  overflow: hidden;
+  color: rgba(244, 248, 255, 0.84);
+  font-size: 12px;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dataPathRow em {
+  color: rgba(210, 222, 235, 0.52);
+  font-size: 11px;
+  font-style: normal;
+}
+
+.dataPathRow button {
+  min-height: 30px;
+  border: 1px solid rgba(180, 202, 216, 0.16);
+  border-radius: 9px;
+  color: rgba(244, 248, 255, 0.82);
+  background: rgba(255, 255, 255, 0.055);
+  cursor: pointer;
+  padding: 0 9px;
+}
+
+.dataPathRow button:disabled {
+  cursor: not-allowed;
+  opacity: 0.42;
 }
 
 .workflowOptionsModal {

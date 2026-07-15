@@ -71,12 +71,17 @@ async function fetchLocalTeamHealth() {
 }
 
 async function getTeamServiceInfo(message = '') {
-  const { localTeamServerCandidates, readOrCreateAccessKey } = await import(serverModuleUrl('service-manager.mjs'))
+  const { defaultServerDataDir } = await import(serverModuleUrl('crewflow-server.mjs'))
+  const { localTeamServerCandidates, readOrCreateAccessKey, serviceAccessKeyPath } = await import(serverModuleUrl('service-manager.mjs'))
   const accessKey = await readOrCreateAccessKey()
   const urlCandidates = localTeamServerCandidates()
   const urls = urlCandidates.map((candidate) => candidate.url)
   const health = await fetchLocalTeamHealth()
   const running = Boolean(health?.ok)
+  const singleDataFile = appDataPath()
+  const teamDataDirectory = defaultServerDataDir()
+  const teamDataFile = health?.dataFile || path.join(teamDataDirectory, 'crewflow-team-data.json')
+  const accessKeyFile = serviceAccessKeyPath()
 
   return {
     supported: process.platform === 'darwin' || process.platform === 'win32',
@@ -88,6 +93,12 @@ async function getTeamServiceInfo(message = '') {
     urlCandidates,
     accessKey,
     dataFile: health?.dataFile,
+    singleDataFile,
+    singleDataDirectory: path.dirname(singleDataFile),
+    teamDataFile,
+    teamDataDirectory: path.dirname(teamDataFile),
+    accessKeyFile,
+    accessKeyDirectory: path.dirname(accessKeyFile),
     updatedAt: health?.updatedAt,
     message: message || (running ? '团队服务正在运行' : '团队服务未运行'),
   }

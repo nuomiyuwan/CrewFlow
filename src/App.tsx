@@ -88,6 +88,12 @@ type TeamServiceInfo = {
   }[]
   accessKey?: string
   dataFile?: string
+  singleDataFile?: string
+  singleDataDirectory?: string
+  teamDataFile?: string
+  teamDataDirectory?: string
+  accessKeyFile?: string
+  accessKeyDirectory?: string
   updatedAt?: string
   message: string
 }
@@ -592,6 +598,47 @@ function teamApiUrl(serverUrl: string, pathname: string) {
   return `${normalizeTeamServerUrl(serverUrl)}${pathname}`
 }
 
+function teamServerDisplayHost(serverUrl: string) {
+  try {
+    const url = new URL(normalizeTeamServerUrl(serverUrl))
+    return url.host
+  } catch {
+    return normalizeTeamServerUrl(serverUrl)
+  }
+}
+
+function teamServerUrlKey(serverUrl: string) {
+  try {
+    const url = new URL(normalizeTeamServerUrl(serverUrl))
+    return `${url.hostname.toLowerCase()}:${url.port || (url.protocol === 'https:' ? '443' : '80')}`
+  } catch {
+    return normalizeTeamServerUrl(serverUrl).toLowerCase()
+  }
+}
+
+function teamServerHostname(serverUrl: string) {
+  try {
+    return new URL(normalizeTeamServerUrl(serverUrl)).hostname.toLowerCase()
+  } catch {
+    return ''
+  }
+}
+
+function isLocalTeamServerUrl(serverUrl: string, teamServiceInfo: TeamServiceInfo | null) {
+  const targetKey = teamServerUrlKey(serverUrl)
+  const targetHost = teamServerHostname(serverUrl)
+  if (targetHost === 'localhost' || targetHost === '127.0.0.1' || targetHost === '::1' || targetHost === '0.0.0.0') return true
+
+  const localUrls = [
+    teamServiceInfo?.localUrl,
+    teamServiceInfo?.connectionUrl,
+    ...(teamServiceInfo?.urls ?? []),
+    ...(teamServiceInfo?.urlCandidates?.map((candidate) => candidate.url) ?? []),
+  ]
+
+  return localUrls.some((url) => url && teamServerUrlKey(url) === targetKey)
+}
+
 function teamRequestHeaders(accessKey: string, hasBody = false) {
   const headers: Record<string, string> = hasBody ? { 'Content-Type': 'application/json' } : {}
   const cleanAccessKey = accessKey.trim()
@@ -655,6 +702,7 @@ function App() {
   const [teamServiceInfo, setTeamServiceInfo] = useState<TeamServiceInfo | null>(null)
   const [teamServiceBusy, setTeamServiceBusy] = useState(false)
   const [teamServiceMessage, setTeamServiceMessage] = useState('')
+  const [remoteTeamServiceHost, setRemoteTeamServiceHost] = useState('')
   const [showDataModeModal, setShowDataModeModal] = useState(false)
   const [currentAccountId, setCurrentAccountId] = useState(() => loadStoredAccountId())
   const [appProjects, setAppProjects] = useState<Project[]>(() => loadStoredProjects())
@@ -687,6 +735,7 @@ function App() {
   const [loginError, setLoginError] = useState('')
   const [showWelcomeGuide, setShowWelcomeGuide] = useState(false)
   const teamDataRevisionRef = useRef<number | null>(null)
+  const teamServiceInfoRef = useRef<TeamServiceInfo | null>(null)
   const remoteSliceSnapshotsRef = useRef<Partial<Record<AppDataSliceKey, string>>>({})
   const rememberRemoteSlices = useCallback((savedData: AppData) => {
     const normalizedTasks = savedData.tasks.map((task) => ({
@@ -705,6 +754,56 @@ function App() {
     }
     teamDataRevisionRef.current = typeof savedData.revision === 'number' ? savedData.revision : null
   }, [])
+  const updateTeamServiceInfoState = useCallback((info: TeamServiceInfo | null) => {
+    teamServiceInfoRef.current = info
+    setTeamServiceInfo(info)
+  }, [])
+
+  const remoteHostForTeamServer = useCallback((info?: TeamServiceInfo | null) => {
+    const localInfo = info === undefined ? teamServiceInfoRef.current : info
+    return isLocalTeamServerUrl(teamServerUrl, localInfo) ? '' : teamServerDisplayHost(teamServerUrl)
+  }, [teamServerUrl])
+
+  const rememberConnectedTeamHost = useCallback((info?: TeamServiceInfo | null) => {
+    setRemoteTeamServiceHost(remoteHostForTeamServer(info))
+  }, [remoteHostForTeamServer])
+
+  const refreshTeamServiceInfo = useCallback(async () => {
+    if (!window.desktopBridge?.getTeamServiceInfo) {
+      updateTeamServiceInfoState({
+        supported: false,
+        platform: 'browser',
+        running: false,
+        localUrl: defaultTeamServerUrl,
+        connectionUrl: defaultTeamServerUrl,
+        urls: [defaultTeamServerUrl],
+        message: '请在 CrewFlow 桌面 App 中开启团队服务',
+      })
+      setTeamServiceMessage('请在 CrewFlow 桌面 App 中开启团队服务')
+      return
+    }
+
+    setTeamServiceBusy(true)
+    try {
+      const info = await window.desktopBridge.getTeamServiceInfo()
+      updateTeamServiceInfoState(info)
+      setTeamServiceMessage(info.message)
+      if (teamConnectionStatus === 'connected') setRemoteTeamServiceHost(remoteHostForTeamServer(info))
+      if (info.accessKey && isLocalTeamServerUrl(teamServerUrl, info)) {
+        setTeamAccessKey(info.accessKey)
+        try {
+          localStorage.setItem(teamAccessKeyStorageKey, info.accessKey)
+        } catch {
+          // Ignore localStorage failures in restricted preview environments.
+        }
+      }
+    } catch (error) {
+      setTeamServiceMessage(error instanceof Error ? error.message : '团队服务状态读取失败')
+    } finally {
+      setTeamServiceBusy(false)
+    }
+  }, [remoteHostForTeamServer, teamConnectionStatus, teamServerUrl, updateTeamServiceInfoState])
+
   const shouldSaveSlice = useCallback(
     (key: AppDataSliceKey, value: unknown) => {
       if (dataMode !== 'team') return true
@@ -745,6 +844,7 @@ function App() {
         try {
           const savedData = await saveTeamAppData(teamServerUrl, teamAccessKey, data, teamDataRevisionRef.current)
           rememberRemoteSlices(savedData)
+          rememberConnectedTeamHost()
           setTeamConnectionStatus('connected')
           setTeamConnectionMessage('团队数据已保存')
           return true
@@ -760,7 +860,7 @@ function App() {
       }
       return window.desktopBridge?.saveAppData?.(data) ?? false
     },
-    [applyAppDataToState, dataMode, rememberRemoteSlices, teamAccessKey, teamServerUrl],
+    [applyAppDataToState, dataMode, rememberConnectedTeamHost, rememberRemoteSlices, teamAccessKey, teamServerUrl],
   )
   const currentAppDataSnapshot = useMemo<AppData>(
     () => ({
@@ -798,6 +898,7 @@ function App() {
 
       if (savedData) applyAppDataToState(savedData)
       if (dataMode === 'team') {
+        rememberConnectedTeamHost()
         setTeamConnectionStatus('connected')
         setTeamConnectionMessage('团队数据已连接')
       }
@@ -816,7 +917,7 @@ function App() {
     return () => {
       canceled = true
     }
-  }, [applyAppDataToState, dataMode, loadCurrentAppData])
+  }, [applyAppDataToState, dataMode, loadCurrentAppData, rememberConnectedTeamHost])
 
   useEffect(() => {
     if (!dataReady) return
@@ -897,6 +998,7 @@ function App() {
         .then((savedData) => {
           if (!savedData) return
           applyAppDataToState(savedData)
+          rememberConnectedTeamHost()
           setTeamConnectionStatus('connected')
           setTeamConnectionMessage('团队数据已同步')
         })
@@ -907,12 +1009,12 @@ function App() {
     }, 2 * 1000)
 
     return () => window.clearInterval(timer)
-  }, [applyAppDataToState, dataMode, dataReady, loadCurrentAppData])
+  }, [applyAppDataToState, dataMode, dataReady, loadCurrentAppData, rememberConnectedTeamHost])
 
   useEffect(() => {
     if (!showDataModeModal) return
     refreshTeamServiceInfo()
-  }, [showDataModeModal])
+  }, [refreshTeamServiceInfo, showDataModeModal])
 
   const activeNavItems = useMemo(() => navItemsForRole(role), [role])
   const currentUser =
@@ -1032,6 +1134,11 @@ function App() {
   const canEditProjectTaskBoard = role === 'controller' || role === 'admin'
   const canEditArchivedProjects = role === 'controller' || role === 'admin'
   const activeStaffMembers = useMemo(() => appStaffMembers.filter(isAssignableStaff), [appStaffMembers])
+  const activeRemoteTeamHost = useMemo(() => {
+    if (remoteTeamServiceHost) return remoteTeamServiceHost
+    if (teamConnectionStatus !== 'connected' || isLocalTeamServerUrl(teamServerUrl, teamServiceInfo)) return ''
+    return teamServerDisplayHost(teamServerUrl)
+  }, [remoteTeamServiceHost, teamConnectionStatus, teamServerUrl, teamServiceInfo])
 
   async function handleLogin() {
     const cleanLoginAccountId = loginAccountId.trim()
@@ -1044,6 +1151,7 @@ function App() {
         if (savedData) {
           latestAccounts = mergeStoredAccounts(savedData.accounts ?? loginAccounts)
           applyAppDataToState(savedData)
+          rememberConnectedTeamHost()
           setTeamConnectionStatus('connected')
           setTeamConnectionMessage('团队账号已同步')
         }
@@ -1107,12 +1215,14 @@ function App() {
       setTeamConnectionMessage('准备连接团队服务')
       return
     }
+    setRemoteTeamServiceHost('')
     setTeamConnectionStatus('idle')
     setTeamConnectionMessage('单人模式使用本机数据')
   }
 
   function updateTeamServerUrl(nextUrl: string) {
     setTeamServerUrl(nextUrl)
+    setRemoteTeamServiceHost('')
     try {
       localStorage.setItem(teamServerUrlStorageKey, nextUrl)
     } catch {
@@ -1137,6 +1247,7 @@ function App() {
       if (!health.ok) throw new Error('团队服务未返回可用状态')
       const savedData = await fetchTeamAppData(teamServerUrl, teamAccessKey)
       applyAppDataToState(savedData)
+      rememberConnectedTeamHost()
       setTeamConnectionStatus('connected')
       setTeamConnectionMessage(`已连接：${health.name ?? 'CrewFlow Server'}`)
       return true
@@ -1157,39 +1268,12 @@ function App() {
       const savedData = await saveTeamAppData(teamServerUrl, teamAccessKey, localData ?? currentAppDataSnapshot, currentTeamData.revision)
       applyAppDataToState(savedData)
       updateDataMode('team')
+      rememberConnectedTeamHost()
       setTeamConnectionStatus('connected')
       setTeamConnectionMessage('单人数据已导入团队库')
     } catch (error) {
       setTeamConnectionStatus('error')
       setTeamConnectionMessage(error instanceof Error ? error.message : '导入团队库失败')
-    }
-  }
-
-  async function refreshTeamServiceInfo() {
-    if (!window.desktopBridge?.getTeamServiceInfo) {
-      setTeamServiceInfo({
-        supported: false,
-        platform: 'browser',
-        running: false,
-        localUrl: defaultTeamServerUrl,
-        connectionUrl: defaultTeamServerUrl,
-        urls: [defaultTeamServerUrl],
-        message: '请在 CrewFlow 桌面 App 中开启团队服务',
-      })
-      setTeamServiceMessage('请在 CrewFlow 桌面 App 中开启团队服务')
-      return
-    }
-
-    setTeamServiceBusy(true)
-    try {
-      const info = await window.desktopBridge.getTeamServiceInfo()
-      setTeamServiceInfo(info)
-      setTeamServiceMessage(info.message)
-      if (info.accessKey) updateTeamAccessKey(info.accessKey)
-    } catch (error) {
-      setTeamServiceMessage(error instanceof Error ? error.message : '团队服务状态读取失败')
-    } finally {
-      setTeamServiceBusy(false)
     }
   }
 
@@ -1200,13 +1284,29 @@ function App() {
     }
 
     setTeamServiceBusy(true)
-    setTeamServiceMessage('正在开启团队服务')
+    setTeamServiceMessage('正在检查团队服务')
     try {
+      const localInfo = await window.desktopBridge.getTeamServiceInfo()
+      updateTeamServiceInfoState(localInfo)
+
+      if (!isLocalTeamServerUrl(teamServerUrl, localInfo)) {
+        const health = await fetchTeamHealth(teamServerUrl).catch(() => null)
+        if (health?.ok) {
+          const remoteHost = teamServerDisplayHost(teamServerUrl)
+          setRemoteTeamServiceHost(remoteHost)
+          setTeamServiceMessage(`团队服务已由 ${remoteHost} 开启，本机不能重复开启。`)
+          setTeamConnectionMessage(`团队服务已由 ${remoteHost} 开启`)
+          return
+        }
+      }
+
+      setTeamServiceMessage('正在开启团队服务')
       const info = await window.desktopBridge.installTeamService()
-      setTeamServiceInfo(info)
+      updateTeamServiceInfoState(info)
       setTeamServiceMessage(info.message)
       if (info.connectionUrl) updateTeamServerUrl(info.connectionUrl)
       if (info.accessKey) updateTeamAccessKey(info.accessKey)
+      setRemoteTeamServiceHost('')
       updateDataMode('team')
       setTeamConnectionStatus(info.running ? 'connected' : 'idle')
       setTeamConnectionMessage(info.running ? `本机团队服务已开启：${info.connectionUrl}` : info.message)
@@ -1227,7 +1327,7 @@ function App() {
     setTeamServiceMessage('正在停止团队服务')
     try {
       const info = await window.desktopBridge.stopTeamService()
-      setTeamServiceInfo(info)
+      updateTeamServiceInfoState(info)
       setTeamServiceMessage(info.message)
     } catch (error) {
       setTeamServiceMessage(error instanceof Error ? error.message : '团队服务停止失败')
@@ -1802,6 +1902,7 @@ function App() {
             teamAccessKey={teamAccessKey}
             teamConnectionStatus={teamConnectionStatus}
             teamConnectionMessage={teamConnectionMessage}
+            activeRemoteTeamHost={activeRemoteTeamHost}
             teamServiceInfo={teamServiceInfo}
             teamServiceBusy={teamServiceBusy}
             teamServiceMessage={teamServiceMessage}
@@ -2096,6 +2197,7 @@ function App() {
           teamAccessKey={teamAccessKey}
           teamConnectionStatus={teamConnectionStatus}
           teamConnectionMessage={teamConnectionMessage}
+          activeRemoteTeamHost={activeRemoteTeamHost}
           teamServiceInfo={teamServiceInfo}
           teamServiceBusy={teamServiceBusy}
           teamServiceMessage={teamServiceMessage}
@@ -2207,6 +2309,7 @@ function DataModeModal({
   teamAccessKey,
   teamConnectionStatus,
   teamConnectionMessage,
+  activeRemoteTeamHost,
   teamServiceInfo,
   teamServiceBusy,
   teamServiceMessage,
@@ -2226,6 +2329,7 @@ function DataModeModal({
   teamAccessKey: string
   teamConnectionStatus: TeamConnectionStatus
   teamConnectionMessage: string
+  activeRemoteTeamHost: string
   teamServiceInfo: TeamServiceInfo | null
   teamServiceBusy: boolean
   teamServiceMessage: string
@@ -2241,15 +2345,36 @@ function DataModeModal({
   onCopyTeamServiceUrl: (url?: string) => void
 }) {
   const hostUrl = teamServiceInfo?.connectionUrl ?? defaultTeamServerUrl
-  const hostStatus = teamServiceInfo?.running ? '运行中' : '未开启'
-  const canManageLocalService = Boolean(teamServiceInfo?.supported)
+  const visibleHostUrl = activeRemoteTeamHost ? normalizeTeamServerUrl(teamServerUrl) : hostUrl
+  const hostStatus = activeRemoteTeamHost ? '已有主机' : teamServiceInfo?.running ? '运行中' : '未开启'
+  const canManageLocalService = Boolean(teamServiceInfo?.supported) && !activeRemoteTeamHost
   const hostCandidates =
     teamServiceInfo?.urlCandidates?.length
       ? teamServiceInfo.urlCandidates
       : hostUrl
         ? [{ url: hostUrl, address: hostUrl, interfaceName: '默认地址', kind: '推荐地址' }]
         : []
-  const alternateHostCandidates = hostCandidates.filter((candidate) => candidate.url !== hostUrl)
+  const alternateHostCandidates = activeRemoteTeamHost ? [] : hostCandidates.filter((candidate) => candidate.url !== hostUrl)
+  const singleDataFile = teamServiceInfo?.singleDataFile ?? ''
+  const singleDataDirectory = teamServiceInfo?.singleDataDirectory ?? ''
+  const teamDataFile = teamServiceInfo?.teamDataFile ?? teamServiceInfo?.dataFile ?? ''
+  const teamDataDirectory = teamServiceInfo?.teamDataDirectory ?? ''
+  const accessKeyFile = teamServiceInfo?.accessKeyFile ?? ''
+  const accessKeyDirectory = teamServiceInfo?.accessKeyDirectory ?? ''
+
+  async function copyPath(value: string) {
+    if (!value) return
+    if (window.desktopBridge?.copyText) {
+      await window.desktopBridge.copyText(value)
+      return
+    }
+    await navigator.clipboard.writeText(value)
+  }
+
+  async function openDirectory(directory: string) {
+    if (!directory) return
+    await window.desktopBridge?.openProjectFolder(directory)
+  }
 
   return (
     <div className="modalBackdrop" role="presentation" onMouseDown={onClose}>
@@ -2279,13 +2404,13 @@ function DataModeModal({
           <div className="teamHostHeader">
             <div>
               <strong>本机作为团队主机</strong>
-              <span>只在常驻电脑操作。开启后，把下面地址发给其他电脑填写。</span>
+              <span>{activeRemoteTeamHost ? `团队服务已由 ${activeRemoteTeamHost} 开启，本机不能重复开启。` : '只在常驻电脑操作。开启后，把下面地址发给其他电脑填写。'}</span>
             </div>
-            <em className={teamServiceInfo?.running ? 'running' : ''}>{hostStatus}</em>
+            <em className={teamServiceInfo?.running || activeRemoteTeamHost ? 'running' : ''}>{hostStatus}</em>
           </div>
           <label className="dataModeField teamHostAddress">
-            <span>其他电脑填写这个地址</span>
-            <input value={hostUrl} readOnly />
+            <span>{activeRemoteTeamHost ? '当前团队主机地址' : '其他电脑填写这个地址'}</span>
+            <input value={visibleHostUrl} readOnly />
           </label>
           {alternateHostCandidates.length > 0 && (
             <div className="teamHostCandidates" aria-label="可用团队服务地址">
@@ -2306,19 +2431,36 @@ function DataModeModal({
           </label>
           <div className="teamHostActions">
             <button type="button" onClick={onInstallTeamService} disabled={teamServiceBusy || !canManageLocalService}>
-              {teamServiceInfo?.running ? '修复/重启服务' : '开启团队服务'}
+              {activeRemoteTeamHost ? '已有团队服务' : teamServiceInfo?.running ? '修复/重启服务' : '开启团队服务'}
             </button>
             <button type="button" onClick={onRefreshTeamService} disabled={teamServiceBusy}>
               刷新状态
             </button>
-            <button type="button" onClick={() => onCopyTeamServiceUrl()} disabled={!hostUrl}>
+            <button type="button" onClick={() => onCopyTeamServiceUrl()} disabled={!hostUrl || Boolean(activeRemoteTeamHost)}>
               复制地址和密钥
             </button>
             <button type="button" onClick={onStopTeamService} disabled={teamServiceBusy || !teamServiceInfo?.running}>
               停止服务
             </button>
           </div>
-          <p className="teamHostMessage">{teamServiceMessage || teamServiceInfo?.message || '打开后会自动显示本机局域网地址。'}</p>
+          <p className="teamHostMessage">
+            {activeRemoteTeamHost ? `已开启电脑：${activeRemoteTeamHost}` : teamServiceMessage || teamServiceInfo?.message || '打开后会自动显示本机局域网地址。'}
+          </p>
+        </section>
+        <section className="dataPathPanel" aria-label="数据文件位置">
+          <div className="dataPathHeader">
+            <strong>数据文件位置</strong>
+            <span>替换 App 不会清空这里的数据。</span>
+          </div>
+          <DataPathRow label="单人模式数据" value={singleDataFile || '桌面 App 中自动显示'} directory={singleDataDirectory} onCopy={copyPath} onOpenDirectory={openDirectory} />
+          {activeRemoteTeamHost ? (
+            <DataPathRow label="团队模式数据" value={`保存在主机：${activeRemoteTeamHost}`} note="请在开启团队服务的电脑查看具体文件路径。" onCopy={copyPath} onOpenDirectory={openDirectory} />
+          ) : (
+            <>
+              <DataPathRow label="团队服务数据" value={teamDataFile || '开启团队服务后自动显示'} directory={teamDataDirectory} onCopy={copyPath} onOpenDirectory={openDirectory} />
+              <DataPathRow label="访问密钥文件" value={accessKeyFile || '开启团队服务后自动生成'} directory={accessKeyDirectory} onCopy={copyPath} onOpenDirectory={openDirectory} />
+            </>
+          )}
         </section>
         <label className="dataModeField">
           <span>团队服务器地址</span>
@@ -2343,6 +2485,40 @@ function DataModeModal({
           </button>
         </footer>
       </section>
+    </div>
+  )
+}
+
+function DataPathRow({
+  label,
+  value,
+  directory = '',
+  note,
+  onCopy,
+  onOpenDirectory,
+}: {
+  label: string
+  value: string
+  directory?: string
+  note?: string
+  onCopy: (value: string) => Promise<void>
+  onOpenDirectory: (directory: string) => Promise<void>
+}) {
+  const canOpenDirectory = Boolean(directory)
+
+  return (
+    <div className="dataPathRow">
+      <div>
+        <span>{label}</span>
+        <strong title={value}>{value}</strong>
+        {note && <em>{note}</em>}
+      </div>
+      <button type="button" onClick={() => onCopy(value)} disabled={!value}>
+        复制
+      </button>
+      <button type="button" onClick={() => onOpenDirectory(directory)} disabled={!canOpenDirectory}>
+        打开
+      </button>
     </div>
   )
 }
