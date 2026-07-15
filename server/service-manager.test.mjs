@@ -4,7 +4,7 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
-import { localTeamServerUrls, readOrCreateAccessKey, serviceAccessKeyPath, serviceRuntime } from './service-manager.mjs'
+import { localTeamServerCandidates, localTeamServerUrls, readOrCreateAccessKey, serviceAccessKeyPath, serviceRuntime } from './service-manager.mjs'
 
 test('service runtime uses packaged app executable when available', () => {
   const runtime = serviceRuntime({
@@ -43,6 +43,31 @@ test('local team server urls prefer non-internal IPv4 addresses', () => {
   })
 
   assert.deepEqual(urls, ['http://192.0.2.10:8787', 'http://198.51.100.12:8787', 'http://127.0.0.1:8787'])
+})
+
+test('local team server urls prefer physical LAN adapters over VPN and virtual adapters', () => {
+  const candidates = localTeamServerCandidates({
+    port: 8787,
+    interfaces: {
+      utun4: [{ address: '100.64.12.9', family: 'IPv4', internal: false }],
+      vmnet8: [{ address: '192.168.64.1', family: 'IPv4', internal: false }],
+      en0: [{ address: '192.168.31.20', family: 'IPv4', internal: false }],
+      en7: [{ address: '10.0.0.22', family: 'IPv4', internal: false }],
+    },
+  })
+
+  assert.deepEqual(
+    candidates.map((candidate) => candidate.url),
+    [
+      'http://192.168.31.20:8787',
+      'http://10.0.0.22:8787',
+      'http://100.64.12.9:8787',
+      'http://192.168.64.1:8787',
+      'http://127.0.0.1:8787',
+    ],
+  )
+  assert.equal(candidates[0].interfaceName, 'en0')
+  assert.equal(candidates[2].kind, 'VPN/虚拟网卡')
 })
 
 test('service access key is created once in the server data directory', async () => {

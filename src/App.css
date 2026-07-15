@@ -3419,6 +3419,47 @@ h1 {
   padding: 0;
 }
 
+.teamHostCandidates {
+  display: grid;
+  gap: 8px;
+}
+
+.teamHostCandidates button {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 10px;
+  min-height: 38px;
+  border: 1px solid rgba(112, 225, 231, 0.16);
+  border-radius: 12px;
+  background: rgba(6, 12, 22, 0.28);
+  color: rgba(244, 248, 255, 0.86);
+  cursor: pointer;
+  padding: 8px 10px;
+  text-align: left;
+}
+
+.teamHostCandidates strong {
+  color: #7ee6ef;
+  font-size: 12px;
+}
+
+.teamHostCandidates span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.teamHostCandidates em {
+  color: rgba(210, 222, 235, 0.56);
+  font-size: 12px;
+  font-style: normal;
+  white-space: nowrap;
+}
+
 .teamHostActions {
   display: flex;
   flex-wrap: wrap;

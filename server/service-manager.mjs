@@ -78,18 +78,101 @@ export function serviceRuntime({
   }
 }
 
-export function localTeamServerUrls({ interfaces = os.networkInterfaces(), port: serverPort = port } = {}) {
-  const urls = []
+function ipv4Parts(address) {
+  const parts = String(address).split('.').map((part) => Number(part))
+  if (parts.length !== 4 || parts.some((part) => !Number.isInteger(part) || part < 0 || part > 255)) return null
+  return parts
+}
 
-  Object.values(interfaces).forEach((items = []) => {
-    items.forEach((item) => {
+function isPrivateLanIPv4(address) {
+  const parts = ipv4Parts(address)
+  if (!parts) return false
+  const [first, second] = parts
+  return first === 10 || (first === 172 && second >= 16 && second <= 31) || (first === 192 && second === 168)
+}
+
+function isCarrierGradeNatIPv4(address) {
+  const parts = ipv4Parts(address)
+  if (!parts) return false
+  const [first, second] = parts
+  return first === 100 && second >= 64 && second <= 127
+}
+
+function isLinkLocalIPv4(address) {
+  const parts = ipv4Parts(address)
+  if (!parts) return false
+  return parts[0] === 169 && parts[1] === 254
+}
+
+function networkAdapterGroup(interfaceName, address) {
+  const name = String(interfaceName).toLowerCase()
+
+  if (/^(en|eth|wlan|wi-fi|wifi|ethernet)/.test(name)) return 0
+  if (/^(utun|tun|tap|ppp|ipsec|wg|tailscale|zt|zerotier)/.test(name) || isCarrierGradeNatIPv4(address)) return 2
+  if (/^(vmnet|vboxnet|docker|bridge|br-|awdl|llw)/.test(name)) return 3
+  if (isPrivateLanIPv4(address)) return 1
+  return 4
+}
+
+function describeNetworkAdapter(interfaceName, address) {
+  const group = networkAdapterGroup(interfaceName, address)
+  if (group === 0 || group === 1) return '局域网网卡'
+  if (group === 2 || group === 3) return 'VPN/虚拟网卡'
+  return '其他网卡'
+}
+
+function networkAdapterPriority(interfaceName, address, index) {
+  const group = networkAdapterGroup(interfaceName, address)
+  let priority = group * 1000 + index
+
+  if (isLinkLocalIPv4(address)) priority += 300
+  if (isPrivateLanIPv4(address)) priority -= 80
+  if (String(address).startsWith('192.168.')) priority -= 20
+  if (/^(en0|eth0|wlan0)$/i.test(interfaceName)) priority -= 10
+
+  return priority
+}
+
+export function localTeamServerCandidates({ interfaces = os.networkInterfaces(), port: serverPort = port } = {}) {
+  const candidates = []
+
+  Object.entries(interfaces).forEach(([interfaceName, items = []]) => {
+    items.forEach((item, index) => {
       if (item.family !== 'IPv4' || item.internal || !item.address) return
-      urls.push(`http://${item.address}:${serverPort}`)
+      candidates.push({
+        url: `http://${item.address}:${serverPort}`,
+        address: item.address,
+        interfaceName,
+        kind: describeNetworkAdapter(interfaceName, item.address),
+        priority: networkAdapterPriority(interfaceName, item.address, index),
+      })
     })
   })
 
-  urls.push(`http://127.0.0.1:${serverPort}`)
-  return Array.from(new Set(urls))
+  candidates.sort((first, second) => {
+    if (first.priority !== second.priority) return first.priority - second.priority
+    if (first.interfaceName !== second.interfaceName) return first.interfaceName.localeCompare(second.interfaceName)
+    return first.address.localeCompare(second.address)
+  })
+
+  candidates.push({
+    url: `http://127.0.0.1:${serverPort}`,
+    address: '127.0.0.1',
+    interfaceName: 'localhost',
+    kind: '本机测试',
+    priority: 9999,
+  })
+
+  const seenUrls = new Set()
+  return candidates.filter((candidate) => {
+    if (seenUrls.has(candidate.url)) return false
+    seenUrls.add(candidate.url)
+    return true
+  })
+}
+
+export function localTeamServerUrls(options = {}) {
+  return localTeamServerCandidates(options).map((candidate) => candidate.url)
 }
 
 function commandWorkingDirectory(runtime) {

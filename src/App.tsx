@@ -80,6 +80,12 @@ type TeamServiceInfo = {
   localUrl: string
   connectionUrl: string
   urls: string[]
+  urlCandidates?: {
+    url: string
+    address: string
+    interfaceName: string
+    kind: string
+  }[]
   accessKey?: string
   dataFile?: string
   updatedAt?: string
@@ -525,7 +531,7 @@ const financeNavItems: Array<{ id: Section; label: string; icon: typeof LayoutDa
 ]
 
 function navItemsForRole(role: Role) {
-  if (role === 'controller') return navItems.filter((item) => item.id !== 'tasks')
+  if (role === 'controller') return navItems.map((item) => (item.id === 'tasks' ? { ...item, label: '任务面板' } : item))
   if (role === 'finance') return financeNavItems
   if (role === 'manager') return navItems.filter((item) => item.id !== 'finance' && item.id !== 'team' && item.id !== 'people')
   if (role === 'member') {
@@ -1230,8 +1236,8 @@ function App() {
     }
   }
 
-  async function copyLocalTeamServiceUrl() {
-    const url = teamServiceInfo?.connectionUrl || teamServerUrl
+  async function copyLocalTeamServiceUrl(urlOverride?: string) {
+    const url = urlOverride || teamServiceInfo?.connectionUrl || teamServerUrl
     if (!url) return
     const text = teamServiceInfo?.accessKey ? `团队服务器地址：${url}\n访问密钥：${teamServiceInfo.accessKey}` : url
 
@@ -1879,7 +1885,7 @@ function App() {
         <header className="topbar">
           <div>
             <div className="eyebrow">{formatFullDate(now)}</div>
-            <h1>{titleForSection(section)}</h1>
+            <h1>{titleForSection(section, role)}</h1>
           </div>
           <div className="topActions">
             <div className="search">
@@ -1966,7 +1972,7 @@ function App() {
             onOpenHandoff={setHandoffProject}
           />
         )}
-        {section === 'tasks' && <Tasks tasks={visibleTasks} onUpdateTaskStatus={handleUpdateTaskStatus} />}
+        {section === 'tasks' && <Tasks tasks={visibleTasks} mode={role === 'controller' ? 'global' : 'personal'} onUpdateTaskStatus={role === 'controller' ? undefined : handleUpdateTaskStatus} />}
         {section === 'calendar' && (
           <CalendarView
             projects={activeProjects}
@@ -2232,11 +2238,17 @@ function DataModeModal({
   onRefreshTeamService: () => void
   onInstallTeamService: () => void
   onStopTeamService: () => void
-  onCopyTeamServiceUrl: () => void
+  onCopyTeamServiceUrl: (url?: string) => void
 }) {
   const hostUrl = teamServiceInfo?.connectionUrl ?? defaultTeamServerUrl
   const hostStatus = teamServiceInfo?.running ? '运行中' : '未开启'
   const canManageLocalService = Boolean(teamServiceInfo?.supported)
+  const hostCandidates =
+    teamServiceInfo?.urlCandidates?.length
+      ? teamServiceInfo.urlCandidates
+      : hostUrl
+        ? [{ url: hostUrl, address: hostUrl, interfaceName: '默认地址', kind: '推荐地址' }]
+        : []
 
   return (
     <div className="modalBackdrop" role="presentation" onMouseDown={onClose}>
@@ -2274,6 +2286,19 @@ function DataModeModal({
             <span>其他电脑填写这个地址</span>
             <input value={hostUrl} readOnly />
           </label>
+          {hostCandidates.length > 1 && (
+            <div className="teamHostCandidates" aria-label="可用团队服务地址">
+              {hostCandidates.map((candidate, index) => (
+                <button key={`${candidate.interfaceName}-${candidate.url}`} type="button" onClick={() => onCopyTeamServiceUrl(candidate.url)}>
+                  <strong>{index === 0 ? '推荐' : '候选'}</strong>
+                  <span>{candidate.url}</span>
+                  <em>
+                    {candidate.interfaceName} · {candidate.kind}
+                  </em>
+                </button>
+              ))}
+            </div>
+          )}
           <label className="dataModeField teamHostAddress">
             <span>其他电脑填写这个访问密钥</span>
             <input value={teamServiceInfo?.accessKey ?? ''} readOnly placeholder="开启团队服务后自动生成" />
@@ -2285,7 +2310,7 @@ function DataModeModal({
             <button type="button" onClick={onRefreshTeamService} disabled={teamServiceBusy}>
               刷新状态
             </button>
-            <button type="button" onClick={onCopyTeamServiceUrl} disabled={!hostUrl}>
+            <button type="button" onClick={() => onCopyTeamServiceUrl()} disabled={!hostUrl}>
               复制地址和密钥
             </button>
             <button type="button" onClick={onStopTeamService} disabled={teamServiceBusy || !teamServiceInfo?.running}>
@@ -2704,7 +2729,8 @@ function ControllerAccountModal({
   )
 }
 
-function titleForSection(section: Section) {
+function titleForSection(section: Section, role?: Role) {
+  if (section === 'tasks' && role === 'controller') return '任务面板'
   const item = navItems.find((nav) => nav.id === section)
   return item?.label ?? '首页控制台'
 }
@@ -3980,20 +4006,30 @@ function suggestedAssigneeForWorkType(workType: string, staffMembers: StaffMembe
   return byTag?.name ?? staffMembers[0]?.name ?? ''
 }
 
-function Tasks({ tasks, onUpdateTaskStatus }: { tasks: Task[]; onUpdateTaskStatus: (taskId: string, status: TaskStatus) => void }) {
+function Tasks({
+  tasks,
+  mode = 'personal',
+  onUpdateTaskStatus,
+}: {
+  tasks: Task[]
+  mode?: 'personal' | 'global'
+  onUpdateTaskStatus?: (taskId: string, status: TaskStatus) => void
+}) {
+  const isGlobalMode = mode === 'global'
+
   return (
     <div className="contentGrid">
       <section className="panel span12">
         <div className="panelHeader">
           <div>
-            <h2>我的任务</h2>
-            <p>成员只需要更新未开始、制作中、修改中、已完成和备注</p>
+            <h2>{isGlobalMode ? '全局任务面板' : '我的任务'}</h2>
+            <p>{isGlobalMode ? '查看团队成员当前任务、状态和截止时间' : '成员只需要更新未开始、制作中、修改中、已完成和备注'}</p>
           </div>
         </div>
         <div className="taskSource">
-          <span>任务来源</span>
-          <strong>项目经理在项目中心指派后，这里显示个人任务</strong>
-          <em>执行成员只看与自己相关的项目节点</em>
+          <span>{isGlobalMode ? '任务范围' : '任务来源'}</span>
+          <strong>{isGlobalMode ? '总控查看所有项目中的执行任务' : '项目经理在项目中心指派后，这里显示个人任务'}</strong>
+          <em>{isGlobalMode ? '用于掌握大家正在做什么，不参与任务状态更新' : '执行成员只看与自己相关的项目节点'}</em>
         </div>
         <TaskRows tasks={tasks} large onUpdateTaskStatus={onUpdateTaskStatus} />
       </section>

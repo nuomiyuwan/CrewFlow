@@ -1,6 +1,5 @@
 const { app, BrowserWindow, clipboard, dialog, ipcMain, shell } = require('electron')
 const fs = require('fs')
-const os = require('os')
 const path = require('path')
 const { pathToFileURL } = require('url')
 
@@ -54,20 +53,6 @@ async function startTeamServerMode() {
   startCrewFlowServer()
 }
 
-function localTeamServerUrls(port = process.env.CREWFLOW_PORT || '8787') {
-  const urls = []
-
-  Object.values(os.networkInterfaces()).forEach((items = []) => {
-    items.forEach((item) => {
-      if (item.family !== 'IPv4' || item.internal || !item.address) return
-      urls.push(`http://${item.address}:${port}`)
-    })
-  })
-
-  urls.push(`http://127.0.0.1:${port}`)
-  return Array.from(new Set(urls))
-}
-
 async function fetchLocalTeamHealth() {
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), 1200)
@@ -86,9 +71,10 @@ async function fetchLocalTeamHealth() {
 }
 
 async function getTeamServiceInfo(message = '') {
-  const { readOrCreateAccessKey } = await import(serverModuleUrl('service-manager.mjs'))
+  const { localTeamServerCandidates, readOrCreateAccessKey } = await import(serverModuleUrl('service-manager.mjs'))
   const accessKey = await readOrCreateAccessKey()
-  const urls = localTeamServerUrls()
+  const urlCandidates = localTeamServerCandidates()
+  const urls = urlCandidates.map((candidate) => candidate.url)
   const health = await fetchLocalTeamHealth()
   const running = Boolean(health?.ok)
 
@@ -99,6 +85,7 @@ async function getTeamServiceInfo(message = '') {
     localUrl: `http://127.0.0.1:${process.env.CREWFLOW_PORT || '8787'}`,
     connectionUrl: urls[0],
     urls,
+    urlCandidates,
     accessKey,
     dataFile: health?.dataFile,
     updatedAt: health?.updatedAt,
