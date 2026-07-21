@@ -38,6 +38,16 @@ Password: 123456
 
 Change this account after first login.
 
+## Downloads
+
+Download the latest desktop packages from the [GitHub Releases page](https://github.com/nuomiyuwan/CrewFlow/releases).
+
+- macOS Apple Silicon (M1, M2, M3, M4): `macOS-arm64`
+- macOS Intel: `macOS-x64`
+- Windows 64-bit: `Windows-x64`
+
+On macOS, replace the previous `CrewFlow.app` with the new version. The app data is stored outside the app bundle, so normal updates do not remove local or team-service data.
+
 ## Data Modes
 
 ### Single-User Mode
@@ -100,10 +110,22 @@ npm run build
 
 ## Packaging
 
-Build the macOS unpacked app:
+Build the macOS Apple Silicon unpacked app:
 
 ```bash
 npm run package:mac
+```
+
+Build an Intel Mac version:
+
+```bash
+npm run package:mac:x64
+```
+
+Build a universal Mac version:
+
+```bash
+npm run package:mac:universal
 ```
 
 Build the Windows unpacked app:
@@ -120,7 +142,9 @@ npm run package:all
 
 Output paths:
 
-- `release/mac/CrewFlow.app`
+- `release/mac-arm64/CrewFlow.app`
+- `release/mac/CrewFlow.app` (Intel)
+- `release/mac-universal/CrewFlow.app`
 - `release/win-unpacked/CrewFlow.exe`
 
 ## License

@@ -20,7 +20,10 @@
     "build": "tsc -b && vite build",
     "lint": "oxlint",
     "preview": "vite preview",
-    "package:mac": "npm run build && electron-builder --mac --dir",
+    "package:mac": "npm run package:mac:arm64",
+    "package:mac:arm64": "npm run build && electron-builder --mac --arm64 --dir",
+    "package:mac:x64": "npm run build && electron-builder --mac --x64 --dir",
+    "package:mac:universal": "npm run build && electron-builder --mac --universal --dir",
     "package:win": "npm run build && electron-builder --win --x64 --dir",
     "package:all": "npm run package:mac && npm run package:win"
   },
