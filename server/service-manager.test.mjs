@@ -51,7 +51,7 @@ test('local team server urls prefer physical LAN adapters over VPN and virtual a
     interfaces: {
       utun4: [{ address: '100.64.12.9', family: 'IPv4', internal: false }],
       vmnet8: [{ address: '192.168.64.1', family: 'IPv4', internal: false }],
-      en0: [{ address: '192.168.31.20', family: 'IPv4', internal: false }],
+      en0: [{ address: '192.168.50.20', family: 'IPv4', internal: false }],
       en7: [{ address: '10.0.0.22', family: 'IPv4', internal: false }],
     },
   })
@@ -59,7 +59,7 @@ test('local team server urls prefer physical LAN adapters over VPN and virtual a
   assert.deepEqual(
     candidates.map((candidate) => candidate.url),
     [
-      'http://192.168.31.20:8787',
+      'http://192.168.50.20:8787',
       'http://10.0.0.22:8787',
       'http://100.64.12.9:8787',
       'http://192.168.64.1:8787',

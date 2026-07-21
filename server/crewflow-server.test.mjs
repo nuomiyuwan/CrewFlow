@@ -135,8 +135,8 @@ test('server rejects stale app data writes', async (t) => {
 
 test('default server data directory follows host platform conventions', () => {
   assert.equal(
-    defaultServerDataDir({ platform: 'darwin', homeDir: '/Users/apple', env: {} }),
-    '/Users/apple/Library/Application Support/CrewFlow Server',
+    defaultServerDataDir({ platform: 'darwin', homeDir: '/Users/example', env: {} }),
+    '/Users/example/Library/Application Support/CrewFlow Server',
   )
   assert.equal(
     defaultServerDataDir({ platform: 'win32', homeDir: 'C:\\Users\\apple', env: { APPDATA: 'C:\\Users\\apple\\AppData\\Roaming' } }),

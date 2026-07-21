@@ -2,13 +2,13 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   AlertTriangle,
   CalendarDays,
-  Camera,
   CheckCircle2,
   ChevronLeft,
   ChevronRight,
   Clock3,
   CloudSun,
   Copy,
+  Download,
   DollarSign,
   Filter,
   FolderKanban,
@@ -20,6 +20,7 @@ import {
   Archive,
   Search,
   Send,
+  RefreshCw,
   Users,
   X,
 } from 'lucide-react'
@@ -37,6 +38,7 @@ type Section =
   | 'finance'
 
 type ProjectStatus = 'normal' | 'risk' | 'late' | 'waiting'
+type ProjectHealthStatus = Exclude<ProjectStatus, 'late'>
 type WorkStatus = string
 type TaskStatus = '未开始' | '制作中' | '修改中' | '已完成'
 type AssignmentMode = 'internal' | 'external'
@@ -51,6 +53,14 @@ type WelcomeGuideContent = {
   }>
   note?: string
 }
+
+type UpdateRelease = {
+  version: string
+  url: string
+  notes: string
+}
+
+type UpdateCheckStatus = 'idle' | 'checking' | 'available' | 'up-to-date' | 'error'
 
 type Account = {
   id: string
@@ -130,7 +140,8 @@ type Project = {
   nextMilestone: string
   due: string
   progress: number
-  status: ProjectStatus
+  status: ProjectHealthStatus
+  healthStatusExplicit?: boolean
   workStatus: WorkStatus
   owner: string
   path: string
@@ -360,6 +371,10 @@ const teamServerUrlStorageKey = 'crewflow-team-server-url'
 const teamAccessKeyStorageKey = 'crewflow-team-access-key'
 const workflowOptionsStorageKey = 'crewflow-workflow-options'
 const defaultTeamServerUrl = 'http://127.0.0.1:8787'
+const appVersion = import.meta.env.VITE_APP_VERSION || '0.0.0'
+const crewFlowLatestReleaseUrl = 'https://api.github.com/repos/nuomiyuwan/CrewFlow/releases/latest'
+const updateCheckCacheKey = 'crewflow-update-check-cache'
+const updateCheckIntervalMs = 6 * 60 * 60 * 1000
 const legacyLocalStorageKeys = [
   'shby-session-account',
   'shby-project-data-version',
@@ -518,6 +533,12 @@ const statusTone: Record<ProjectStatus, string> = {
   waiting: 'wait',
 }
 
+const projectHealthOptions: Array<{ value: ProjectHealthStatus; label: string }> = [
+  { value: 'normal', label: '正常' },
+  { value: 'waiting', label: '等反馈' },
+  { value: 'risk', label: '有风险' },
+]
+
 const navItems: Array<{ id: Section; label: string; icon: typeof LayoutDashboard }> = [
   { id: 'dashboard', label: '首页控制台', icon: LayoutDashboard },
   { id: 'projects', label: '项目中心', icon: FolderKanban },
@@ -646,6 +667,70 @@ function teamRequestHeaders(accessKey: string, hasBody = false) {
   return headers
 }
 
+function versionParts(version: string) {
+  return version
+    .trim()
+    .replace(/^v/i, '')
+    .split('.')
+    .map((part) => Number.parseInt(part, 10) || 0)
+}
+
+function isNewerVersion(candidate: string, current: string) {
+  const candidateParts = versionParts(candidate)
+  const currentParts = versionParts(current)
+  const length = Math.max(candidateParts.length, currentParts.length)
+
+  for (let index = 0; index < length; index += 1) {
+    const difference = (candidateParts[index] ?? 0) - (currentParts[index] ?? 0)
+    if (difference !== 0) return difference > 0
+  }
+
+  return false
+}
+
+function readCachedUpdateRelease() {
+  try {
+    const raw = localStorage.getItem(updateCheckCacheKey)
+    if (!raw) return null
+
+    const cached = JSON.parse(raw) as { checkedAt?: number; release?: UpdateRelease }
+    const checkedAt = cached.checkedAt
+    if (typeof checkedAt !== 'number' || !Number.isFinite(checkedAt) || !cached.release?.version || !cached.release.url) return null
+
+    return {
+      checkedAt,
+      release: cached.release,
+    }
+  } catch {
+    return null
+  }
+}
+
+function cacheUpdateRelease(release: UpdateRelease) {
+  try {
+    localStorage.setItem(updateCheckCacheKey, JSON.stringify({ checkedAt: Date.now(), release }))
+  } catch {
+    // Ignore localStorage failures in restricted preview environments.
+  }
+}
+
+async function fetchLatestCrewFlowRelease() {
+  const response = await fetch(crewFlowLatestReleaseUrl, {
+    headers: { Accept: 'application/vnd.github+json' },
+  })
+  if (!response.ok) throw new Error(`版本检查失败：${response.status}`)
+
+  const release = (await response.json()) as { tag_name?: string; html_url?: string; body?: string }
+  const version = release.tag_name?.replace(/^v/i, '').trim() ?? ''
+  if (!version || !release.html_url) throw new Error('版本检查失败：未找到正式版')
+
+  return {
+    version,
+    url: release.html_url,
+    notes: release.body?.trim() ?? '',
+  } satisfies UpdateRelease
+}
+
 class TeamDataConflictError extends Error {
   currentData?: AppData
 
@@ -734,8 +819,14 @@ function App() {
   const [loginPassword, setLoginPassword] = useState('')
   const [loginError, setLoginError] = useState('')
   const [showWelcomeGuide, setShowWelcomeGuide] = useState(false)
+  const [updateCheckStatus, setUpdateCheckStatus] = useState<UpdateCheckStatus>('idle')
+  const [availableUpdate, setAvailableUpdate] = useState<UpdateRelease | null>(null)
+  const [showUpdateNotice, setShowUpdateNotice] = useState(false)
   const teamDataRevisionRef = useRef<number | null>(null)
+  const teamSaveQueueRef = useRef<Promise<void>>(Promise.resolve())
+  const teamSavePendingRef = useRef(0)
   const teamServiceInfoRef = useRef<TeamServiceInfo | null>(null)
+  const updateCheckPendingRef = useRef(false)
   const remoteSliceSnapshotsRef = useRef<Partial<Record<AppDataSliceKey, string>>>({})
   const rememberRemoteSlices = useCallback((savedData: AppData) => {
     const normalizedTasks = savedData.tasks.map((task) => ({
@@ -757,6 +848,43 @@ function App() {
   const updateTeamServiceInfoState = useCallback((info: TeamServiceInfo | null) => {
     teamServiceInfoRef.current = info
     setTeamServiceInfo(info)
+  }, [])
+
+  const checkForUpdates = useCallback(async (force = false) => {
+    if (updateCheckPendingRef.current) return
+
+    const cached = readCachedUpdateRelease()
+    if (!force && cached && Date.now() - cached.checkedAt < updateCheckIntervalMs) {
+      if (isNewerVersion(cached.release.version, appVersion)) {
+        setAvailableUpdate(cached.release)
+        setUpdateCheckStatus('available')
+        setShowUpdateNotice(true)
+      } else {
+        setAvailableUpdate(null)
+        setUpdateCheckStatus('up-to-date')
+      }
+      return
+    }
+
+    updateCheckPendingRef.current = true
+    setUpdateCheckStatus('checking')
+    try {
+      const release = await fetchLatestCrewFlowRelease()
+      cacheUpdateRelease(release)
+
+      if (isNewerVersion(release.version, appVersion)) {
+        setAvailableUpdate(release)
+        setUpdateCheckStatus('available')
+        setShowUpdateNotice(true)
+      } else {
+        setAvailableUpdate(null)
+        setUpdateCheckStatus('up-to-date')
+      }
+    } catch {
+      setUpdateCheckStatus('error')
+    } finally {
+      updateCheckPendingRef.current = false
+    }
   }, [])
 
   const remoteHostForTeamServer = useCallback((info?: TeamServiceInfo | null) => {
@@ -814,14 +942,17 @@ function App() {
   const applyAppDataToState = useCallback(
     (savedData: AppData) => {
       rememberRemoteSlices(savedData)
-      setAppProjects(savedData.projects.map(normalizeProject))
+      const normalizedProjects = savedData.projects.map(normalizeProject)
+      const calendarItems = ensureProjectCalendarItems(normalizedProjects, savedData.calendarItems)
+
+      setAppProjects(normalizedProjects)
       setAppTasks(
         savedData.tasks.map((task) => ({
           ...task,
           status: normalizeTaskStatus(task.status),
         })),
       )
-      setAppCalendarItems(savedData.calendarItems)
+      setAppCalendarItems(calendarItems)
       setAppFinanceRecords(savedData.financeRecords.map(normalizeFinanceRecord))
       setAppStaffMembers((savedData.staffMembers ?? []).map(normalizeStaffMember))
       setAppAccounts(mergeStoredAccounts(savedData.accounts ?? loginAccounts))
@@ -841,22 +972,38 @@ function App() {
   const saveCurrentAppData = useCallback<AppDataSaver>(
     async (data) => {
       if (dataMode === 'team') {
-        try {
-          const savedData = await saveTeamAppData(teamServerUrl, teamAccessKey, data, teamDataRevisionRef.current)
-          rememberRemoteSlices(savedData)
-          rememberConnectedTeamHost()
-          setTeamConnectionStatus('connected')
-          setTeamConnectionMessage('团队数据已保存')
-          return true
-        } catch (error) {
-          if (error instanceof TeamDataConflictError && error.currentData) {
-            applyAppDataToState(error.currentData)
-            setTeamConnectionStatus('error')
-            setTeamConnectionMessage('团队数据已被其他电脑更新，已重新同步，请再操作一次。')
-            return false
+        teamSavePendingRef.current += 1
+
+        const saveTask = async () => {
+          try {
+            // Effects can update several data slices in one user action. Serialize them so every
+            // request uses the revision returned by the preceding local save.
+            const savedData = await saveTeamAppData(teamServerUrl, teamAccessKey, data, teamDataRevisionRef.current)
+            rememberRemoteSlices(savedData)
+            rememberConnectedTeamHost()
+            setTeamConnectionStatus('connected')
+            setTeamConnectionMessage('团队数据已保存')
+            return true
+          } catch (error) {
+            if (error instanceof TeamDataConflictError && error.currentData) {
+              applyAppDataToState(error.currentData)
+              setTeamConnectionStatus('error')
+              setTeamConnectionMessage('团队数据已被其他电脑更新，已重新同步，请再操作一次。')
+              return false
+            }
+            throw error
           }
-          throw error
         }
+
+        const queuedSave = teamSaveQueueRef.current.then(saveTask, saveTask)
+        teamSaveQueueRef.current = queuedSave.then(
+          () => undefined,
+          () => undefined,
+        )
+
+        return queuedSave.finally(() => {
+          teamSavePendingRef.current = Math.max(0, teamSavePendingRef.current - 1)
+        })
       }
       return window.desktopBridge?.saveAppData?.(data) ?? false
     },
@@ -881,6 +1028,11 @@ function App() {
   useEffect(() => {
     clearLegacyLocalStorage()
   }, [])
+
+  useEffect(() => {
+    if (!currentAccount?.id) return
+    void checkForUpdates()
+  }, [checkForUpdates, currentAccount?.id])
 
   useEffect(() => {
     const timer = window.setInterval(() => setNow(new Date()), 30 * 1000)
@@ -994,6 +1146,8 @@ function App() {
     if (dataMode !== 'team' || !dataReady) return
 
     const timer = window.setInterval(() => {
+      if (teamSavePendingRef.current > 0) return
+
       loadCurrentAppData()
         .then((savedData) => {
           if (!savedData) return
@@ -1100,8 +1254,8 @@ function App() {
     return matchedIds
   }, [roleVisibleCalendarItems, roleVisibleProjects, roleVisibleTasks, searchQuery])
   const filteredProjects = useMemo(
-    () => filterProjects(roleVisibleProjects, searchQuery, filterStatus, filterType, searchMatchedProjectIds),
-    [filterStatus, filterType, roleVisibleProjects, searchMatchedProjectIds, searchQuery],
+    () => filterProjects(roleVisibleProjects, searchQuery, filterStatus, filterType, searchMatchedProjectIds, now),
+    [filterStatus, filterType, now, roleVisibleProjects, searchMatchedProjectIds, searchQuery],
   )
   const activeProjects = useMemo(() => filteredProjects.filter((project) => !isArchivedProject(project)), [filteredProjects])
   const archivedProjects = useMemo(() => filteredProjects.filter(isArchivedProject), [filteredProjects])
@@ -1128,6 +1282,10 @@ function App() {
   const currentAccountTitle = accountDisplayTitle(currentAccount, appStaffMembers)
   const riskCount = activeProjects.filter(isRiskProject).length
   const waitingCount = activeProjects.filter(isWaitingProject).length
+  const pendingSettlementCount = activeProjects.filter((project) => {
+    const record = appFinanceRecords.find((item) => item.projectId === project.id)
+    return Boolean(record && record.contractAmount > 0 && record.clientSettlementStatus !== '已结算' && record.receivedAmount < record.contractAmount)
+  }).length
   const canAccessProjects = activeNavItems.some((item) => item.id === 'projects')
   const canCreateProject = canRoleCreateProject(role)
   const canManageWorkflowOptions = role === 'controller' || role === 'admin'
@@ -1499,6 +1657,7 @@ function App() {
       due: payload.deliveryDate,
       progress: 0,
       status: 'normal',
+      healthStatusExplicit: true,
       workStatus: initialStatus,
       owner: payload.manager,
       path: payload.path,
@@ -1579,6 +1738,7 @@ function App() {
               workStatus,
               due: deliveryDate,
               nextMilestone,
+              calendarTitle: milestoneTitle,
               progress: workStatus === '未开始' ? 0 : Math.max(item.progress, 12),
               owner: nextTasks[0]?.assignee ?? item.manager,
             }
@@ -1746,6 +1906,11 @@ function App() {
   function handleDeleteCalendarPlan(itemKey: string) {
     const currentItem = appCalendarItems.find((item) => calendarItemKey(item) === itemKey)
     if (!currentItem || !canEditCalendarProject(currentItem.projectId)) return
+    const projectPlanCount = appCalendarItems.filter((item) => item.projectId === currentItem.projectId).length
+    if (projectPlanCount <= 1) {
+      window.alert('每个项目至少需要保留一个交付节点；可以编辑日期和名称，但不能删除最后一条。')
+      return
+    }
     setAppCalendarItems((current) => current.filter((item) => calendarItemKey(item) !== itemKey))
   }
 
@@ -1856,6 +2021,7 @@ function App() {
                 ...project,
                 workStatus: '暂停',
                 status: 'waiting',
+                healthStatusExplicit: true,
               }
             : project,
         ),
@@ -1930,7 +2096,28 @@ function App() {
             <img src="./app-icon.png" alt="" />
           </div>
           <div>
-            <strong>CrewFlow</strong>
+            <div className="brandTitleRow">
+              <strong>CrewFlow</strong>
+              <BrandVersionStatus
+                version={appVersion}
+                release={availableUpdate}
+                status={updateCheckStatus}
+                open={showUpdateNotice}
+                onToggle={() => {
+                  if (availableUpdate) {
+                    setShowUpdateNotice((current) => !current)
+                    return
+                  }
+                  void checkForUpdates(true)
+                }}
+                onClose={() => setShowUpdateNotice(false)}
+                onOpenRelease={() => {
+                  if (!availableUpdate) return
+                  setShowUpdateNotice(false)
+                  window.open(availableUpdate.url, '_blank', 'noopener,noreferrer')
+                }}
+              />
+            </div>
             <span>项目 · 交付 · 素材 · 团队</span>
           </div>
         </div>
@@ -1974,12 +2161,14 @@ function App() {
           })}
         </nav>
 
-        <DataModeStatus
-          dataMode={dataMode}
-          teamConnectionStatus={teamConnectionStatus}
-          teamConnectionMessage={teamConnectionMessage}
-          onOpen={() => setShowDataModeModal(true)}
-        />
+        <div className="sidebarFooter">
+          <DataModeStatus
+            dataMode={dataMode}
+            teamConnectionStatus={teamConnectionStatus}
+            teamConnectionMessage={teamConnectionMessage}
+            onOpen={() => setShowDataModeModal(true)}
+          />
+        </div>
       </aside>
 
       <main className="workspace">
@@ -2044,6 +2233,7 @@ function App() {
           <Dashboard
             riskCount={riskCount}
             waitingCount={waitingCount}
+            pendingSettlementCount={pendingSettlementCount}
             visibleProjects={activeProjects}
             visibleTasks={visibleTasks}
             calendarItems={visibleCalendarItems}
@@ -2300,6 +2490,69 @@ function DataModeStatus({
         <span>{dataMode === 'team' ? connectionStatusText(teamConnectionStatus, teamConnectionMessage) : '数据只保存在本机'}</span>
       </div>
     </button>
+  )
+}
+
+function updateStatusText(status: UpdateCheckStatus, availableVersion?: string) {
+  if (status === 'checking') return '正在检查更新'
+  if (status === 'available') return availableVersion ? `有新版本 v${availableVersion}` : '有新版本'
+  if (status === 'up-to-date') return '当前已是最新'
+  if (status === 'error') return '点击重新检查'
+  return '检查更新'
+}
+
+function BrandVersionStatus({
+  version,
+  release,
+  status,
+  open,
+  onToggle,
+  onClose,
+  onOpenRelease,
+}: {
+  version: string
+  release: UpdateRelease | null
+  status: UpdateCheckStatus
+  open: boolean
+  onToggle: () => void
+  onClose: () => void
+  onOpenRelease: () => void
+}) {
+  return (
+    <div className="brandVersionWrap">
+      <button
+        className={`brandVersion ${status}`}
+        type="button"
+        onClick={onToggle}
+        disabled={status === 'checking'}
+        title={updateStatusText(status, release?.version)}
+        aria-expanded={open && Boolean(release)}
+      >
+        {status === 'checking' && <RefreshCw size={10} className="spinning" />}
+        <span>v{version}</span>
+        {status === 'available' && <i aria-hidden="true" />}
+      </button>
+      {open && release && (
+        <section className="versionUpdatePopover" role="dialog" aria-label="发现软件更新">
+          <div>
+            <strong>发现新版本 v{release.version}</strong>
+            <span>当前版本 v{version}</span>
+          </div>
+          <button type="button" onClick={onClose} title="关闭">
+            <X size={14} />
+          </button>
+          <div className="versionUpdateActions">
+            <button type="button" onClick={onClose}>
+              稍后
+            </button>
+            <button className="primaryButton" type="button" onClick={onOpenRelease}>
+              <Download size={14} />
+              前往下载
+            </button>
+          </div>
+        </section>
+      )}
+    </div>
   )
 }
 
@@ -2843,6 +3096,7 @@ function LoginScreen({
           teamConnectionMessage={teamConnectionMessage}
           onOpen={onOpenDataMode}
         />
+        <span className="loginVersion">CrewFlow v{appVersion}</span>
       </section>
     </main>
   )
@@ -2915,6 +3169,7 @@ function titleForSection(section: Section, role?: Role) {
 function Dashboard({
   riskCount,
   waitingCount,
+  pendingSettlementCount,
   visibleProjects,
   visibleTasks,
   calendarItems,
@@ -2925,6 +3180,7 @@ function Dashboard({
 }: {
   riskCount: number
   waitingCount: number
+  pendingSettlementCount: number
   visibleProjects: Project[]
   visibleTasks: Task[]
   calendarItems: CalendarItem[]
@@ -2934,7 +3190,6 @@ function Dashboard({
   setSelectedProjectId: (id: string) => void
 }) {
   const deliveryCount = calendarItems.length
-  const shootOrMaterialCount = calendarItems.filter((item) => /拍摄|素材/.test(`${item.type}${item.title}`)).length
   const openTasks = visibleTasks.filter((task) => task.status !== '已完成')
   const priorityProjects = [...visibleProjects].sort((left, right) => projectPriorityScore(right) - projectPriorityScore(left))
 
@@ -2985,7 +3240,7 @@ function Dashboard({
       <MetricCard icon={AlertTriangle} label="风险项目" value={`${riskCount}`} tone="danger" />
       <MetricCard icon={MessageSquareText} label="等反馈" value={`${waitingCount}`} tone="wait" />
       <MetricCard icon={CheckCircle2} label="今日任务" value={`${openTasks.length}`} tone="ok" />
-      <MetricCard icon={Camera} label="拍摄/素材节点" value={`${shootOrMaterialCount}`} tone="info" />
+      <MetricCard icon={DollarSign} label="待结款项目" value={`${pendingSettlementCount}`} tone="info" />
 
       <section className="panel span7">
         <div className="panelHeader">
@@ -3743,6 +3998,7 @@ function ProjectEditModal({
   const [stage, setStage] = useState(project.stage)
   const [calendarTitle, setCalendarTitle] = useState(project.calendarTitle ?? milestoneTitleFrom(project.nextMilestone))
   const [workStatus, setWorkStatus] = useState<WorkStatus>(project.workStatus)
+  const [projectStatus, setProjectStatus] = useState<ProjectHealthStatus>(() => projectHealthStatus(project))
   const [due, setDue] = useState(project.due)
   const [taskDrafts, setTaskDrafts] = useState<Task[]>(() => normalizeTaskAssigneesForStaff(projectTasks, assignableStaff))
 
@@ -3772,6 +4028,8 @@ function ProjectEditModal({
         stage,
         calendarTitle: calendarTitle.trim(),
         workStatus,
+        status: projectStatus,
+        healthStatusExplicit: true,
         due,
         owner: manager,
         nextMilestone: `${formatMonthDay(dueDate)} ${stage}`,
@@ -3860,6 +4118,16 @@ function ProjectEditModal({
               </select>
             </label>
             <label className="textField">
+              <span>项目健康度</span>
+              <select value={projectStatus} onChange={(event) => setProjectStatus(event.target.value as ProjectHealthStatus)}>
+                {projectHealthOptions.map((item) => (
+                  <option key={item.value} value={item.value}>
+                    {item.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="textField">
               <span>当前节点状态</span>
               <select value={workStatus} onChange={(event) => setWorkStatus(event.target.value as WorkStatus)}>
                 {optionsWithCurrent(workflowOptions.nodeStatuses, workStatus).map((item) => (
@@ -3883,7 +4151,7 @@ function ProjectEditModal({
               <span>下一节点日期</span>
               <input type="date" value={due} onChange={(event) => setDue(event.target.value)} />
             </label>
-            <label className="textField">
+            <label className="textField setupGridWide">
               <span>交付日历显示</span>
               <input value={calendarTitle} onChange={(event) => setCalendarTitle(event.target.value)} placeholder="例如：需求对接、脚本初稿、成片交付" />
             </label>
@@ -3927,6 +4195,20 @@ function ProjectEditModal({
                   ) : (
                     <span className="readonlyValue">{workType}</span>
                   )}
+                  <select
+                    value={externalTask ? 'external' : 'internal'}
+                    disabled={!canEditTaskBoard}
+                    onChange={(event) => {
+                      const assignmentMode = event.target.value as AssignmentMode
+                      updateTaskDraft(task.id, {
+                        assignmentMode,
+                        assignee: assignmentMode === 'external' ? '外包：' : (assignableStaff[0]?.name ?? manager),
+                      })
+                    }}
+                  >
+                    <option value="internal">内部人员</option>
+                    <option value="external">外包</option>
+                  </select>
                   {externalTask ? (
                     <input
                       value={externalAssigneeName(task)}
@@ -6118,7 +6400,7 @@ function assistantReply(
   calendarItems: CalendarItem[],
   canCreateProject: boolean,
 ) {
-  const riskProjects = projects.filter(isRiskProject)
+  const riskProjects = projects.filter((project) => isRiskProject(project) || isLateProject(project))
   const waitingProjects = projects.filter(isWaitingProject)
   const revisionTasks = tasks.filter((task) => task.status === '修改中')
   const activeTasks = tasks.filter((task) => task.status === '制作中' || task.status === '未开始')
@@ -6330,14 +6612,61 @@ function loadStoredProjects() {
 }
 
 function normalizeProject(project: Project): Project {
+  const workStatus = normalizeNodeStatus(project.workStatus)
+  const storedHealthStatus = normalizeProjectHealthStatus(project.status)
+  const healthStatus =
+    project.healthStatusExplicit === true
+      ? storedHealthStatus
+      : storedHealthStatus === 'normal' && (workStatus === '等甲方反馈' || workStatus === '等内部确认')
+        ? 'waiting'
+        : storedHealthStatus
+
   return {
     ...project,
     clientContact: project.clientContact ?? '',
     calendarTitle: project.calendarTitle ?? milestoneTitleFrom(project.nextMilestone ?? project.stage),
     creatorAccountId: project.creatorAccountId,
-    workStatus: normalizeNodeStatus(project.workStatus),
+    status: healthStatus,
+    healthStatusExplicit: true,
+    workStatus,
     stage: normalizeProjectStage(project.stage),
   }
+}
+
+function normalizeProjectHealthStatus(status: unknown): ProjectHealthStatus {
+  if (status === 'risk' || status === 'waiting') return status
+  return 'normal'
+}
+
+function projectDeliveryCalendarItem(project: Project): CalendarItem | null {
+  if (!project.due) return null
+
+  const dueDate = new Date(project.due)
+  if (Number.isNaN(dueDate.getTime())) return null
+
+  const title = project.calendarTitle?.trim() || milestoneTitleFrom(project.nextMilestone) || project.stage || '交付节点'
+
+  return {
+    id: `C-delivery-${project.id}`,
+    date: project.due,
+    projectId: project.id,
+    day: dueDate.getDate(),
+    time: formatMonthDay(dueDate),
+    project: project.name,
+    title,
+    type: project.stage || '交付节点',
+    owner: project.manager || project.owner,
+  }
+}
+
+function ensureProjectCalendarItems(projects: Project[], calendarItems: CalendarItem[]) {
+  const projectIdsWithPlans = new Set(calendarItems.map((item) => item.projectId))
+  const missingDeliveryItems = projects
+    .filter((project) => !projectIdsWithPlans.has(project.id))
+    .map(projectDeliveryCalendarItem)
+    .filter((item): item is CalendarItem => Boolean(item))
+
+  return missingDeliveryItems.length > 0 ? [...missingDeliveryItems, ...calendarItems] : calendarItems
 }
 
 function isArchivedProject(project: Project) {
@@ -6349,11 +6678,24 @@ function isWaitingProject(project: Project) {
 }
 
 function isRiskProject(project: Project) {
-  return project.status === 'risk' || project.status === 'late' || project.workStatus === '需修改'
+  return project.status === 'risk'
 }
 
-function projectDisplayStatus(project: Project): ProjectStatus {
-  if (project.status === 'late') return 'late'
+function isLateProject(project: Project, today = new Date()) {
+  if (isArchivedProject(project)) return false
+
+  const dueDateKey = project.due.match(/^\d{4}-\d{2}-\d{2}/)?.[0]
+  return Boolean(dueDateKey && dueDateKey < localDateKey(today))
+}
+
+function projectHealthStatus(project: Project): ProjectHealthStatus {
+  if (project.status === 'risk') return 'risk'
+  if (project.status === 'waiting') return 'waiting'
+  return 'normal'
+}
+
+function projectDisplayStatus(project: Project, today = new Date()): ProjectStatus {
+  if (isLateProject(project, today)) return 'late'
   if (isRiskProject(project)) return 'risk'
   if (isWaitingProject(project)) return 'waiting'
   return 'normal'
@@ -6368,7 +6710,7 @@ function progressForProject(project: Project, projectTasks: Task[]) {
 }
 
 function projectPriorityScore(project: Project) {
-  if (project.status === 'late') return 40
+  if (isLateProject(project)) return 40
   if (isRiskProject(project)) return 30
   if (isWaitingProject(project)) return 20
   if (project.workStatus === '进行中') return 10
@@ -6381,14 +6723,15 @@ function filterProjects(
   status: ProjectFilterStatus,
   type: string,
   searchMatchedProjectIds: Set<string> | null,
+  today: Date,
 ) {
   return projectList.filter((project) => {
     if (type !== '全部类型' && project.type !== type) return false
     if (status === 'archived' && !isArchivedProject(project)) return false
     if (status !== 'archived' && status !== 'all' && isArchivedProject(project)) return false
-    if (status === 'normal' && projectDisplayStatus(project) !== 'normal') return false
+    if (status === 'normal' && projectDisplayStatus(project, today) !== 'normal') return false
     if (status === 'risk' && !isRiskProject(project)) return false
-    if (status === 'late' && project.status !== 'late') return false
+    if (status === 'late' && !isLateProject(project, today)) return false
     if (status === 'waiting' && !isWaitingProject(project)) return false
 
     if (!query.trim()) return true
@@ -6616,7 +6959,8 @@ function taskTitleForWorkType(projectName: string, workType: string) {
 }
 
 function isExternalTask(task: Task) {
-  return task.assignmentMode === 'external' || task.assignee.startsWith('外包：') || task.note.includes('外包任务')
+  if (task.assignmentMode) return task.assignmentMode === 'external'
+  return task.assignee.startsWith('外包：') || task.note.includes('外包任务')
 }
 
 function externalAssigneeName(task: Task) {
