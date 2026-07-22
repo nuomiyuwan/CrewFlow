@@ -2,7 +2,7 @@ import http from 'node:http'
 import os from 'node:os'
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { StaleTeamDataError, createTeamStore } from './team-store.mjs'
+import { StaleTeamDataError, UnsafeTeamDataMutationError, createTeamStore } from './team-store.mjs'
 
 const defaultPort = Number(process.env.CREWFLOW_PORT || 8787)
 const defaultHost = process.env.CREWFLOW_HOST || '0.0.0.0'
@@ -51,7 +51,7 @@ async function readRequestJson(request) {
 }
 
 export function createCrewFlowServer({ store, accessKey = defaultAccessKey } = {}) {
-  return http.createServer(async (request, response) => {
+  const server = http.createServer(async (request, response) => {
     try {
       if (request.method === 'OPTIONS') {
         sendJson(response, 204, {})
@@ -61,14 +61,21 @@ export function createCrewFlowServer({ store, accessKey = defaultAccessKey } = {
       const url = new URL(request.url || '/', 'http://localhost')
 
       if (request.method === 'GET' && url.pathname === '/health') {
-        const data = await store.read()
+        const storage = store.info ? await store.info() : await store.read()
         sendJson(response, 200, {
           ok: true,
           name: 'CrewFlow Server',
           requiresKey: Boolean(accessKey),
-          dataFile: store.dataFile,
-          updatedAt: data.updatedAt,
-          revision: data.revision,
+          dataFile: storage.dataFile || store.dataFile,
+          legacyDataFile: storage.legacyDataFile || store.legacyDataFile,
+          backupDirectory: storage.backupDirectory || store.backupDirectory,
+          migrationBackup: storage.migrationBackup || store.migrationBackup,
+          storageEngine: storage.storageEngine || store.storageEngine || 'json',
+          schemaVersion: storage.schemaVersion || 0,
+          incrementalSync: Boolean(store.supportsIncrementalSync),
+          migrationError: storage.migrationError || store.migrationError || '',
+          updatedAt: storage.updatedAt,
+          revision: storage.revision,
         })
         return
       }
@@ -82,6 +89,55 @@ export function createCrewFlowServer({ store, accessKey = defaultAccessKey } = {
         return
       }
 
+      if (request.method === 'GET' && url.pathname === '/api/app-data/changes') {
+        if (!hasValidAccessKey(request, url, accessKey)) {
+          sendJson(response, 401, { ok: false, error: 'Invalid CrewFlow access key' })
+          return
+        }
+        if (!store.supportsIncrementalSync || !store.changesSince) {
+          sendJson(response, 404, { ok: false, error: 'Incremental sync is not available' })
+          return
+        }
+        const sinceRevision = Number(url.searchParams.get('since'))
+        sendJson(response, 200, store.changesSince(sinceRevision))
+        return
+      }
+
+      if (request.method === 'PUT' && url.pathname === '/api/app-data/changes') {
+        if (!hasValidAccessKey(request, url, accessKey)) {
+          sendJson(response, 401, { ok: false, error: 'Invalid CrewFlow access key' })
+          return
+        }
+        if (!store.supportsIncrementalSync || !store.mutate) {
+          sendJson(response, 404, { ok: false, error: 'Incremental sync is not available' })
+          return
+        }
+        const payload = await readRequestJson(request)
+        try {
+          sendJson(
+            response,
+            200,
+            await store.mutate(Array.isArray(payload.mutations) ? payload.mutations : [], {
+              expectedRevision: payload.baseRevision,
+              version: payload.version,
+            }),
+          )
+        } catch (error) {
+          if (error instanceof StaleTeamDataError || error instanceof UnsafeTeamDataMutationError) {
+            sendJson(response, 409, {
+              ok: false,
+              code: error.code,
+              error: error.message,
+              expectedRevision: error.expectedRevision,
+              current: error.currentData,
+            })
+            return
+          }
+          throw error
+        }
+        return
+      }
+
       if (request.method === 'PUT' && url.pathname === '/api/app-data') {
         if (!hasValidAccessKey(request, url, accessKey)) {
           sendJson(response, 401, { ok: false, error: 'Invalid CrewFlow access key' })
@@ -92,7 +148,7 @@ export function createCrewFlowServer({ store, accessKey = defaultAccessKey } = {
         try {
           sendJson(response, 200, await store.write(partialData, { expectedRevision: baseRevision }))
         } catch (error) {
-          if (error instanceof StaleTeamDataError) {
+          if (error instanceof StaleTeamDataError || error instanceof UnsafeTeamDataMutationError) {
             sendJson(response, 409, {
               ok: false,
               code: error.code,
@@ -112,6 +168,9 @@ export function createCrewFlowServer({ store, accessKey = defaultAccessKey } = {
       sendJson(response, 500, { ok: false, error: error instanceof Error ? error.message : 'Server error' })
     }
   })
+
+  server.on('close', () => store.close?.())
+  return server
 }
 
 export function startCrewFlowServer({
@@ -126,6 +185,16 @@ export function startCrewFlowServer({
 } = {}) {
   const store = createTeamStore({ dataDir })
   const server = createCrewFlowServer({ store, accessKey })
+  const shutdown = () => {
+    server.close(() => process.exit(0))
+  }
+
+  process.once('SIGINT', shutdown)
+  process.once('SIGTERM', shutdown)
+  server.once('close', () => {
+    process.removeListener('SIGINT', shutdown)
+    process.removeListener('SIGTERM', shutdown)
+  })
 
   server.listen(port, host, () => onReady({ server, store, host, port }))
   return { server, store }

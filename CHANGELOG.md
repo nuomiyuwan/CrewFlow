@@ -2,6 +2,32 @@
 
 All notable changes to CrewFlow are documented in this file.
 
+## 1.2.0 - 2026-07-22
+
+### Added
+
+- Added a SQLite team database stored on the always-on CrewFlow Server host.
+- Added automatic migration from the existing team JSON file with an untouched source file and a timestamped pre-migration backup.
+- Added granular project, task, calendar, finance, staff, account, and settings change tracking.
+- Added daily SQLite backups with rolling retention in the team server data directory.
+- Added per-computer weather city selection with cached live weather on the dashboard.
+- Added per-account, per-computer work schedules with support for overnight shifts.
+- Added read-only China public-holiday and adjusted-workday display using holiday-cn, with local caching and an offline fallback.
+
+### Improved
+
+- Replaced full team-data polling with lightweight incremental synchronization while retaining compatibility with older clients and servers.
+- Kept the legacy full-data API available for staged upgrades and one-time single-user data imports.
+
+### Fixed
+
+- Fixed duplicate dashboard delivery-node keys when different projects share the same date and milestone title.
+- Fixed the dashboard weekly delivery metric so it only counts calendar entries from Monday through Sunday of the current local week.
+- Fixed legacy calendar date comparisons that could shift by one day because of UTC conversion.
+- Limited the project center list viewport to five projects and added internal scrolling for additional projects.
+- Prevented data-source transitions or failed team connections from saving stale local state into the team database.
+- Added server-side protection against accidental whole-collection deletion requests.
+
 ## 1.1.0 - 2026-07-21
 
 ### Added

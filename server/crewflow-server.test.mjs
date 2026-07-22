@@ -8,7 +8,7 @@ import { createTeamStore } from './team-store.mjs'
 
 async function withServer(t, callback) {
   const dir = await mkdtemp(path.join(tmpdir(), 'crewflow-http-'))
-  const store = createTeamStore({ dataDir: dir })
+  const store = createTeamStore({ dataDir: dir, autoBackup: false })
   const server = createCrewFlowServer({ store })
 
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
@@ -23,7 +23,7 @@ async function withServer(t, callback) {
 
 async function withSecuredServer(t, callback) {
   const dir = await mkdtemp(path.join(tmpdir(), 'crewflow-http-secure-'))
-  const store = createTeamStore({ dataDir: dir })
+  const store = createTeamStore({ dataDir: dir, autoBackup: false })
   const server = createCrewFlowServer({ store, accessKey: 'team-secret' })
 
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
@@ -44,7 +44,9 @@ test('server reports health and data file metadata', async (t) => {
     assert.equal(response.status, 200)
     assert.equal(body.ok, true)
     assert.equal(body.name, 'CrewFlow Server')
-    assert.match(body.dataFile, /crewflow-team-data\.json$/)
+    assert.match(body.dataFile, /crewflow-team\.db$/)
+    assert.equal(body.storageEngine, 'sqlite')
+    assert.equal(body.incrementalSync, true)
   })
 })
 
@@ -80,6 +82,9 @@ test('server rejects app data access without the configured access key', async (
       body: JSON.stringify({ projects: [{ id: '001', name: 'Blocked Project' }] }),
     })
     assert.equal(saveResponse.status, 401)
+
+    const changesResponse = await fetch(`${baseUrl}/api/app-data/changes?since=0`)
+    assert.equal(changesResponse.status, 401)
   })
 })
 
@@ -130,6 +135,46 @@ test('server rejects stale app data writes', async (t) => {
     assert.equal(staleResponse.status, 409)
     assert.equal(staleData.code, 'STALE_DATA')
     assert.equal(staleData.current.revision, 1)
+  })
+})
+
+test('server saves and returns granular team data changes', async (t) => {
+  await withServer(t, async (baseUrl) => {
+    const initialResponse = await fetch(`${baseUrl}/api/app-data`)
+    const initialData = await initialResponse.json()
+    const saveResponse = await fetch(`${baseUrl}/api/app-data/changes`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        baseRevision: initialData.revision,
+        version: initialData.version,
+        mutations: [
+          {
+            collection: 'projects',
+            operation: 'upsert',
+            key: 'P-1',
+            position: 0,
+            value: { id: 'P-1', name: 'Incremental Project' },
+          },
+        ],
+      }),
+    })
+    const saved = await saveResponse.json()
+
+    assert.equal(saveResponse.status, 200)
+    assert.equal(saved.revision, initialData.revision + 1)
+    assert.equal(saved.changes.length, 1)
+    assert.equal(saved.changes[0].key, 'P-1')
+
+    const changesResponse = await fetch(`${baseUrl}/api/app-data/changes?since=${initialData.revision}`)
+    const changes = await changesResponse.json()
+    assert.equal(changesResponse.status, 200)
+    assert.equal(changes.resetRequired, false)
+    assert.equal(changes.changes[0].value.name, 'Incremental Project')
+
+    const dataResponse = await fetch(`${baseUrl}/api/app-data`)
+    const data = await dataResponse.json()
+    assert.equal(data.projects[0].name, 'Incremental Project')
   })
 })
 

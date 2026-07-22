@@ -1,7 +1,7 @@
 {
   "name": "crewflow",
   "private": true,
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "CrewFlow video project management desktop app",
   "author": "nuomiyuwan",
   "type": "module",
@@ -34,6 +34,8 @@
       "dist/**/*",
       "electron/**/*",
       "server/**/*",
+      "LICENSE",
+      "THIRD_PARTY_NOTICES.md",
       "package.json"
     ],
     "directories": {

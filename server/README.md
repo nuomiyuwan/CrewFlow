@@ -24,17 +24,19 @@ npm run team:server
 http://0.0.0.0:8787
 ```
 
-服务端数据文件：
+服务端 SQLite 数据库：
 
 ```text
-~/Library/Application Support/CrewFlow Server/crewflow-team-data.json
+~/Library/Application Support/CrewFlow Server/crewflow-team.db
 ```
 
-Windows 默认数据文件：
+Windows 默认 SQLite 数据库：
 
 ```text
-%APPDATA%\CrewFlow Server\crewflow-team-data.json
+%APPDATA%\CrewFlow Server\crewflow-team.db
 ```
+
+从旧版本首次升级时，服务会自动读取 `crewflow-team-data.json` 并在事务中迁移。原 JSON 不会删除，迁移前副本和每日数据库备份保存在同目录的 `backups` 文件夹。
 
 其他电脑在 CrewFlow 登录页或左下角“工作模式”里选择“团队模式”，服务器地址填写这台常驻电脑的局域网 IP，例如：
 
@@ -92,11 +94,17 @@ CREWFLOW_DATA_DIR="/path/to/CrewFlow Server Data" npm run team:server
 
 ## 当前同步策略
 
-- 客户端打开团队模式时读取服务端数据。
-- 客户端保存时向服务端写入变更字段。
-- 客户端每 2 秒轮询一次服务端数据。
+- 客户端首次打开团队模式时读取一份完整数据。
+- 客户端保存时只提交新增、修改或删除的具体记录。
+- 客户端每 2 秒查询增量变更，没有变化时不会重复下载完整数据。
+- SQLite 按项目、任务、日历、财务、人员、账号和设置分别保存记录。
 - 服务端会校验访问密钥。
 - 服务端会用 `revision` 检查旧版本写入；如果其他电脑已经保存了更新，客户端会重新同步并提示用户再操作一次。
+- 旧版客户端的完整数据接口继续保留，可以分批升级其他电脑。
+
+升级顺序：先更新并重启常驻团队主机上的 CrewFlow 服务，再分批更新其他客户端。SQLite 迁移成功后，不要再用旧版 CrewFlow 作为团队主机；旧版客户端仍可暂时连接新主机。
+
+直接从源码运行团队服务需要支持内置 `node:sqlite` 的 Node.js 24 或更高版本。通过打包版 CrewFlow 安装后台服务时会使用 App 自带的 Node 运行环境。
 
 ## 不要这样做
 

@@ -25,6 +25,13 @@ import {
   X,
 } from 'lucide-react'
 import './App.css'
+import {
+  bundledChinaHolidayItems,
+  chinaHolidayProjectUrl,
+  chinaHolidayYearsForRange,
+  loadChinaHolidayItems,
+  type ChinaHolidayLoadSource,
+} from './chinaHolidays'
 
 type Role = 'controller' | 'admin' | 'manager' | 'member' | 'finance'
 type Section =
@@ -61,6 +68,33 @@ type UpdateRelease = {
 }
 
 type UpdateCheckStatus = 'idle' | 'checking' | 'available' | 'up-to-date' | 'error'
+
+type WeatherLocation = {
+  id: number
+  name: string
+  admin1: string
+  country: string
+  latitude: number
+  longitude: number
+  timezone: string
+}
+
+type WeatherSnapshot = {
+  locationKey: string
+  temperature: number
+  apparentTemperature: number
+  weatherCode: number
+  windSpeed: number
+  isDay: boolean
+  fetchedAt: number
+}
+
+type WeatherStatus = 'idle' | 'loading' | 'ready' | 'error'
+
+type WorkSchedule = {
+  start: string
+  end: string
+}
 
 type Account = {
   id: string
@@ -102,6 +136,13 @@ type TeamServiceInfo = {
   singleDataDirectory?: string
   teamDataFile?: string
   teamDataDirectory?: string
+  legacyDataFile?: string
+  backupDirectory?: string
+  migrationBackup?: string
+  storageEngine?: 'sqlite' | 'json'
+  schemaVersion?: number
+  incrementalSync?: boolean
+  migrationError?: string
   accessKeyFile?: string
   accessKeyDirectory?: string
   updatedAt?: string
@@ -180,6 +221,13 @@ type HolidayItem = {
   date: string
   name: string
   type: HolidayType
+}
+
+type ChinaHolidaySyncState = {
+  loading: boolean
+  source: ChinaHolidayLoadSource
+  updatedAt?: number
+  unavailableYears: number[]
 }
 
 type NewProjectPayload = {
@@ -285,6 +333,26 @@ type WorkflowOptionRename = {
 type AppDataLoader = () => Promise<AppData | null>
 type AppDataSaver = (data: Partial<AppData>) => Promise<boolean>
 type AppDataSliceKey = 'projects' | 'tasks' | 'calendarItems' | 'financeRecords' | 'staffMembers' | 'accounts' | 'holidayItems' | 'workflowOptions'
+type TeamDataArrayCollection = Exclude<AppDataSliceKey, 'workflowOptions'>
+type TeamDataCollection = AppDataSliceKey | 'financeLedger'
+type TeamDataMutation = {
+  collection: TeamDataCollection
+  operation: 'upsert' | 'delete' | 'set'
+  key: string
+  value?: unknown
+  position?: number
+}
+type TeamDataChange = TeamDataMutation & {
+  revision: number
+  sequence?: number
+}
+type TeamDataChangesResponse = {
+  revision: number
+  updatedAt: string
+  resetRequired: boolean
+  changes: TeamDataChange[]
+}
+type TeamIncrementalCapability = 'unknown' | 'supported' | 'legacy'
 type ProjectPlanPayload = {
   id?: string
   date: string
@@ -375,6 +443,11 @@ const appVersion = import.meta.env.VITE_APP_VERSION || '0.0.0'
 const crewFlowLatestReleaseUrl = 'https://api.github.com/repos/nuomiyuwan/CrewFlow/releases/latest'
 const updateCheckCacheKey = 'crewflow-update-check-cache'
 const updateCheckIntervalMs = 6 * 60 * 60 * 1000
+const weatherLocationStorageKey = 'crewflow-local-weather-location-v1'
+const weatherCacheStorageKey = 'crewflow-local-weather-cache-v1'
+const weatherRefreshIntervalMs = 30 * 60 * 1000
+const workScheduleStorageKeyPrefix = 'crewflow-local-work-schedule-v1'
+const maxCalendarRangeDays = 90
 const legacyLocalStorageKeys = [
   'shby-session-account',
   'shby-project-data-version',
@@ -608,6 +681,117 @@ function loadStoredTeamAccessKey() {
   }
 }
 
+function weatherLocationKey(location: WeatherLocation) {
+  return `${location.latitude.toFixed(4)},${location.longitude.toFixed(4)}`
+}
+
+function loadStoredWeatherLocation(): WeatherLocation | null {
+  try {
+    const raw = localStorage.getItem(weatherLocationStorageKey)
+    if (!raw) return null
+    const value = JSON.parse(raw) as Partial<WeatherLocation>
+    if (
+      typeof value.id !== 'number' ||
+      typeof value.name !== 'string' ||
+      typeof value.latitude !== 'number' ||
+      typeof value.longitude !== 'number'
+    ) {
+      return null
+    }
+
+    return {
+      id: value.id,
+      name: value.name,
+      admin1: typeof value.admin1 === 'string' ? value.admin1 : '',
+      country: typeof value.country === 'string' ? value.country : '',
+      latitude: value.latitude,
+      longitude: value.longitude,
+      timezone: typeof value.timezone === 'string' ? value.timezone : 'auto',
+    }
+  } catch {
+    return null
+  }
+}
+
+function saveStoredWeatherLocation(location: WeatherLocation) {
+  try {
+    localStorage.setItem(weatherLocationStorageKey, JSON.stringify(location))
+  } catch {
+    // The in-memory selection still works when storage is unavailable.
+  }
+}
+
+function loadStoredWeatherSnapshot(location: WeatherLocation | null): WeatherSnapshot | null {
+  if (!location) return null
+
+  try {
+    const raw = localStorage.getItem(weatherCacheStorageKey)
+    if (!raw) return null
+    const value = JSON.parse(raw) as Partial<WeatherSnapshot>
+    if (
+      value.locationKey !== weatherLocationKey(location) ||
+      typeof value.temperature !== 'number' ||
+      typeof value.apparentTemperature !== 'number' ||
+      typeof value.weatherCode !== 'number' ||
+      typeof value.windSpeed !== 'number' ||
+      typeof value.fetchedAt !== 'number'
+    ) {
+      return null
+    }
+
+    return {
+      locationKey: value.locationKey,
+      temperature: value.temperature,
+      apparentTemperature: value.apparentTemperature,
+      weatherCode: value.weatherCode,
+      windSpeed: value.windSpeed,
+      isDay: value.isDay !== false,
+      fetchedAt: value.fetchedAt,
+    }
+  } catch {
+    return null
+  }
+}
+
+function saveStoredWeatherSnapshot(snapshot: WeatherSnapshot) {
+  try {
+    localStorage.setItem(weatherCacheStorageKey, JSON.stringify(snapshot))
+  } catch {
+    // Weather remains visible for the current session when storage is unavailable.
+  }
+}
+
+function workScheduleStorageKey(accountId: string) {
+  return `${workScheduleStorageKeyPrefix}-${accountId}`
+}
+
+function isClockTime(value: unknown): value is string {
+  return typeof value === 'string' && /^([01]\d|2[0-3]):[0-5]\d$/.test(value)
+}
+
+function loadStoredWorkSchedule(accountId: string): WorkSchedule | null {
+  if (!accountId) return null
+
+  try {
+    const raw = localStorage.getItem(workScheduleStorageKey(accountId))
+    if (!raw) return null
+    const value = JSON.parse(raw) as Partial<WorkSchedule>
+    if (!isClockTime(value.start) || !isClockTime(value.end) || value.start === value.end) return null
+    return { start: value.start, end: value.end }
+  } catch {
+    return null
+  }
+}
+
+function saveStoredWorkSchedule(accountId: string, schedule: WorkSchedule) {
+  if (!accountId) return
+  try {
+    localStorage.setItem(workScheduleStorageKey(accountId), JSON.stringify(schedule))
+  } catch {
+    // The in-memory schedule still works when storage is unavailable.
+  }
+}
+
 function normalizeTeamServerUrl(url: string) {
   const trimmed = url.trim()
   if (!trimmed) return defaultTeamServerUrl
@@ -731,13 +915,96 @@ async function fetchLatestCrewFlowRelease() {
   } satisfies UpdateRelease
 }
 
+async function fetchJsonWithTimeout(url: string, timeoutMs = 8000) {
+  const controller = new AbortController()
+  const timer = window.setTimeout(() => controller.abort(), timeoutMs)
+
+  try {
+    const response = await fetch(url, { signal: controller.signal })
+    if (!response.ok) throw new Error(`HTTP ${response.status}`)
+    return (await response.json()) as unknown
+  } finally {
+    window.clearTimeout(timer)
+  }
+}
+
+async function searchWeatherLocations(query: string): Promise<WeatherLocation[]> {
+  const params = new URLSearchParams({
+    name: query.trim(),
+    count: '8',
+    language: 'zh',
+    format: 'json',
+  })
+  const body = (await fetchJsonWithTimeout(`https://geocoding-api.open-meteo.com/v1/search?${params}`)) as {
+    results?: Array<Partial<WeatherLocation>>
+  }
+
+  return (body.results ?? [])
+    .filter(
+      (item) =>
+        typeof item.id === 'number' &&
+        typeof item.name === 'string' &&
+        typeof item.latitude === 'number' &&
+        typeof item.longitude === 'number',
+    )
+    .map((item) => ({
+      id: item.id as number,
+      name: item.name as string,
+      admin1: typeof item.admin1 === 'string' ? item.admin1 : '',
+      country: typeof item.country === 'string' ? item.country : '',
+      latitude: item.latitude as number,
+      longitude: item.longitude as number,
+      timezone: typeof item.timezone === 'string' ? item.timezone : 'auto',
+    }))
+}
+
+async function fetchWeatherSnapshot(location: WeatherLocation): Promise<WeatherSnapshot> {
+  const params = new URLSearchParams({
+    latitude: String(location.latitude),
+    longitude: String(location.longitude),
+    current: 'temperature_2m,apparent_temperature,weather_code,wind_speed_10m,is_day',
+    timezone: 'auto',
+    forecast_days: '1',
+  })
+  const body = (await fetchJsonWithTimeout(`https://api.open-meteo.com/v1/forecast?${params}`)) as {
+    current?: {
+      temperature_2m?: number
+      apparent_temperature?: number
+      weather_code?: number
+      wind_speed_10m?: number
+      is_day?: number
+    }
+  }
+  const current = body.current
+  if (
+    typeof current?.temperature_2m !== 'number' ||
+    typeof current.apparent_temperature !== 'number' ||
+    typeof current.weather_code !== 'number' ||
+    typeof current.wind_speed_10m !== 'number'
+  ) {
+    throw new Error('天气服务未返回完整数据')
+  }
+
+  return {
+    locationKey: weatherLocationKey(location),
+    temperature: current.temperature_2m,
+    apparentTemperature: current.apparent_temperature,
+    weatherCode: current.weather_code,
+    windSpeed: current.wind_speed_10m,
+    isDay: current.is_day !== 0,
+    fetchedAt: Date.now(),
+  }
+}
+
 class TeamDataConflictError extends Error {
   currentData?: AppData
+  code?: string
 
-  constructor(message: string, currentData?: AppData) {
+  constructor(message: string, currentData?: AppData, code?: string) {
     super(message)
     this.name = 'TeamDataConflictError'
     this.currentData = currentData
+    this.code = code
   }
 }
 
@@ -749,7 +1016,7 @@ async function fetchTeamAppData(serverUrl: string, accessKey: string) {
   return (await response.json()) as AppData
 }
 
-async function saveTeamAppData(serverUrl: string, accessKey: string, data: Partial<AppData>, baseRevision?: number | null) {
+async function saveLegacyTeamAppData(serverUrl: string, accessKey: string, data: Partial<AppData>, baseRevision?: number | null) {
   const payload = Number.isInteger(baseRevision) ? { ...data, baseRevision } : data
   const response = await fetch(teamApiUrl(serverUrl, '/api/app-data'), {
     method: 'PUT',
@@ -757,17 +1024,200 @@ async function saveTeamAppData(serverUrl: string, accessKey: string, data: Parti
     body: JSON.stringify(payload),
   })
   if (response.status === 409) {
-    const body = (await response.json()) as { current?: AppData; error?: string }
-    throw new TeamDataConflictError(body.error || '团队数据已被其他电脑更新，请重新同步后再试。', body.current)
+    const body = (await response.json()) as { current?: AppData; error?: string; code?: string }
+    throw new TeamDataConflictError(body.error || '团队数据已被其他电脑更新，请重新同步后再试。', body.current, body.code)
   }
   if (!response.ok) throw new Error(`团队数据保存失败：${response.status}`)
   return (await response.json()) as AppData
 }
 
+async function fetchTeamAppDataChanges(serverUrl: string, accessKey: string, sinceRevision: number) {
+  const response = await fetch(teamApiUrl(serverUrl, `/api/app-data/changes?since=${encodeURIComponent(sinceRevision)}`), {
+    headers: teamRequestHeaders(accessKey),
+  })
+  if (response.status === 404) return null
+  if (!response.ok) throw new Error(`团队增量数据读取失败：${response.status}`)
+  return (await response.json()) as TeamDataChangesResponse
+}
+
+async function saveTeamAppDataChanges(
+  serverUrl: string,
+  accessKey: string,
+  mutations: TeamDataMutation[],
+  version: string,
+  baseRevision?: number | null,
+) {
+  const response = await fetch(teamApiUrl(serverUrl, '/api/app-data/changes'), {
+    method: 'PUT',
+    headers: teamRequestHeaders(accessKey, true),
+    body: JSON.stringify({
+      baseRevision: Number.isInteger(baseRevision) ? baseRevision : undefined,
+      version,
+      mutations,
+    }),
+  })
+  if (response.status === 404) return null
+  if (response.status === 409) {
+    const body = (await response.json()) as { current?: AppData; error?: string; code?: string }
+    throw new TeamDataConflictError(body.error || '团队数据已被其他电脑更新，请重新同步后再试。', body.current, body.code)
+  }
+  if (!response.ok) throw new Error(`团队增量数据保存失败：${response.status}`)
+  return (await response.json()) as TeamDataChangesResponse
+}
+
+const teamArrayCollections: TeamDataArrayCollection[] = [
+  'projects',
+  'tasks',
+  'calendarItems',
+  'financeRecords',
+  'staffMembers',
+  'accounts',
+  'holidayItems',
+]
+
+function normalizeTeamAppData(savedData: AppData): AppData {
+  return {
+    ...savedData,
+    version: savedData.version || projectDataStorageVersion,
+    projects: (savedData.projects ?? []).map(normalizeProject),
+    tasks: (savedData.tasks ?? []).map((task) => ({
+      ...task,
+      status: normalizeTaskStatus(task.status),
+    })),
+    calendarItems: savedData.calendarItems ?? [],
+    financeRecords: (savedData.financeRecords ?? []).map(normalizeFinanceRecord),
+    financeLedger: savedData.financeLedger ?? {},
+    staffMembers: (savedData.staffMembers ?? []).map(normalizeStaffMember),
+    accounts: mergeStoredAccounts(savedData.accounts ?? loginAccounts),
+    holidayItems: (savedData.holidayItems ?? []).map(normalizeHolidayItem),
+    workflowOptions: normalizeWorkflowOptions(savedData.workflowOptions),
+  }
+}
+
+function teamDataRecordKey(collection: TeamDataArrayCollection, value: unknown) {
+  const record = value as Record<string, unknown>
+  const key =
+    collection === 'financeRecords'
+      ? record.projectId
+      : collection === 'calendarItems'
+        ? record.id ?? `${record.projectId}-${record.day}-${record.time}-${record.title}-${record.type}-${record.owner}`
+        : record.id
+
+  if (typeof key !== 'string' || !key) throw new Error(`团队数据记录缺少标识：${collection}`)
+  return key
+}
+
+function createTeamDataMutations(data: Partial<AppData>, baseline: AppData) {
+  const mutations: TeamDataMutation[] = []
+  const partialRecord = data as unknown as Record<string, unknown>
+  const baselineRecord = baseline as unknown as Record<string, unknown>
+
+  teamArrayCollections.forEach((collection) => {
+    if (!Object.prototype.hasOwnProperty.call(data, collection)) return
+    const currentValues = (baselineRecord[collection] ?? []) as unknown[]
+    const nextValues = (partialRecord[collection] ?? []) as unknown[]
+    const currentByKey = new Map(currentValues.map((value) => [teamDataRecordKey(collection, value), value]))
+    const nextByKey = new Map(nextValues.map((value) => [teamDataRecordKey(collection, value), value]))
+
+    currentByKey.forEach((_value, key) => {
+      if (!nextByKey.has(key)) mutations.push({ collection, operation: 'delete', key })
+    })
+    nextValues.forEach((value, position) => {
+      const key = teamDataRecordKey(collection, value)
+      const currentValue = currentByKey.get(key)
+      if (!currentValue || JSON.stringify(currentValue) !== JSON.stringify(value)) {
+        mutations.push({
+          collection,
+          operation: 'upsert',
+          key,
+          value,
+          position: currentValue ? undefined : position,
+        })
+      }
+    })
+  })
+
+  if (Object.prototype.hasOwnProperty.call(data, 'financeLedger')) {
+    const currentLedger = baseline.financeLedger ?? {}
+    const nextLedger = data.financeLedger ?? {}
+    Object.keys(currentLedger).forEach((key) => {
+      if (!Object.prototype.hasOwnProperty.call(nextLedger, key)) {
+        mutations.push({ collection: 'financeLedger', operation: 'delete', key })
+      }
+    })
+    Object.entries(nextLedger).forEach(([key, value]) => {
+      if (!Object.prototype.hasOwnProperty.call(currentLedger, key) || JSON.stringify(currentLedger[key]) !== JSON.stringify(value)) {
+        mutations.push({ collection: 'financeLedger', operation: 'upsert', key, value })
+      }
+    })
+  }
+
+  if (
+    Object.prototype.hasOwnProperty.call(data, 'workflowOptions') &&
+    JSON.stringify(baseline.workflowOptions) !== JSON.stringify(data.workflowOptions)
+  ) {
+    mutations.push({
+      collection: 'workflowOptions',
+      operation: 'set',
+      key: '__value__',
+      value: normalizeWorkflowOptions(data.workflowOptions),
+    })
+  }
+
+  return mutations
+}
+
+function applyTeamDataChanges(savedData: AppData, response: TeamDataChangesResponse) {
+  const nextData = normalizeTeamAppData(savedData)
+  const mutableData = nextData as unknown as Record<string, unknown>
+
+  response.changes.forEach((change) => {
+    if (teamArrayCollections.includes(change.collection as TeamDataArrayCollection)) {
+      const collection = change.collection as TeamDataArrayCollection
+      const values = [...((mutableData[collection] ?? []) as unknown[])]
+      const currentIndex = values.findIndex((value) => teamDataRecordKey(collection, value) === change.key)
+
+      if (change.operation === 'delete') {
+        if (currentIndex >= 0) values.splice(currentIndex, 1)
+      } else if (change.value !== undefined) {
+        if (currentIndex >= 0) {
+          values[currentIndex] = change.value
+        } else {
+          const position = Math.max(0, Math.min(change.position ?? values.length, values.length))
+          values.splice(position, 0, change.value)
+        }
+      }
+      mutableData[collection] = values
+      return
+    }
+
+    if (change.collection === 'financeLedger') {
+      const ledger = { ...(nextData.financeLedger ?? {}) }
+      if (change.operation === 'delete') {
+        delete ledger[change.key]
+      } else if (change.value !== undefined) {
+        ledger[change.key] = change.value as FinanceLedger[string]
+      }
+      nextData.financeLedger = ledger
+      return
+    }
+
+    if (change.collection === 'workflowOptions' && change.value !== undefined) {
+      nextData.workflowOptions = normalizeWorkflowOptions(change.value as WorkflowOptions)
+    }
+  })
+
+  return normalizeTeamAppData({
+    ...nextData,
+    revision: response.revision,
+    updatedAt: response.updatedAt,
+  })
+}
+
 async function fetchTeamHealth(serverUrl: string) {
   const response = await fetch(teamApiUrl(serverUrl, '/health'))
   if (!response.ok) throw new Error(`连接失败：${response.status}`)
-  return (await response.json()) as { ok?: boolean; name?: string; updatedAt?: string; dataFile?: string }
+  return (await response.json()) as Partial<TeamServiceInfo> & { ok?: boolean; name?: string; revision?: number }
 }
 
 function clearLegacyLocalStorage() {
@@ -797,6 +1247,15 @@ function App() {
   const [appStaffMembers, setAppStaffMembers] = useState<StaffMember[]>(() => loadStoredStaffMembers())
   const [appAccounts, setAppAccounts] = useState<Account[]>(() => loadStoredAccounts())
   const [appHolidayItems, setAppHolidayItems] = useState<HolidayItem[]>(() => loadStoredHolidayItems())
+  const [chinaHolidayItems, setChinaHolidayItems] = useState<HolidayItem[]>(() => {
+    const today = new Date()
+    return bundledChinaHolidayItems(chinaHolidayYearsForRange(today, addDays(today, maxCalendarRangeDays)))
+  })
+  const [chinaHolidaySync, setChinaHolidaySync] = useState<ChinaHolidaySyncState>({
+    loading: true,
+    source: 'bundled',
+    unavailableYears: [],
+  })
   const [appWorkflowOptions, setAppWorkflowOptions] = useState<WorkflowOptions>(() => loadStoredWorkflowOptions())
   const currentAccount = useMemo(() => appAccounts.find((account) => account.id === currentAccountId) ?? null, [appAccounts, currentAccountId])
   const currentWelcomeGuideKey = currentAccount ? welcomeGuideStorageKey(currentAccount) : ''
@@ -810,6 +1269,7 @@ function App() {
   const [editingProject, setEditingProject] = useState<Project | null>(null)
   const [handoffProject, setHandoffProject] = useState<{ project: Project; personName: string } | null>(null)
   const [dataReady, setDataReady] = useState(false)
+  const [loadedDataSourceKey, setLoadedDataSourceKey] = useState('')
   const [now, setNow] = useState(() => new Date())
   const [searchQuery, setSearchQuery] = useState('')
   const [showFilterPanel, setShowFilterPanel] = useState(false)
@@ -822,28 +1282,44 @@ function App() {
   const [updateCheckStatus, setUpdateCheckStatus] = useState<UpdateCheckStatus>('idle')
   const [availableUpdate, setAvailableUpdate] = useState<UpdateRelease | null>(null)
   const [showUpdateNotice, setShowUpdateNotice] = useState(false)
+  const [weatherLocation, setWeatherLocation] = useState<WeatherLocation | null>(() => loadStoredWeatherLocation())
+  const [weatherSnapshot, setWeatherSnapshot] = useState<WeatherSnapshot | null>(() => {
+    const location = loadStoredWeatherLocation()
+    return loadStoredWeatherSnapshot(location)
+  })
+  const [weatherStatus, setWeatherStatus] = useState<WeatherStatus>(() => (loadStoredWeatherLocation() ? 'loading' : 'idle'))
+  const [weatherError, setWeatherError] = useState('')
+  const [workSchedule, setWorkSchedule] = useState<WorkSchedule | null>(() => loadStoredWorkSchedule(currentAccount?.id ?? ''))
+  const [showWeatherSettings, setShowWeatherSettings] = useState(false)
+  const [showWorkScheduleSettings, setShowWorkScheduleSettings] = useState(false)
+  const dataSourceKey = dataMode === 'team' ? `team:${normalizeTeamServerUrl(teamServerUrl)}:${teamAccessKey.trim()}` : 'single'
+  const dataSourceReady = dataReady && loadedDataSourceKey === dataSourceKey
   const teamDataRevisionRef = useRef<number | null>(null)
   const teamSaveQueueRef = useRef<Promise<void>>(Promise.resolve())
   const teamSavePendingRef = useRef(0)
+  const teamSyncPendingRef = useRef(false)
   const teamServiceInfoRef = useRef<TeamServiceInfo | null>(null)
   const updateCheckPendingRef = useRef(false)
-  const remoteSliceSnapshotsRef = useRef<Partial<Record<AppDataSliceKey, string>>>({})
+  const weatherRequestIdRef = useRef(0)
+  const chinaHolidayRequestIdRef = useRef(0)
+  const remoteTeamDataRef = useRef<AppData | null>(null)
+  const teamIncrementalCapabilityRef = useRef<TeamIncrementalCapability>('unknown')
+  const remoteSliceSnapshotsRef = useRef<Partial<Record<TeamDataCollection, string>>>({})
   const rememberRemoteSlices = useCallback((savedData: AppData) => {
-    const normalizedTasks = savedData.tasks.map((task) => ({
-      ...task,
-      status: normalizeTaskStatus(task.status),
-    }))
+    const normalizedData = normalizeTeamAppData(savedData)
+    remoteTeamDataRef.current = normalizedData
     remoteSliceSnapshotsRef.current = {
-      projects: JSON.stringify(savedData.projects.map(normalizeProject)),
-      tasks: JSON.stringify(normalizedTasks),
-      calendarItems: JSON.stringify(savedData.calendarItems),
-      financeRecords: JSON.stringify(savedData.financeRecords.map(normalizeFinanceRecord)),
-      staffMembers: JSON.stringify((savedData.staffMembers ?? []).map(normalizeStaffMember)),
-      accounts: JSON.stringify(mergeStoredAccounts(savedData.accounts ?? loginAccounts)),
-      holidayItems: JSON.stringify((savedData.holidayItems ?? []).map(normalizeHolidayItem)),
-      workflowOptions: JSON.stringify(normalizeWorkflowOptions(savedData.workflowOptions)),
+      projects: JSON.stringify(normalizedData.projects),
+      tasks: JSON.stringify(normalizedData.tasks),
+      calendarItems: JSON.stringify(normalizedData.calendarItems),
+      financeRecords: JSON.stringify(normalizedData.financeRecords),
+      financeLedger: JSON.stringify(normalizedData.financeLedger),
+      staffMembers: JSON.stringify(normalizedData.staffMembers),
+      accounts: JSON.stringify(normalizedData.accounts),
+      holidayItems: JSON.stringify(normalizedData.holidayItems),
+      workflowOptions: JSON.stringify(normalizedData.workflowOptions),
     }
-    teamDataRevisionRef.current = typeof savedData.revision === 'number' ? savedData.revision : null
+    teamDataRevisionRef.current = typeof normalizedData.revision === 'number' ? normalizedData.revision : null
   }, [])
   const updateTeamServiceInfoState = useCallback((info: TeamServiceInfo | null) => {
     teamServiceInfoRef.current = info
@@ -884,6 +1360,48 @@ function App() {
       setUpdateCheckStatus('error')
     } finally {
       updateCheckPendingRef.current = false
+    }
+  }, [])
+
+  const refreshCurrentWeather = useCallback(async (location: WeatherLocation) => {
+    const requestId = weatherRequestIdRef.current + 1
+    weatherRequestIdRef.current = requestId
+    setWeatherStatus('loading')
+    setWeatherError('')
+
+    try {
+      const snapshot = await fetchWeatherSnapshot(location)
+      if (weatherRequestIdRef.current !== requestId) return
+      saveStoredWeatherSnapshot(snapshot)
+      setWeatherSnapshot(snapshot)
+      setWeatherStatus('ready')
+    } catch (error) {
+      if (weatherRequestIdRef.current !== requestId) return
+      setWeatherStatus('error')
+      setWeatherError(error instanceof Error ? error.message : '天气更新失败')
+    }
+  }, [])
+
+  const refreshChinaHolidays = useCallback(async (forceRefresh = false) => {
+    const requestId = chinaHolidayRequestIdRef.current + 1
+    chinaHolidayRequestIdRef.current = requestId
+    const today = new Date()
+    const years = chinaHolidayYearsForRange(today, addDays(today, maxCalendarRangeDays))
+    setChinaHolidaySync((current) => ({ ...current, loading: true }))
+
+    try {
+      const result = await loadChinaHolidayItems(years, forceRefresh)
+      if (chinaHolidayRequestIdRef.current !== requestId) return
+      setChinaHolidayItems(result.items)
+      setChinaHolidaySync({
+        loading: false,
+        source: result.source,
+        updatedAt: result.updatedAt,
+        unavailableYears: result.unavailableYears,
+      })
+    } catch {
+      if (chinaHolidayRequestIdRef.current !== requestId) return
+      setChinaHolidaySync((current) => ({ ...current, loading: false }))
     }
   }, [])
 
@@ -941,23 +1459,18 @@ function App() {
   )
   const applyAppDataToState = useCallback(
     (savedData: AppData) => {
-      rememberRemoteSlices(savedData)
-      const normalizedProjects = savedData.projects.map(normalizeProject)
-      const calendarItems = ensureProjectCalendarItems(normalizedProjects, savedData.calendarItems)
+      const normalizedData = normalizeTeamAppData(savedData)
+      rememberRemoteSlices(normalizedData)
+      const calendarItems = ensureProjectCalendarItems(normalizedData.projects, normalizedData.calendarItems)
 
-      setAppProjects(normalizedProjects)
-      setAppTasks(
-        savedData.tasks.map((task) => ({
-          ...task,
-          status: normalizeTaskStatus(task.status),
-        })),
-      )
+      setAppProjects(normalizedData.projects)
+      setAppTasks(normalizedData.tasks)
       setAppCalendarItems(calendarItems)
-      setAppFinanceRecords(savedData.financeRecords.map(normalizeFinanceRecord))
-      setAppStaffMembers((savedData.staffMembers ?? []).map(normalizeStaffMember))
-      setAppAccounts(mergeStoredAccounts(savedData.accounts ?? loginAccounts))
-      setAppHolidayItems((savedData.holidayItems ?? []).map(normalizeHolidayItem))
-      setAppWorkflowOptions(normalizeWorkflowOptions(savedData.workflowOptions))
+      setAppFinanceRecords(normalizedData.financeRecords)
+      setAppStaffMembers(normalizedData.staffMembers ?? [])
+      setAppAccounts(normalizedData.accounts ?? loginAccounts)
+      setAppHolidayItems(normalizedData.holidayItems ?? [])
+      setAppWorkflowOptions(normalizedData.workflowOptions ?? defaultWorkflowOptions)
     },
     [rememberRemoteSlices],
   )
@@ -978,7 +1491,30 @@ function App() {
           try {
             // Effects can update several data slices in one user action. Serialize them so every
             // request uses the revision returned by the preceding local save.
-            const savedData = await saveTeamAppData(teamServerUrl, teamAccessKey, data, teamDataRevisionRef.current)
+            const baseline = remoteTeamDataRef.current
+            if (teamIncrementalCapabilityRef.current !== 'legacy' && baseline) {
+              const mutations = createTeamDataMutations(data, baseline)
+              if (mutations.length === 0) return true
+
+              const response = await saveTeamAppDataChanges(
+                teamServerUrl,
+                teamAccessKey,
+                mutations,
+                data.version ?? projectDataStorageVersion,
+                teamDataRevisionRef.current,
+              )
+              if (response) {
+                teamIncrementalCapabilityRef.current = 'supported'
+                rememberRemoteSlices(applyTeamDataChanges(baseline, response))
+                rememberConnectedTeamHost()
+                setTeamConnectionStatus('connected')
+                setTeamConnectionMessage('团队数据已保存')
+                return true
+              }
+              teamIncrementalCapabilityRef.current = 'legacy'
+            }
+
+            const savedData = await saveLegacyTeamAppData(teamServerUrl, teamAccessKey, data, teamDataRevisionRef.current)
             rememberRemoteSlices(savedData)
             rememberConnectedTeamHost()
             setTeamConnectionStatus('connected')
@@ -988,7 +1524,11 @@ function App() {
             if (error instanceof TeamDataConflictError && error.currentData) {
               applyAppDataToState(error.currentData)
               setTeamConnectionStatus('error')
-              setTeamConnectionMessage('团队数据已被其他电脑更新，已重新同步，请再操作一次。')
+              setTeamConnectionMessage(
+                error.code === 'UNSAFE_DATA_CHANGE'
+                  ? '已阻止异常批量删除并重新同步团队数据。'
+                  : '团队数据已被其他电脑更新，已重新同步，请再操作一次。',
+              )
               return false
             }
             throw error
@@ -1030,6 +1570,55 @@ function App() {
   }, [])
 
   useEffect(() => {
+    teamIncrementalCapabilityRef.current = 'unknown'
+    remoteTeamDataRef.current = null
+    remoteSliceSnapshotsRef.current = {}
+    teamDataRevisionRef.current = null
+  }, [dataMode, teamAccessKey, teamServerUrl])
+
+  useEffect(() => {
+    setWorkSchedule(loadStoredWorkSchedule(currentAccount?.id ?? ''))
+    setShowWorkScheduleSettings(false)
+  }, [currentAccount?.id])
+
+  useEffect(() => {
+    if (!weatherLocation) {
+      weatherRequestIdRef.current += 1
+      setWeatherSnapshot(null)
+      setWeatherStatus('idle')
+      setWeatherError('')
+      return
+    }
+
+    const cached = loadStoredWeatherSnapshot(weatherLocation)
+    setWeatherSnapshot(cached)
+    setWeatherStatus(cached ? 'ready' : 'loading')
+    setWeatherError('')
+
+    if (!cached || Date.now() - cached.fetchedAt >= weatherRefreshIntervalMs) {
+      void refreshCurrentWeather(weatherLocation)
+    }
+    const timer = window.setInterval(() => {
+      void refreshCurrentWeather(weatherLocation)
+    }, weatherRefreshIntervalMs)
+
+    return () => {
+      window.clearInterval(timer)
+      weatherRequestIdRef.current += 1
+    }
+  }, [refreshCurrentWeather, weatherLocation])
+
+  const calendarHolidayYearsKey = chinaHolidayYearsForRange(now, addDays(now, maxCalendarRangeDays)).join(',')
+
+  useEffect(() => {
+    void refreshChinaHolidays()
+
+    return () => {
+      chinaHolidayRequestIdRef.current += 1
+    }
+  }, [calendarHolidayYearsKey, refreshChinaHolidays])
+
+  useEffect(() => {
     if (!currentAccount?.id) return
     void checkForUpdates()
   }, [checkForUpdates, currentAccount?.id])
@@ -1042,9 +1631,11 @@ function App() {
 
   useEffect(() => {
     let canceled = false
+    const loadingSourceKey = dataSourceKey
 
     async function loadFileData() {
       setDataReady(false)
+      setLoadedDataSourceKey('')
       const savedData = await loadCurrentAppData()
       if (canceled) return
 
@@ -1054,6 +1645,7 @@ function App() {
         setTeamConnectionStatus('connected')
         setTeamConnectionMessage('团队数据已连接')
       }
+      setLoadedDataSourceKey(loadingSourceKey)
       setDataReady(true)
     }
 
@@ -1063,16 +1655,17 @@ function App() {
         setTeamConnectionStatus('error')
         setTeamConnectionMessage(error instanceof Error ? error.message : '团队服务连接失败')
       }
-      setDataReady(true)
+      setLoadedDataSourceKey('')
+      setDataReady(false)
     })
 
     return () => {
       canceled = true
     }
-  }, [applyAppDataToState, dataMode, loadCurrentAppData, rememberConnectedTeamHost])
+  }, [applyAppDataToState, dataMode, dataSourceKey, loadCurrentAppData, rememberConnectedTeamHost])
 
   useEffect(() => {
-    if (!dataReady) return
+    if (!dataSourceReady) return
     localStorage.setItem('crewflow-project-data-version', projectDataStorageVersion)
     localStorage.setItem('crewflow-projects', JSON.stringify(appProjects))
     if (!shouldSaveSlice('projects', appProjects)) return
@@ -1080,90 +1673,116 @@ function App() {
       version: projectDataStorageVersion,
       projects: appProjects,
     }).catch(() => undefined)
-  }, [appProjects, dataReady, saveCurrentAppData, shouldSaveSlice])
+  }, [appProjects, dataSourceReady, saveCurrentAppData, shouldSaveSlice])
 
   useEffect(() => {
-    if (!dataReady) return
+    if (!dataSourceReady) return
     localStorage.setItem('crewflow-tasks', JSON.stringify(appTasks))
     if (!shouldSaveSlice('tasks', appTasks)) return
     saveCurrentAppData({
       version: projectDataStorageVersion,
       tasks: appTasks,
     }).catch(() => undefined)
-  }, [appTasks, dataReady, saveCurrentAppData, shouldSaveSlice])
+  }, [appTasks, dataSourceReady, saveCurrentAppData, shouldSaveSlice])
 
   useEffect(() => {
-    if (!dataReady) return
+    if (!dataSourceReady) return
     localStorage.setItem('crewflow-calendar-items', JSON.stringify(appCalendarItems))
     if (!shouldSaveSlice('calendarItems', appCalendarItems)) return
     saveCurrentAppData({
       version: projectDataStorageVersion,
       calendarItems: appCalendarItems,
     }).catch(() => undefined)
-  }, [appCalendarItems, dataReady, saveCurrentAppData, shouldSaveSlice])
+  }, [appCalendarItems, dataSourceReady, saveCurrentAppData, shouldSaveSlice])
 
   useEffect(() => {
-    if (!dataReady) return
+    if (!dataSourceReady) return
     localStorage.setItem('crewflow-staff-members', JSON.stringify(appStaffMembers))
     if (!shouldSaveSlice('staffMembers', appStaffMembers)) return
     saveCurrentAppData({
       version: projectDataStorageVersion,
       staffMembers: appStaffMembers,
     }).catch(() => undefined)
-  }, [appStaffMembers, dataReady, saveCurrentAppData, shouldSaveSlice])
+  }, [appStaffMembers, dataSourceReady, saveCurrentAppData, shouldSaveSlice])
 
   useEffect(() => {
-    if (!dataReady) return
+    if (!dataSourceReady) return
     localStorage.setItem('crewflow-accounts', JSON.stringify(appAccounts))
     if (!shouldSaveSlice('accounts', appAccounts)) return
     saveCurrentAppData({
       version: projectDataStorageVersion,
       accounts: appAccounts,
     }).catch(() => undefined)
-  }, [appAccounts, dataReady, saveCurrentAppData, shouldSaveSlice])
+  }, [appAccounts, dataSourceReady, saveCurrentAppData, shouldSaveSlice])
 
   useEffect(() => {
-    if (!dataReady) return
+    if (!dataSourceReady) return
     localStorage.setItem('crewflow-holiday-items', JSON.stringify(appHolidayItems))
     if (!shouldSaveSlice('holidayItems', appHolidayItems)) return
     saveCurrentAppData({
       version: projectDataStorageVersion,
       holidayItems: appHolidayItems,
     }).catch(() => undefined)
-  }, [appHolidayItems, dataReady, saveCurrentAppData, shouldSaveSlice])
+  }, [appHolidayItems, dataSourceReady, saveCurrentAppData, shouldSaveSlice])
 
   useEffect(() => {
-    if (!dataReady) return
+    if (!dataSourceReady) return
     localStorage.setItem(workflowOptionsStorageKey, JSON.stringify(appWorkflowOptions))
     if (!shouldSaveSlice('workflowOptions', appWorkflowOptions)) return
     saveCurrentAppData({
       version: projectDataStorageVersion,
       workflowOptions: appWorkflowOptions,
     }).catch(() => undefined)
-  }, [appWorkflowOptions, dataReady, saveCurrentAppData, shouldSaveSlice])
+  }, [appWorkflowOptions, dataSourceReady, saveCurrentAppData, shouldSaveSlice])
 
   useEffect(() => {
-    if (dataMode !== 'team' || !dataReady) return
+    if (dataMode !== 'team' || !dataSourceReady) return
 
     const timer = window.setInterval(() => {
-      if (teamSavePendingRef.current > 0) return
+      if (teamSavePendingRef.current > 0 || teamSyncPendingRef.current) return
+      teamSyncPendingRef.current = true
 
-      loadCurrentAppData()
-        .then((savedData) => {
-          if (!savedData) return
-          applyAppDataToState(savedData)
-          rememberConnectedTeamHost()
-          setTeamConnectionStatus('connected')
-          setTeamConnectionMessage('团队数据已同步')
-        })
+      async function syncTeamData() {
+        const baseline = remoteTeamDataRef.current
+        const revision = teamDataRevisionRef.current
+
+        if (teamIncrementalCapabilityRef.current !== 'legacy' && baseline && Number.isInteger(revision)) {
+          const response = await fetchTeamAppDataChanges(teamServerUrl, teamAccessKey, revision as number)
+          if (response) {
+            teamIncrementalCapabilityRef.current = 'supported'
+            if (response.resetRequired) {
+              const savedData = await fetchTeamAppData(teamServerUrl, teamAccessKey)
+              applyAppDataToState(savedData)
+            } else if (response.changes.length > 0) {
+              applyAppDataToState(applyTeamDataChanges(baseline, response))
+            }
+            rememberConnectedTeamHost()
+            setTeamConnectionStatus('connected')
+            setTeamConnectionMessage('团队数据已同步')
+            return
+          }
+          teamIncrementalCapabilityRef.current = 'legacy'
+        }
+
+        const savedData = await loadCurrentAppData()
+        if (savedData) applyAppDataToState(savedData)
+        rememberConnectedTeamHost()
+        setTeamConnectionStatus('connected')
+        setTeamConnectionMessage('团队数据已同步')
+      }
+
+      syncTeamData()
         .catch((error) => {
           setTeamConnectionStatus('error')
           setTeamConnectionMessage(error instanceof Error ? error.message : '团队数据同步失败')
         })
+        .finally(() => {
+          teamSyncPendingRef.current = false
+        })
     }, 2 * 1000)
 
     return () => window.clearInterval(timer)
-  }, [applyAppDataToState, dataMode, dataReady, loadCurrentAppData, rememberConnectedTeamHost])
+  }, [applyAppDataToState, dataMode, dataSourceReady, loadCurrentAppData, rememberConnectedTeamHost, teamAccessKey, teamServerUrl])
 
   useEffect(() => {
     if (!showDataModeModal) return
@@ -1277,6 +1896,10 @@ function App() {
       }),
     [activeProjectIds, filteredProjectIds, roleVisibleCalendarItems, roleVisibleProjects, searchQuery],
   )
+  const displayHolidayItems = useMemo(
+    () => mergeHolidayItems(chinaHolidayItems, appHolidayItems),
+    [appHolidayItems, chinaHolidayItems],
+  )
 
   const selectedProject = activeProjects.find((project) => project.id === selectedProjectId) ?? activeProjects[0] ?? null
   const currentAccountTitle = accountDisplayTitle(currentAccount, appStaffMembers)
@@ -1361,6 +1984,22 @@ function App() {
     setShowWelcomeGuide(false)
   }
 
+  function selectWeatherLocation(location: WeatherLocation) {
+    saveStoredWeatherLocation(location)
+    setWeatherLocation(location)
+    setWeatherSnapshot(loadStoredWeatherSnapshot(location))
+    setWeatherStatus('loading')
+    setWeatherError('')
+    setShowWeatherSettings(false)
+  }
+
+  function updateWorkSchedule(schedule: WorkSchedule) {
+    if (!currentAccount || !isClockTime(schedule.start) || !isClockTime(schedule.end) || schedule.start === schedule.end) return
+    saveStoredWorkSchedule(currentAccount.id, schedule)
+    setWorkSchedule(schedule)
+    setShowWorkScheduleSettings(false)
+  }
+
   function updateDataMode(nextMode: DataMode) {
     setDataMode(nextMode)
     try {
@@ -1404,6 +2043,8 @@ function App() {
       const health = await fetchTeamHealth(teamServerUrl)
       if (!health.ok) throw new Error('团队服务未返回可用状态')
       const savedData = await fetchTeamAppData(teamServerUrl, teamAccessKey)
+      if (health.incrementalSync === true) teamIncrementalCapabilityRef.current = 'supported'
+      if (health.incrementalSync === false) teamIncrementalCapabilityRef.current = 'legacy'
       applyAppDataToState(savedData)
       rememberConnectedTeamHost()
       setTeamConnectionStatus('connected')
@@ -1423,7 +2064,7 @@ function App() {
       const localData = await window.desktopBridge?.loadAppData?.()
       const currentTeamData = await fetchTeamAppData(teamServerUrl, teamAccessKey)
       rememberRemoteSlices(currentTeamData)
-      const savedData = await saveTeamAppData(teamServerUrl, teamAccessKey, localData ?? currentAppDataSnapshot, currentTeamData.revision)
+      const savedData = await saveLegacyTeamAppData(teamServerUrl, teamAccessKey, localData ?? currentAppDataSnapshot, currentTeamData.revision)
       applyAppDataToState(savedData)
       updateDataMode('team')
       rememberConnectedTeamHost()
@@ -2005,6 +2646,9 @@ function App() {
       label: '总控',
       title: '',
     })
+    if (workSchedule && nextAccount.id !== currentAccount.id) {
+      saveStoredWorkSchedule(nextAccount.id, workSchedule)
+    }
     setAppAccounts((current) => current.map((account) => (account.id === currentAccount.id ? nextAccount : account)))
     setCurrentAccountId(nextAccount.id)
     setLoginAccountId(nextAccount.id)
@@ -2238,7 +2882,14 @@ function App() {
             visibleTasks={visibleTasks}
             calendarItems={visibleCalendarItems}
             now={now}
+            weatherLocation={weatherLocation}
+            weatherSnapshot={weatherSnapshot}
+            weatherStatus={weatherStatus}
+            weatherError={weatherError}
+            workSchedule={workSchedule}
             canAccessProjects={canAccessProjects}
+            onOpenWeatherSettings={() => setShowWeatherSettings(true)}
+            onOpenWorkScheduleSettings={() => setShowWorkScheduleSettings(true)}
             setSection={setSection}
             setSelectedProjectId={setSelectedProjectId}
           />
@@ -2268,12 +2919,15 @@ function App() {
           <CalendarView
             projects={activeProjects}
             calendarItems={visibleCalendarItems}
-            holidayItems={appHolidayItems}
+            holidayItems={displayHolidayItems}
+            customHolidayItems={appHolidayItems}
+            chinaHolidaySync={chinaHolidaySync}
             now={now}
             staffMembers={activeStaffMembers}
             canManagePlans={role === 'controller' || role === 'admin' || role === 'manager'}
             canManageHolidays={role === 'controller' || role === 'admin'}
             onHolidayItemsChange={setAppHolidayItems}
+            onRefreshChinaHolidays={() => void refreshChinaHolidays(true)}
             onAddPlan={handleAddCalendarPlan}
             onUpdatePlan={handleUpdateCalendarPlan}
             onDeletePlan={handleDeleteCalendarPlan}
@@ -2403,6 +3057,20 @@ function App() {
           onCopyTeamServiceUrl={copyLocalTeamServiceUrl}
         />
       )}
+      {showWeatherSettings && (
+        <WeatherSettingsModal
+          currentLocation={weatherLocation}
+          onClose={() => setShowWeatherSettings(false)}
+          onSelect={selectWeatherLocation}
+        />
+      )}
+      {showWorkScheduleSettings && (
+        <WorkScheduleSettingsModal
+          schedule={workSchedule}
+          onClose={() => setShowWorkScheduleSettings(false)}
+          onSave={updateWorkSchedule}
+        />
+      )}
       {showWorkflowOptionsModal && (
         <WorkflowOptionsModal
           options={appWorkflowOptions}
@@ -2412,6 +3080,162 @@ function App() {
         />
       )}
       {currentAccount && showWelcomeGuide && <WelcomeGuideModal guide={welcomeGuides[currentAccount.role]} onClose={closeWelcomeGuide} onDismiss={dismissWelcomeGuide} />}
+    </div>
+  )
+}
+
+function WeatherSettingsModal({
+  currentLocation,
+  onClose,
+  onSelect,
+}: {
+  currentLocation: WeatherLocation | null
+  onClose: () => void
+  onSelect: (location: WeatherLocation) => void
+}) {
+  const [query, setQuery] = useState(currentLocation?.name ?? '')
+  const [results, setResults] = useState<WeatherLocation[]>([])
+  const [status, setStatus] = useState<'idle' | 'searching' | 'done' | 'error'>('idle')
+  const [error, setError] = useState('')
+
+  async function handleSearch() {
+    const cleanQuery = query.trim()
+    if (!cleanQuery || status === 'searching') return
+
+    setStatus('searching')
+    setError('')
+    try {
+      const locations = await searchWeatherLocations(cleanQuery)
+      setResults(locations)
+      setStatus('done')
+    } catch {
+      setResults([])
+      setStatus('error')
+      setError('城市搜索失败，请检查网络后重试。')
+    }
+  }
+
+  return (
+    <div className="modalBackdrop" role="presentation" onMouseDown={onClose}>
+      <section className="financeEntryModal weatherSettingsModal" role="dialog" aria-modal="true" aria-label="设置天气城市" onMouseDown={(event) => event.stopPropagation()}>
+        <header>
+          <div>
+            <span className="eyebrow">天气</span>
+            <h2>设置所在城市</h2>
+          </div>
+          <button type="button" onClick={onClose} title="关闭">
+            <X size={18} />
+          </button>
+        </header>
+
+        <div className="weatherSettingsBody">
+          {currentLocation && (
+            <div className="weatherCurrentLocation">
+              <span>当前城市</span>
+              <strong>{weatherLocationDisplay(currentLocation)}</strong>
+            </div>
+          )}
+
+          <form
+            className="weatherSearchForm"
+            onSubmit={(event) => {
+              event.preventDefault()
+              void handleSearch()
+            }}
+          >
+            <label htmlFor="weather-city-search">搜索城市</label>
+            <div>
+              <input
+                id="weather-city-search"
+                autoFocus
+                value={query}
+                onChange={(event) => setQuery(event.target.value)}
+                placeholder="输入城市，例如：北京、上海、成都"
+              />
+              <button type="submit" disabled={!query.trim() || status === 'searching'}>
+                <Search size={17} />
+                <span>{status === 'searching' ? '搜索中' : '搜索'}</span>
+              </button>
+            </div>
+          </form>
+
+          <div className="weatherSearchResults" aria-live="polite">
+            {status === 'idle' && <p className="settingsHint">选择城市后，天气会每 30 分钟自动更新。</p>}
+            {status === 'done' && results.length === 0 && <EmptyState title="没有找到城市" note="请尝试输入完整城市名称。" />}
+            {status === 'error' && <p className="settingsError">{error}</p>}
+            {results.map((location) => (
+              <button key={`${location.id}-${weatherLocationKey(location)}`} type="button" onClick={() => onSelect(location)}>
+                <strong>{location.name}</strong>
+                <span>{weatherLocationRegion(location)}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <footer>
+          <span className="settingsFooterNote">天气设置仅保存在当前电脑。</span>
+          <button type="button" onClick={onClose}>关闭</button>
+        </footer>
+      </section>
+    </div>
+  )
+}
+
+function WorkScheduleSettingsModal({
+  schedule,
+  onClose,
+  onSave,
+}: {
+  schedule: WorkSchedule | null
+  onClose: () => void
+  onSave: (schedule: WorkSchedule) => void
+}) {
+  const [start, setStart] = useState(schedule?.start ?? '09:00')
+  const [end, setEnd] = useState(schedule?.end ?? '18:00')
+  const nextSchedule = { start, end }
+  const isValid = isClockTime(start) && isClockTime(end) && start !== end
+  const crossesMidnight = isValid && clockTimeToMinutes(end) < clockTimeToMinutes(start)
+
+  return (
+    <div className="modalBackdrop" role="presentation" onMouseDown={onClose}>
+      <section className="financeEntryModal workScheduleSettingsModal" role="dialog" aria-modal="true" aria-label="设置上下班时间" onMouseDown={(event) => event.stopPropagation()}>
+        <header>
+          <div>
+            <span className="eyebrow">当前时间</span>
+            <h2>设置上下班时间</h2>
+          </div>
+          <button type="button" onClick={onClose} title="关闭">
+            <X size={18} />
+          </button>
+        </header>
+
+        <div className="workScheduleSettingsBody">
+          <div className="workScheduleFields">
+            <label>
+              <span>上班时间</span>
+              <input type="time" step="300" value={start} onChange={(event) => setStart(event.target.value)} />
+            </label>
+            <label>
+              <span>下班时间</span>
+              <input type="time" step="300" value={end} onChange={(event) => setEnd(event.target.value)} />
+            </label>
+          </div>
+
+          <div className="workSchedulePreview">
+            <span>主页显示预览</span>
+            <strong>{isValid ? workScheduleStatus(new Date(), nextSchedule) : '上下班时间不能相同'}</strong>
+          </div>
+          {crossesMidnight && <p className="settingsHint">下班时间早于上班时间，将按次日下班计算。</p>}
+        </div>
+
+        <footer>
+          <span className="settingsFooterNote">该时间按当前账号保存在本机。</span>
+          <div className="settingsFooterActions">
+            <button type="button" onClick={onClose}>取消</button>
+            <button className="settingsPrimaryButton" type="button" disabled={!isValid} onClick={() => onSave(nextSchedule)}>保存</button>
+          </div>
+        </footer>
+      </section>
     </div>
   )
 }
@@ -2612,6 +3436,7 @@ function DataModeModal({
   const singleDataDirectory = teamServiceInfo?.singleDataDirectory ?? ''
   const teamDataFile = teamServiceInfo?.teamDataFile ?? teamServiceInfo?.dataFile ?? ''
   const teamDataDirectory = teamServiceInfo?.teamDataDirectory ?? ''
+  const backupDirectory = teamServiceInfo?.backupDirectory ?? ''
   const accessKeyFile = teamServiceInfo?.accessKeyFile ?? ''
   const accessKeyDirectory = teamServiceInfo?.accessKeyDirectory ?? ''
 
@@ -2632,6 +3457,7 @@ function DataModeModal({
   return (
     <div className="modalBackdrop" role="presentation" onMouseDown={onClose}>
       <section className="financeEntryModal dataModeModal" role="dialog" aria-modal="true" aria-label="工作模式设置" onMouseDown={(event) => event.stopPropagation()}>
+        <div className="dataModeScroll">
         <header>
           <div>
             <span className="eyebrow">工作模式</span>
@@ -2710,7 +3536,14 @@ function DataModeModal({
             <DataPathRow label="团队模式数据" value={`保存在主机：${activeRemoteTeamHost}`} note="请在开启团队服务的电脑查看具体文件路径。" onCopy={copyPath} onOpenDirectory={openDirectory} />
           ) : (
             <>
-              <DataPathRow label="团队服务数据" value={teamDataFile || '开启团队服务后自动显示'} directory={teamDataDirectory} onCopy={copyPath} onOpenDirectory={openDirectory} />
+              <DataPathRow
+                label={teamServiceInfo?.storageEngine === 'sqlite' ? '团队 SQLite 数据库' : '团队服务数据'}
+                value={teamDataFile || '开启团队服务后自动显示'}
+                directory={teamDataDirectory}
+                onCopy={copyPath}
+                onOpenDirectory={openDirectory}
+              />
+              <DataPathRow label="团队数据备份" value={backupDirectory || '开启团队服务后自动创建'} directory={backupDirectory} onCopy={copyPath} onOpenDirectory={openDirectory} />
               <DataPathRow label="访问密钥文件" value={accessKeyFile || '开启团队服务后自动生成'} directory={accessKeyDirectory} onCopy={copyPath} onOpenDirectory={openDirectory} />
             </>
           )}
@@ -2737,6 +3570,7 @@ function DataModeModal({
             完成
           </button>
         </footer>
+        </div>
       </section>
     </div>
   )
@@ -3174,7 +4008,14 @@ function Dashboard({
   visibleTasks,
   calendarItems,
   now,
+  weatherLocation,
+  weatherSnapshot,
+  weatherStatus,
+  weatherError,
+  workSchedule,
   canAccessProjects,
+  onOpenWeatherSettings,
+  onOpenWorkScheduleSettings,
   setSection,
   setSelectedProjectId,
 }: {
@@ -3185,13 +4026,21 @@ function Dashboard({
   visibleTasks: Task[]
   calendarItems: CalendarItem[]
   now: Date
+  weatherLocation: WeatherLocation | null
+  weatherSnapshot: WeatherSnapshot | null
+  weatherStatus: WeatherStatus
+  weatherError: string
+  workSchedule: WorkSchedule | null
   canAccessProjects: boolean
+  onOpenWeatherSettings: () => void
+  onOpenWorkScheduleSettings: () => void
   setSection: (section: Section) => void
   setSelectedProjectId: (id: string) => void
 }) {
-  const deliveryCount = calendarItems.length
+  const deliveryCount = calendarItems.filter((item) => isCalendarItemInCurrentWeek(now, item)).length
   const openTasks = visibleTasks.filter((task) => task.status !== '已完成')
   const priorityProjects = [...visibleProjects].sort((left, right) => projectPriorityScore(right) - projectPriorityScore(left))
+  const weatherContent = weatherCardContent(weatherLocation, weatherSnapshot, weatherStatus, weatherError)
 
   return (
     <div className="contentGrid dashboardGrid">
@@ -3232,9 +4081,15 @@ function Dashboard({
       </section>
 
       <section className="panel span4 widgets">
-        <Widget icon={CloudSun} title="天气" value="28°C 多云" note="适合外拍，傍晚有风" />
-        <Widget icon={Clock3} title="当前时间" value={formatClock(now)} note={workdayCountdown(now)} />
-        <Widget icon={CalendarDays} title="本周交付" value={`${deliveryCount} 个`} note={deliveryCount > 0 ? '来自已设置的交付日历' : '暂无交付节点'} />
+        <Widget icon={CloudSun} title="天气" value={weatherContent.value} note={weatherContent.note} onClick={onOpenWeatherSettings} />
+        <Widget
+          icon={Clock3}
+          title="当前时间"
+          value={formatClock(now)}
+          note={workSchedule ? workScheduleStatus(now, workSchedule) : '点击设置上下班时间'}
+          onClick={onOpenWorkScheduleSettings}
+        />
+        <Widget icon={CalendarDays} title="本周交付" value={`${deliveryCount} 个`} note={deliveryCount > 0 ? '本周一至周日的交付节点' : '本周暂无交付节点'} />
       </section>
 
       <MetricCard icon={AlertTriangle} label="风险项目" value={`${riskCount}`} tone="danger" />
@@ -3319,10 +4174,10 @@ function Projects({
         <div className="panelHeader">
           <div>
             <h2>项目列表</h2>
-            <p>最多 15 个项目时，列表比大看板更高效</p>
+            <p>共 {projects.length} 个项目</p>
           </div>
         </div>
-        <div className="projectTable">
+        <div className="projectTable projectTableViewport">
           {projects.length === 0 && <EmptyState title="项目中心暂无项目" note="从右上角新建项目开始，项目会进入任务、日历和财务。" />}
           {projects.map((project) => {
             const departedNames = departedPeopleForProject(project, allTasks, allCalendarItems, departedStaff)
@@ -4500,11 +5355,14 @@ function CalendarView({
   projects,
   calendarItems,
   holidayItems,
+  customHolidayItems,
+  chinaHolidaySync,
   now,
   staffMembers,
   canManagePlans,
   canManageHolidays,
   onHolidayItemsChange,
+  onRefreshChinaHolidays,
   onAddPlan,
   onUpdatePlan,
   onDeletePlan,
@@ -4512,11 +5370,14 @@ function CalendarView({
   projects: Project[]
   calendarItems: CalendarItem[]
   holidayItems: HolidayItem[]
+  customHolidayItems: HolidayItem[]
+  chinaHolidaySync: ChinaHolidaySyncState
   now: Date
   staffMembers: StaffMember[]
   canManagePlans: boolean
   canManageHolidays: boolean
   onHolidayItemsChange: (items: HolidayItem[]) => void
+  onRefreshChinaHolidays: () => void
   onAddPlan: (plan: ProjectPlanPayload) => void
   onUpdatePlan: (itemKey: string, plan: ProjectPlanPayload) => void
   onDeletePlan: (itemKey: string) => void
@@ -4749,9 +5610,11 @@ function CalendarView({
       )}
       {showHolidaySettings && (
         <HolidaySettingsModal
-          holidayItems={holidayItems}
+          holidayItems={customHolidayItems}
+          chinaHolidaySync={chinaHolidaySync}
           onClose={() => setShowHolidaySettings(false)}
           onChange={onHolidayItemsChange}
+          onRefreshChinaHolidays={onRefreshChinaHolidays}
         />
       )}
     </div>
@@ -4873,12 +5736,16 @@ function CalendarPlanModal({
 
 function HolidaySettingsModal({
   holidayItems,
+  chinaHolidaySync,
   onClose,
   onChange,
+  onRefreshChinaHolidays,
 }: {
   holidayItems: HolidayItem[]
+  chinaHolidaySync: ChinaHolidaySyncState
   onClose: () => void
   onChange: (items: HolidayItem[]) => void
+  onRefreshChinaHolidays: () => void
 }) {
   const [date, setDate] = useState(defaultDeliveryDate())
   const [name, setName] = useState('')
@@ -4921,6 +5788,24 @@ function HolidaySettingsModal({
           </button>
         </header>
         <div className="financeEntryForm">
+          <div className="holidaySourcePanel">
+            <div>
+              <strong>中国法定节假日</strong>
+              <span>{chinaHolidaySyncLabel(chinaHolidaySync)}</span>
+              <a href={chinaHolidayProjectUrl} target="_blank" rel="noreferrer">
+                数据源：holiday-cn
+              </a>
+            </div>
+            <button type="button" onClick={onRefreshChinaHolidays} disabled={chinaHolidaySync.loading} title="更新法定节假日">
+              <RefreshCw size={16} className={chinaHolidaySync.loading ? 'spinning' : ''} />
+              {chinaHolidaySync.loading ? '更新中' : '更新'}
+            </button>
+          </div>
+
+          <div className="holidaySectionHeading">
+            <strong>自定义日期</strong>
+            <span>{sortedItems.length} 项</span>
+          </div>
           <div className="holidayEditor">
             <label className="textField">
               <span>日期</span>
@@ -4955,7 +5840,7 @@ function HolidaySettingsModal({
                 </button>
               </article>
             ))}
-            {sortedItems.length === 0 && <EmptyState title="还没有节假日配置" note="日期和星期会自动显示；法定休假和调休上班可在这里维护。" />}
+            {sortedItems.length === 0 && <EmptyState title="暂无自定义日期" note="中国法定休假和调休上班日会自动显示。" />}
           </div>
         </div>
       </section>
@@ -6844,11 +7729,22 @@ function dateForCalendarItem(now: Date, item: CalendarItem) {
   const date = new Date(now)
   if (item.day < now.getDate()) date.setMonth(date.getMonth() + 1)
   date.setDate(item.day)
-  return date.toISOString().slice(0, 10)
+  return localDateKey(date)
+}
+
+function isCalendarItemInCurrentWeek(now: Date, item: CalendarItem) {
+  const weekStart = new Date(now)
+  const daysSinceMonday = (weekStart.getDay() + 6) % 7
+  weekStart.setDate(weekStart.getDate() - daysSinceMonday)
+  weekStart.setHours(0, 0, 0, 0)
+  const weekEnd = addDays(weekStart, 6)
+  const itemDateKey = dateForCalendarItem(now, item).match(/^\d{4}-\d{2}-\d{2}/)?.[0]
+
+  return Boolean(itemDateKey && itemDateKey >= localDateKey(weekStart) && itemDateKey <= localDateKey(weekEnd))
 }
 
 function isCalendarItemOnDate(now: Date, item: CalendarItem, date: Date) {
-  return dateForCalendarItem(now, item) === date.toISOString().slice(0, 10)
+  return dateForCalendarItem(now, item) === localDateKey(date)
 }
 
 function loadStoredTasks() {
@@ -7261,17 +8157,27 @@ function formatCollectionPlan(date?: string, note?: string) {
   return [cleanDate, cleanNote].filter(Boolean).join(' ')
 }
 
-function Widget({ icon: Icon, title, value, note }: { icon: typeof CloudSun; title: string; value: string; note: string }) {
-  return (
-    <div className="widget">
+function Widget({ icon: Icon, title, value, note, onClick }: { icon: typeof CloudSun; title: string; value: string; note: string; onClick?: () => void }) {
+  const content = (
+    <>
       <Icon size={20} />
       <div>
         <span>{title}</span>
         <strong>{value}</strong>
         <p>{note}</p>
       </div>
-    </div>
+    </>
   )
+
+  if (onClick) {
+    return (
+      <button className="widget widgetButton" type="button" onClick={onClick} title={`设置${title}`}>
+        {content}
+      </button>
+    )
+  }
+
+  return <div className="widget">{content}</div>
 }
 
 function TaskRows({
@@ -7319,7 +8225,7 @@ function Timeline({ calendarItems }: { calendarItems: CalendarItem[] }) {
     <div className="timeline">
       {calendarItems.length === 0 && <EmptyState title="暂无交付节点" note="新建项目后设置交付日历，这里会显示具体项目和流程节点。" />}
       {calendarItems.map((item) => (
-        <div key={`${item.time}-${item.title}`} className="timelineItem">
+        <div key={calendarItemKey(item)} className="timelineItem">
           <span>{item.time}</span>
           <div>
             <strong>{item.title}</strong>
@@ -7372,21 +8278,82 @@ function formatClock(date: Date) {
   })
 }
 
-function workdayCountdown(date: Date) {
-  const endOfWorkday = new Date(date)
-  endOfWorkday.setHours(18, 0, 0, 0)
-  const diffMs = endOfWorkday.getTime() - date.getTime()
+function weatherDescription(code: number) {
+  if (code === 0) return '晴'
+  if (code === 1) return '晴间多云'
+  if (code === 2) return '多云'
+  if (code === 3) return '阴'
+  if (code === 45 || code === 48) return '雾'
+  if (code >= 51 && code <= 55) return '毛毛雨'
+  if (code === 56 || code === 57 || code === 66 || code === 67) return '冻雨'
+  if (code >= 61 && code <= 65) return '雨'
+  if (code >= 71 && code <= 75) return '雪'
+  if (code === 77) return '雪粒'
+  if (code >= 80 && code <= 82) return '阵雨'
+  if (code === 85 || code === 86) return '阵雪'
+  if (code === 95) return '雷雨'
+  if (code === 96 || code === 99) return '雷雨伴冰雹'
+  return '天气更新'
+}
 
-  if (diffMs <= 0) return '今日收工节点已过'
+function weatherLocationRegion(location: WeatherLocation) {
+  return Array.from(new Set([location.admin1, location.country].filter((item) => item && item !== location.name))).join(' · ') || '地区信息暂缺'
+}
 
-  const totalMinutes = Math.ceil(diffMs / 60000)
-  const hours = Math.floor(totalMinutes / 60)
-  const minutes = totalMinutes % 60
+function weatherLocationDisplay(location: WeatherLocation) {
+  const region = weatherLocationRegion(location)
+  return region === '地区信息暂缺' ? location.name : `${location.name} · ${region}`
+}
 
-  if (hours <= 0) return `距离今日收工节点 ${minutes} 分钟`
-  if (minutes === 0) return `距离今日收工节点 ${hours} 小时`
+function weatherCardContent(
+  location: WeatherLocation | null,
+  snapshot: WeatherSnapshot | null,
+  status: WeatherStatus,
+  error: string,
+) {
+  if (!location) return { value: '设置城市', note: '点击选择所在城市' }
 
-  return `距离今日收工节点 ${hours} 小时 ${minutes} 分钟`
+  const matchingSnapshot = snapshot?.locationKey === weatherLocationKey(location) ? snapshot : null
+  if (!matchingSnapshot) {
+    if (status === 'error') return { value: '暂时无法更新', note: `${location.name} · 点击切换城市` }
+    return { value: '正在获取', note: weatherLocationDisplay(location) }
+  }
+
+  const suffix = status === 'loading' ? ' · 更新中' : status === 'error' || error ? ' · 使用缓存' : ''
+  return {
+    value: `${Math.round(matchingSnapshot.temperature)}°C ${weatherDescription(matchingSnapshot.weatherCode)}`,
+    note: `${location.name} · 体感 ${Math.round(matchingSnapshot.apparentTemperature)}°C · 风 ${Math.round(matchingSnapshot.windSpeed)} km/h${suffix}`,
+  }
+}
+
+function clockTimeToMinutes(value: string) {
+  const [hours, minutes] = value.split(':').map(Number)
+  return hours * 60 + minutes
+}
+
+function formatScheduleDuration(totalMinutes: number) {
+  const roundedMinutes = Math.max(1, Math.ceil(totalMinutes))
+  const hours = Math.floor(roundedMinutes / 60)
+  const minutes = roundedMinutes % 60
+
+  if (hours === 0) return `${minutes}分钟`
+  if (minutes === 0) return `${hours}小时`
+  return `${hours}小时 ${minutes}分钟`
+}
+
+function workScheduleStatus(date: Date, schedule: WorkSchedule) {
+  const startMinutes = clockTimeToMinutes(schedule.start)
+  const endMinutes = clockTimeToMinutes(schedule.end)
+  const currentMinutes = date.getHours() * 60 + date.getMinutes() + date.getSeconds() / 60
+  const worksOvernight = startMinutes > endMinutes
+  const isWorking = worksOvernight
+    ? currentMinutes >= startMinutes || currentMinutes < endMinutes
+    : currentMinutes >= startMinutes && currentMinutes < endMinutes
+  const targetMinutes = isWorking ? endMinutes : startMinutes
+  const remainingMinutes = (targetMinutes - currentMinutes + 24 * 60) % (24 * 60)
+  const targetLabel = isWorking ? '下班' : '上班'
+
+  return `${schedule.start}–${schedule.end} · 距离${targetLabel} ${formatScheduleDuration(remainingMinutes)}`
 }
 
 function addDays(date: Date, days: number) {
@@ -7429,6 +8396,36 @@ function localDateKey(date: Date) {
 
 function holidayForDate(items: HolidayItem[], date: Date) {
   return items.find((item) => item.date === localDateKey(date))
+}
+
+function mergeHolidayItems(chinaItems: HolidayItem[], customItems: HolidayItem[]) {
+  const itemsByDate = new Map(chinaItems.map((item) => [item.date, item]))
+  customItems.forEach((item) => itemsByDate.set(item.date, item))
+  return Array.from(itemsByDate.values()).sort((left, right) => left.date.localeCompare(right.date))
+}
+
+function chinaHolidaySyncLabel(sync: ChinaHolidaySyncState) {
+  if (sync.loading) return '正在更新'
+
+  const sourceLabel: Record<ChinaHolidayLoadSource, string> = {
+    network: '已同步',
+    cache: '使用本机缓存',
+    bundled: '使用内置数据',
+    mixed: '已同步（含缓存）',
+    unavailable: '暂不可用',
+  }
+  const updatedAt = sync.updatedAt
+    ? ` · ${new Intl.DateTimeFormat('zh-CN', {
+        month: 'numeric',
+        day: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+        hour12: false,
+      }).format(sync.updatedAt)}`
+    : ''
+  const unavailable = sync.unavailableYears.length > 0 ? ` · 未取得 ${sync.unavailableYears.join('、')} 年` : ''
+
+  return `${sourceLabel[sync.source]}${updatedAt}${unavailable}`
 }
 
 function formatHolidayDate(dateValue: string) {

@@ -281,6 +281,7 @@ function macStatus() {
 }
 
 async function windowsInstall(options = {}) {
+  windowsStopProcess(options)
   const runtime = serviceRuntime(options)
   const accessKey = await readOrCreateAccessKey(options)
   const logsDir = path.join(process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming'), 'CrewFlow Server', 'logs')

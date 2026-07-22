@@ -80,7 +80,7 @@ async function getTeamServiceInfo(message = '') {
   const running = Boolean(health?.ok)
   const singleDataFile = appDataPath()
   const teamDataDirectory = defaultServerDataDir()
-  const teamDataFile = health?.dataFile || path.join(teamDataDirectory, 'crewflow-team-data.json')
+  const teamDataFile = health?.dataFile || path.join(teamDataDirectory, 'crewflow-team.db')
   const accessKeyFile = serviceAccessKeyPath()
 
   return {
@@ -97,10 +97,19 @@ async function getTeamServiceInfo(message = '') {
     singleDataDirectory: path.dirname(singleDataFile),
     teamDataFile,
     teamDataDirectory: path.dirname(teamDataFile),
+    legacyDataFile: health?.legacyDataFile || path.join(teamDataDirectory, 'crewflow-team-data.json'),
+    backupDirectory: health?.backupDirectory || path.join(teamDataDirectory, 'backups'),
+    migrationBackup: health?.migrationBackup,
+    storageEngine: health?.storageEngine,
+    schemaVersion: health?.schemaVersion,
+    incrementalSync: health?.incrementalSync,
+    migrationError: health?.migrationError,
     accessKeyFile,
     accessKeyDirectory: path.dirname(accessKeyFile),
     updatedAt: health?.updatedAt,
-    message: message || (running ? '团队服务正在运行' : '团队服务未运行'),
+    message: health?.migrationError
+      ? `SQLite 迁移未完成，已继续使用原 JSON 数据：${health.migrationError}`
+      : message || (running ? '团队服务正在运行' : '团队服务未运行'),
   }
 }
 
