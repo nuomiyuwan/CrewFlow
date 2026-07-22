@@ -2869,7 +2869,7 @@ h1 {
 
 .customCustomer {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr) auto auto;
   gap: 10px;
 }
 
@@ -2903,6 +2903,88 @@ h1 {
 .customCustomer button:disabled {
   cursor: not-allowed;
   opacity: 0.44;
+}
+
+.customCustomer .dangerIconButton {
+  display: inline-grid;
+  width: 40px;
+  padding: 0;
+  place-items: center;
+  color: #ff9da8;
+  border-color: rgba(255, 112, 128, 0.28);
+  background: rgba(255, 92, 112, 0.08);
+}
+
+.customerDeleteNotice {
+  display: grid;
+  gap: 12px;
+  border: 1px solid rgba(255, 112, 128, 0.25);
+  border-radius: 12px;
+  background: rgba(76, 24, 38, 0.24);
+  padding: 12px;
+}
+
+.customerDeleteNotice strong {
+  display: block;
+  color: #ffd6db;
+  font-size: 13px;
+}
+
+.customerDeleteNotice p {
+  margin: 4px 0 0;
+  color: rgba(226, 235, 245, 0.66);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.customerReplacementActions {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 8px;
+}
+
+.customerReplacementActions input,
+.customerReplacementActions button {
+  min-width: 0;
+  min-height: 38px;
+  border: 1px solid rgba(180, 202, 216, 0.18);
+  border-radius: 10px;
+  outline: 0;
+}
+
+.customerReplacementActions input {
+  color: #f4f8ff;
+  background: rgba(18, 26, 39, 0.72);
+  padding: 0 11px;
+}
+
+.customerReplacementActions button {
+  color: #ffd6db;
+  background: rgba(255, 92, 112, 0.08);
+  cursor: pointer;
+  padding: 0 12px;
+}
+
+.customerReplacementActions button:last-child {
+  color: rgba(226, 235, 245, 0.78);
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.customerReplacementActions button:disabled {
+  cursor: not-allowed;
+  opacity: 0.44;
+}
+
+@media (max-width: 720px) {
+  .customCustomer,
+  .customerReplacementActions {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .customCustomer input,
+  .customerReplacementActions input {
+    grid-column: 1 / -1;
+  }
 }
 
 .taskSource > span {

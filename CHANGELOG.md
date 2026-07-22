@@ -2,6 +2,14 @@
 
 All notable changes to CrewFlow are documented in this file.
 
+## 1.2.1 - 2026-07-22
+
+### Fixed
+
+- Made customer units editable during project intake and saved newly entered values to the selected province's reusable customer-unit list.
+- Synced customer-unit changes made while editing a project back to the matching province's intake candidates without altering historical projects.
+- Added protected customer-unit deletion: linked projects must be reassigned to a replacement unit before the old option can be removed.
+
 ## 1.2.0 - 2026-07-22
 
 ### Added

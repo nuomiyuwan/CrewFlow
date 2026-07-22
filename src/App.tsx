@@ -21,6 +21,7 @@ import {
   Search,
   Send,
   RefreshCw,
+  Trash2,
   Users,
   X,
 } from 'lucide-react'
@@ -2199,6 +2200,35 @@ function App() {
     })
   }
 
+  function deleteCustomerOption(province: string, value: string, replacementValue = '') {
+    const cleanProvince = province.trim()
+    const cleanValue = value.trim()
+    const cleanReplacement = replacementValue.trim()
+    const currentCustomers = appWorkflowOptions.customerGroups[cleanProvince] ?? []
+    if (!cleanProvince || !cleanValue || !currentCustomers.includes(cleanValue)) return null
+
+    const linkedProjects = appProjects.filter((project) => project.client === cleanValue)
+    if (linkedProjects.length > 0 && (!cleanReplacement || cleanReplacement === cleanValue)) return null
+
+    const remainingCustomers = currentCustomers.filter((customer) => customer !== cleanValue)
+    const nextCustomers = cleanReplacement && !remainingCustomers.includes(cleanReplacement) ? [...remainingCustomers, cleanReplacement] : remainingCustomers
+    setAppWorkflowOptions((current) =>
+      normalizeWorkflowOptions({
+        ...current,
+        customerGroups: {
+          ...current.customerGroups,
+          [cleanProvince]: nextCustomers,
+        },
+      }),
+    )
+
+    if (linkedProjects.length > 0) {
+      setAppProjects((current) => current.map((project) => (project.client === cleanValue ? { ...project, client: cleanReplacement } : project)))
+    }
+
+    return cleanReplacement || nextCustomers[0] || ''
+  }
+
   function handleUpdateWorkflowOptions(nextOptions: WorkflowOptions, renames: WorkflowOptionRename[] = []) {
     const normalizedOptions = normalizeWorkflowOptions(nextOptions)
     const taskWorkRename = new Map(
@@ -2406,6 +2436,9 @@ function App() {
 
   function handleUpdateProject(updatedProject: Project, updatedTasks?: Task[]) {
     const previousProject = appProjects.find((project) => project.id === updatedProject.id)
+    const previousClientProvince = previousProject
+      ? Object.entries(appWorkflowOptions.customerGroups).find(([, customers]) => customers.includes(previousProject.client))?.[0]
+      : undefined
     const dueDate = new Date(updatedProject.due)
     const previousDueText = previousProject ? formatMonthDay(new Date(previousProject.due)) : ''
     const milestoneTitle = updatedProject.calendarTitle?.trim() || updatedProject.stage
@@ -2462,6 +2495,9 @@ function App() {
         }
       }),
     )
+    if (previousClientProvince && updatedProject.client !== previousProject?.client) {
+      addCustomerOption(previousClientProvince, updatedProject.client)
+    }
     setEditingProject(null)
   }
 
@@ -2983,13 +3019,16 @@ function App() {
 
       {showNewProjectModal && (
           <NewProjectModal
+            projects={appProjects}
             staffMembers={activeStaffMembers}
             workflowOptions={appWorkflowOptions}
+            canDeleteCustomers={canManageWorkflowOptions}
             preferredManager={role === 'manager' ? currentUser ?? undefined : undefined}
             lockManager={role === 'manager'}
             onAddProjectType={addProjectTypeOption}
             onAddCustomerProvince={addCustomerProvinceOption}
             onAddCustomer={addCustomerOption}
+            onDeleteCustomer={deleteCustomerOption}
             onClose={() => setShowNewProjectModal(false)}
             onCreateProject={handleCreateProject}
           />
@@ -4449,23 +4488,29 @@ function ArchiveView({
 }
 
 function NewProjectModal({
+  projects,
   staffMembers,
   workflowOptions,
+  canDeleteCustomers,
   preferredManager,
   lockManager = false,
   onAddProjectType,
   onAddCustomerProvince,
   onAddCustomer,
+  onDeleteCustomer,
   onClose,
   onCreateProject,
 }: {
+  projects: Project[]
   staffMembers: StaffMember[]
   workflowOptions: WorkflowOptions
+  canDeleteCustomers: boolean
   preferredManager?: string
   lockManager?: boolean
   onAddProjectType: (typeName: string) => void
   onAddCustomerProvince: (provinceName: string) => void
   onAddCustomer: (provinceName: string, customerName: string) => void
+  onDeleteCustomer: (provinceName: string, customerName: string, replacementName?: string) => string | null
   onClose: () => void
   onCreateProject: (payload: NewProjectPayload) => void
 }) {
@@ -4504,11 +4549,6 @@ function NewProjectModal({
     if (province && provinceOptions.includes(province)) return
     setProvince(provinceOptions[0] ?? '')
   }, [province, provinceOptions])
-
-  useEffect(() => {
-    if (client && customerOptions.includes(client)) return
-    setClient(customerOptions[0] ?? '')
-  }, [client, customerOptions])
 
   function handleProvinceSelect(nextProvince: string) {
     setProvince(nextProvince)
@@ -4558,13 +4598,16 @@ function NewProjectModal({
   }
 
   function submitProject() {
-    if (!name.trim() || !type || !client) return
+    const cleanClient = client.trim()
+    if (!name.trim() || !type || !province || !cleanClient) return
+
+    onAddCustomer(province, cleanClient)
 
     onCreateProject({
       name: name.trim(),
       path: path || '\\\\ProjectHost\\projects\\待选择项目文件夹',
       type,
-      client,
+      client: cleanClient,
       clientContact: clientContact.trim(),
       manager,
       priority,
@@ -4618,10 +4661,13 @@ function NewProjectModal({
             provinces={provinceOptions}
             customers={customerOptions}
             client={client}
+            linkedProjects={projects.filter((project) => project.client === client)}
+            canDelete={canDeleteCustomers}
             onProvinceSelect={handleProvinceSelect}
             onClientSelect={setClient}
             onAddCustomProvince={addCustomProvince}
             onAddCustomCustomer={addCustomCustomer}
+            onDeleteCustomer={(customerName, replacementName) => onDeleteCustomer(province, customerName, replacementName)}
           />
           <OptionGroup
             label="项目经理"
@@ -4638,7 +4684,7 @@ function NewProjectModal({
           <button type="button" onClick={onClose}>
             取消
           </button>
-          <button className="primaryButton" type="button" onClick={submitProject} disabled={!name.trim() || !type || !client}>
+          <button className="primaryButton" type="button" onClick={submitProject} disabled={!name.trim() || !type || !province || !client.trim()}>
             创建项目
           </button>
         </footer>
@@ -4748,33 +4794,67 @@ function CustomerPicker({
   provinces,
   customers,
   client,
+  linkedProjects,
+  canDelete,
   onProvinceSelect,
   onClientSelect,
   onAddCustomProvince,
   onAddCustomCustomer,
+  onDeleteCustomer,
 }: {
   province: string
   provinces: string[]
   customers: string[]
   client: string
+  linkedProjects: Project[]
+  canDelete: boolean
   onProvinceSelect: (province: string) => void
   onClientSelect: (client: string) => void
   onAddCustomProvince: (provinceName: string) => void
   onAddCustomCustomer: (customerName: string) => void
+  onDeleteCustomer: (customerName: string, replacementName?: string) => string | null
 }) {
-  const [customName, setCustomName] = useState('')
   const [customProvinceName, setCustomProvinceName] = useState('')
+  const [pendingDeleteCustomer, setPendingDeleteCustomer] = useState('')
+  const [replacementCustomer, setReplacementCustomer] = useState('')
 
   function addCustomer() {
-    if (!province || !customName.trim()) return
-    onAddCustomCustomer(customName)
-    setCustomName('')
+    const cleanName = client.trim()
+    if (!province || !cleanName) return
+    onAddCustomCustomer(cleanName)
+    onClientSelect(cleanName)
   }
 
   function addProvince() {
     if (!customProvinceName.trim()) return
     onAddCustomProvince(customProvinceName)
     setCustomProvinceName('')
+  }
+
+  function requestDeleteCustomer() {
+    const cleanName = client.trim()
+    if (!canDelete || !customers.includes(cleanName)) return
+
+    if (linkedProjects.length > 0) {
+      setPendingDeleteCustomer(cleanName)
+      setReplacementCustomer(customers.find((customer) => customer !== cleanName) ?? '')
+      return
+    }
+
+    if (!window.confirm(`确认删除客户单位“${cleanName}”吗？`)) return
+    const nextClient = onDeleteCustomer(cleanName)
+    if (nextClient !== null) onClientSelect(nextClient)
+  }
+
+  function replaceAndDeleteCustomer() {
+    const cleanReplacement = replacementCustomer.trim()
+    if (!pendingDeleteCustomer || !cleanReplacement || cleanReplacement === pendingDeleteCustomer) return
+
+    const nextClient = onDeleteCustomer(pendingDeleteCustomer, cleanReplacement)
+    if (nextClient === null) return
+    onClientSelect(nextClient)
+    setPendingDeleteCustomer('')
+    setReplacementCustomer('')
   }
 
   return (
@@ -4801,8 +4881,8 @@ function CustomerPicker({
       </div>
       <div className="optionGroup">
         <span>客户单位</span>
-        <select value={client} onChange={(event) => onClientSelect(event.target.value)}>
-          {customers.length === 0 && <option value="">请选择或添加客户单位</option>}
+        <select value={customers.includes(client) ? client : ''} onChange={(event) => onClientSelect(event.target.value)}>
+          <option value="">选择已保存客户单位</option>
           {customers.map((item) => (
             <option key={item} value={item}>
               {item}
@@ -4811,11 +4891,51 @@ function CustomerPicker({
         </select>
       </div>
       <div className="customCustomer">
-        <input value={customName} onChange={(event) => setCustomName(event.target.value)} placeholder={province ? `添加${province}客户单位` : '请先添加客户省份'} />
-        <button type="button" onClick={addCustomer} disabled={!province || !customName.trim()}>
-          添加自定义
+        <input value={client} onChange={(event) => onClientSelect(event.target.value)} placeholder={province ? `输入或修改${province}客户单位` : '请先添加客户省份'} />
+        <button type="button" onClick={addCustomer} disabled={!province || !client.trim() || customers.includes(client.trim())}>
+          保存自定义
         </button>
+        {canDelete && (
+          <button className="dangerIconButton" type="button" onClick={requestDeleteCustomer} disabled={!customers.includes(client.trim())} title="删除客户单位">
+            <Trash2 size={17} />
+          </button>
+        )}
       </div>
+      {pendingDeleteCustomer && (
+        <div className="customerDeleteNotice">
+          <div>
+            <strong>“{pendingDeleteCustomer}”关联 {linkedProjects.length} 个项目</strong>
+            <p>请指定新的客户单位。确认后会先更新这些项目，再删除旧单位。</p>
+          </div>
+          <div className="customerReplacementActions">
+            <input
+              list="customer-replacement-options"
+              value={replacementCustomer}
+              onChange={(event) => setReplacementCustomer(event.target.value)}
+              placeholder="选择或输入新的客户单位"
+            />
+            <datalist id="customer-replacement-options">
+              {customers
+                .filter((customer) => customer !== pendingDeleteCustomer)
+                .map((customer) => (
+                  <option key={customer} value={customer} />
+                ))}
+            </datalist>
+            <button type="button" onClick={replaceAndDeleteCustomer} disabled={!replacementCustomer.trim() || replacementCustomer.trim() === pendingDeleteCustomer}>
+              替换并删除
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setPendingDeleteCustomer('')
+                setReplacementCustomer('')
+              }}
+            >
+              取消
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

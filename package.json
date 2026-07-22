@@ -1,7 +1,7 @@
 {
   "name": "crewflow",
   "private": true,
-  "version": "1.2.0",
+  "version": "1.2.1",
   "description": "CrewFlow video project management desktop app",
   "author": "nuomiyuwan",
   "type": "module",
