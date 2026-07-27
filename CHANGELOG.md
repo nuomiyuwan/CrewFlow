@@ -2,6 +2,26 @@
 
 All notable changes to CrewFlow are documented in this file.
 
+## 1.3.0 - 2026-07-27
+
+### Added
+
+- Renamed the built-in production assistant to the industry-neutral CrewFlow Assistant.
+- Added per-computer assistant modes for local rules, OpenAI-compatible online APIs, and local Ollama models.
+- Added operating-system-protected API key storage that is never written to the single-user or team project database.
+- Added connection testing, model settings, project-context controls, optional finance context, and local-rule fallback.
+- Added AI-assisted chat-record extraction into editable calendar candidates with explicit user confirmation before any write.
+
+### Improved
+
+- Reworked assistant suggestions and replies to use general project-management language across industries.
+- Limited model context to data visible to the signed-in account and retained existing calendar write permissions.
+- Automatically scroll assistant conversations to the latest message and hide model reasoning blocks from user-facing replies.
+- Made chat-record extraction conversational: the assistant now waits for the next pasted message when users announce that content is coming.
+- Improved MiniMax-compatible calendar parsing when structured JSON is surrounded by explanatory text.
+- Allowed online and local AI modes to handle normal conversation without forcing every answer into CrewFlow workflows.
+- Changed the response indicator to “正在思考” and stopped capability questions or cancellations from being mistaken for pasted chat records.
+
 ## 1.2.8 - 2026-07-27
 
 ### Improved

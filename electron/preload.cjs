@@ -12,4 +12,8 @@ contextBridge.exposeInMainWorld('desktopBridge', {
   restartTeamService: () => ipcRenderer.invoke('team-service:restart'),
   stopTeamService: () => ipcRenderer.invoke('team-service:stop'),
   copyText: (value) => ipcRenderer.invoke('clipboard:write-text', value),
+  loadAssistantSettings: () => ipcRenderer.invoke('assistant-settings:load'),
+  saveAssistantSettings: (payload) => ipcRenderer.invoke('assistant-settings:save', payload),
+  testAssistantProvider: (payload) => ipcRenderer.invoke('assistant-provider:test', payload),
+  requestAssistant: (payload) => ipcRenderer.invoke('assistant:request', payload),
 })

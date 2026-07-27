@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   AlertTriangle,
+  ArrowLeft,
+  Bot,
   CalendarDays,
   CheckCircle2,
   ChevronLeft,
@@ -17,6 +19,8 @@ import {
   ListChecks,
   MessageSquareText,
   Minimize2,
+  Settings2,
+  ShieldCheck,
   Archive,
   Search,
   Send,
@@ -150,6 +154,47 @@ type TeamServiceInfo = {
   message: string
 }
 
+type AssistantMode = 'rules' | 'online' | 'local'
+type AssistantSettings = {
+  mode: AssistantMode
+  onlineBaseUrl: string
+  onlineModel: string
+  localBaseUrl: string
+  localModel: string
+  includeProjectContext: boolean
+  includeFinanceContext: boolean
+  fallbackToRules: boolean
+  hasApiKey: boolean
+  secureStorageAvailable: boolean
+}
+type AssistantSettingsDraft = Omit<AssistantSettings, 'hasApiKey' | 'secureStorageAvailable'>
+type AssistantSettingsPayload = {
+  settings: AssistantSettingsDraft
+  apiKey?: string
+  clearApiKey?: boolean
+}
+type AssistantProviderTestResult = {
+  ok: boolean
+  message: string
+  models?: string[]
+}
+type AssistantCalendarCandidate = {
+  projectId: string
+  projectName: string
+  date: string
+  title: string
+  owner: string
+  source: string
+}
+type AssistantResponse =
+  | { kind: 'message'; message: string }
+  | { kind: 'calendar_candidates'; message: string; candidates: AssistantCalendarCandidate[] }
+type AssistantRequestPayload = {
+  messages: Array<{ role: 'user' | 'assistant'; content: string }>
+  context: Record<string, unknown>
+  task: 'chat' | 'calendar_extract'
+}
+
 type DesktopBridge = {
   selectProjectFolder: () => Promise<string | null>
   openProjectFolder: (folderPath: string) => Promise<boolean>
@@ -162,6 +207,10 @@ type DesktopBridge = {
   restartTeamService: () => Promise<TeamServiceInfo>
   stopTeamService: () => Promise<TeamServiceInfo>
   copyText: (value: string) => Promise<boolean>
+  loadAssistantSettings: () => Promise<AssistantSettings>
+  saveAssistantSettings: (payload: AssistantSettingsPayload) => Promise<AssistantSettings>
+  testAssistantProvider: (payload: AssistantSettingsPayload) => Promise<AssistantProviderTestResult>
+  requestAssistant: (payload: AssistantRequestPayload) => Promise<AssistantResponse>
 }
 
 declare global {
@@ -1915,6 +1964,32 @@ function App() {
   const canEditProjectTaskBoard = role === 'controller' || role === 'admin'
   const canEditArchivedProjects = role === 'controller' || role === 'admin'
   const activeStaffMembers = useMemo(() => appStaffMembers.filter(isAssignableStaff), [appStaffMembers])
+  const assistantProjects = useMemo(
+    () => roleVisibleProjects.filter((project) => !isArchivedProject(project)),
+    [roleVisibleProjects],
+  )
+  const assistantProjectIds = useMemo(
+    () => new Set(assistantProjects.map((project) => project.id)),
+    [assistantProjects],
+  )
+  const assistantTasks = useMemo(
+    () => roleVisibleTasks.filter((task) => assistantProjectIds.has(task.projectId)),
+    [assistantProjectIds, roleVisibleTasks],
+  )
+  const assistantCalendarItems = useMemo(
+    () => roleVisibleCalendarItems.filter((item) => assistantProjectIds.has(item.projectId)),
+    [assistantProjectIds, roleVisibleCalendarItems],
+  )
+  const assistantCalendarProjects = useMemo(
+    () =>
+      assistantProjects.filter(
+        (project) =>
+          role === 'controller' ||
+          role === 'admin' ||
+          (role === 'manager' && Boolean(currentUser) && project.manager === currentUser),
+      ),
+    [assistantProjects, currentUser, role],
+  )
   const activeRemoteTeamHost = useMemo(() => {
     if (remoteTeamServiceHost) return remoteTeamServiceHost
     if (teamConnectionStatus !== 'connected' || isLocalTeamServerUrl(teamServerUrl, teamServiceInfo)) return ''
@@ -3006,14 +3081,22 @@ function App() {
         )}
       </main>
 
-      <LocalAssistant
+      <CrewFlowAssistant
         role={role}
         section={section}
-        projects={activeProjects}
-        tasks={visibleTasks}
-        calendarItems={visibleCalendarItems}
+        projects={assistantProjects}
+        tasks={assistantTasks}
+        calendarItems={assistantCalendarItems}
+        financeRecords={
+          role === 'controller' || role === 'admin' || role === 'finance'
+            ? appFinanceRecords.filter((record) => assistantProjectIds.has(record.projectId))
+            : []
+        }
+        calendarProjects={assistantCalendarProjects}
+        staffMembers={activeStaffMembers}
         canCreateProject={canCreateProject}
         onOpenNewProject={() => setShowNewProjectModal(true)}
+        onAddCalendarPlan={handleAddCalendarPlan}
       />
 
       {showNewProjectModal && (
@@ -7264,33 +7347,81 @@ function FinanceEntryModal({
   )
 }
 
-function LocalAssistant({
+const defaultAssistantSettings: AssistantSettings = {
+  mode: 'rules',
+  onlineBaseUrl: '',
+  onlineModel: '',
+  localBaseUrl: 'http://127.0.0.1:11434',
+  localModel: '',
+  includeProjectContext: true,
+  includeFinanceContext: false,
+  fallbackToRules: true,
+  hasApiKey: false,
+  secureStorageAvailable: true,
+}
+
+type AssistantMessage = { from: 'assistant' | 'user'; text: string }
+type AssistantCandidateDraft = AssistantCalendarCandidate & { id: string; selected: boolean }
+
+function CrewFlowAssistant({
   role,
   section,
   projects,
   tasks,
   calendarItems,
+  financeRecords,
+  calendarProjects,
+  staffMembers,
   canCreateProject,
   onOpenNewProject,
+  onAddCalendarPlan,
 }: {
   role: Role
   section: Section
   projects: Project[]
   tasks: Task[]
   calendarItems: CalendarItem[]
+  financeRecords: FinanceRecord[]
+  calendarProjects: Project[]
+  staffMembers: StaffMember[]
   canCreateProject: boolean
   onOpenNewProject: () => void
+  onAddCalendarPlan: (plan: ProjectPlanPayload) => void
 }) {
   const [open, setOpen] = useState(false)
   const [input, setInput] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [showSettings, setShowSettings] = useState(false)
+  const [settings, setSettings] = useState<AssistantSettings>(defaultAssistantSettings)
+  const [settingsDraft, setSettingsDraft] = useState<AssistantSettingsDraft>(() => assistantSettingsDraft(defaultAssistantSettings))
+  const [apiKey, setApiKey] = useState('')
+  const [settingsMessage, setSettingsMessage] = useState('')
+  const [settingsBusy, setSettingsBusy] = useState(false)
+  const [candidates, setCandidates] = useState<AssistantCandidateDraft[]>([])
+  const [waitingForChatRecord, setWaitingForChatRecord] = useState(false)
   const assistantRef = useRef<HTMLElement | null>(null)
-  const [messages, setMessages] = useState<Array<{ from: 'assistant' | 'user'; text: string }>>([
+  const messagesRef = useRef<HTMLDivElement | null>(null)
+  const [messages, setMessages] = useState<AssistantMessage[]>([
     {
       from: 'assistant',
-      text: '我可以帮你查看项目、任务、交付和财务提醒。',
+      text: '我可以帮你整理项目、任务、交付节点和工作提醒。',
     },
   ])
   const suggestions = assistantSuggestions(role, section, projects, tasks, calendarItems)
+  const modeLabel = assistantModeLabel(settings.mode)
+
+  useEffect(() => {
+    window.desktopBridge
+      ?.loadAssistantSettings()
+      .then((savedSettings) => {
+        setSettings(savedSettings)
+        setSettingsDraft(assistantSettingsDraft(savedSettings))
+      })
+      .catch(() => {
+        setSettings(defaultAssistantSettings)
+        setSettingsDraft(assistantSettingsDraft(defaultAssistantSettings))
+      })
+  }, [])
 
   useEffect(() => {
     if (!open) return
@@ -7307,75 +7438,608 @@ function LocalAssistant({
     return () => window.removeEventListener('mousedown', handleOutsideClick)
   }, [open])
 
-  function sendMessage(text = input) {
+  useEffect(() => {
+    if (!open || showSettings) return
+    const frame = window.requestAnimationFrame(() => {
+      const container = messagesRef.current
+      if (!container) return
+      container.scrollTo({ top: container.scrollHeight, behavior: 'smooth' })
+    })
+    return () => window.cancelAnimationFrame(frame)
+  }, [busy, candidates, messages, open, showSettings])
+
+  async function sendMessage(text = input) {
     const cleanText = text.trim()
-    if (!cleanText) return
+    if (!cleanText || busy) return
     const wantsNewProject = /新建项目|创建项目|立项|录入项目/.test(cleanText)
     if (wantsNewProject && canCreateProject) onOpenNewProject()
 
+    const userMessage: AssistantMessage = { from: 'user', text: cleanText }
+    const currentMessages = [...messages, userMessage]
+    setMessages(currentMessages)
+    setInput('')
+
+    if (settings.mode === 'rules' || wantsNewProject) {
+      setMessages((current) => [
+        ...current,
+        {
+          from: 'assistant',
+          text: assistantReply(cleanText, role, section, projects, tasks, calendarItems, financeRecords, canCreateProject),
+        },
+      ])
+      return
+    }
+
+    if (!window.desktopBridge?.requestAssistant) {
+      setMessages((current) => [...current, { from: 'assistant', text: '当前桌面环境无法连接模型，请使用本地规则模式。' }])
+      return
+    }
+
+    const mentionsChatExtraction =
+      /聊天记录|群聊|微信|提取.*(?:日历|计划|节点|进度)|总结.*(?:节点|进度)|写入.*日历/.test(cleanText)
+    const changesTopicWhileWaiting =
+      waitingForChatRecord &&
+      (/不用了|取消|算了|先不发/.test(cleanText) ||
+        /能干什么|可以做什么|能力|边界|界线|闲聊|聊闲天|聊天范围|支持什么/.test(cleanText))
+    if (changesTopicWhileWaiting) setWaitingForChatRecord(false)
+    const containsInlineChat =
+      cleanText.length >= 120 ||
+      cleanText.split('\n').filter((line) => line.trim()).length >= 3 ||
+      /(?:聊天记录|群聊|微信)\s*[:：]\s*\S{5,}/.test(cleanText)
+    const shouldWaitForChat = mentionsChatExtraction && !waitingForChatRecord && !changesTopicWhileWaiting && !containsInlineChat
+
+    if (shouldWaitForChat) {
+      setWaitingForChatRecord(true)
+      setMessages((current) => [
+        ...current,
+        {
+          from: 'assistant',
+          text: '可以，请把聊天记录直接粘贴过来。我会整理其中明确的项目、日期、工作节点和负责人，再生成待确认的交付日历计划。',
+        },
+      ])
+      return
+    }
+
+    const wantsCalendarExtraction = !changesTopicWhileWaiting && (waitingForChatRecord || mentionsChatExtraction)
+    if (wantsCalendarExtraction) setWaitingForChatRecord(false)
+    const canCreateCalendarCandidates = wantsCalendarExtraction && calendarProjects.length > 0
+
+    setBusy(true)
+    try {
+      const response = await window.desktopBridge.requestAssistant({
+        messages: currentMessages.slice(-12).map((message) => ({
+          role: message.from,
+          content: message.text,
+        })),
+        context: assistantContext(
+          role,
+          section,
+          settings,
+          projects,
+          tasks,
+          calendarItems,
+          financeRecords,
+          staffMembers,
+        ),
+        task: canCreateCalendarCandidates ? 'calendar_extract' : 'chat',
+      })
+
+      if (response.kind === 'calendar_candidates') {
+        const nextCandidates = normalizeAssistantCandidates(response.candidates, calendarProjects)
+        setCandidates(nextCandidates)
+        setMessages((current) => [
+          ...current,
+          {
+            from: 'assistant',
+            text:
+              nextCandidates.length > 0
+                ? response.message
+                : '没有找到日期和项目都明确的计划。请补充项目名称及具体日期后再试。',
+          },
+        ])
+      } else {
+        setMessages((current) => [...current, { from: 'assistant', text: response.message }])
+      }
+    } catch (error) {
+      const fallback = assistantReply(cleanText, role, section, projects, tasks, calendarItems, financeRecords, canCreateProject)
+      setMessages((current) => [
+        ...current,
+        {
+          from: 'assistant',
+          text: settings.fallbackToRules ? `${assistantErrorMessage(error)}\n\n已改用本地规则：\n${fallback}` : assistantErrorMessage(error),
+        },
+      ])
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function saveSettings(clearApiKey = false) {
+    if (!window.desktopBridge?.saveAssistantSettings) return
+    setSettingsBusy(true)
+    setSettingsMessage('')
+    try {
+      const saved = await window.desktopBridge.saveAssistantSettings({
+        settings: settingsDraft,
+        apiKey,
+        clearApiKey,
+      })
+      setSettings(saved)
+      setSettingsDraft(assistantSettingsDraft(saved))
+      setApiKey('')
+      setSettingsMessage(clearApiKey ? 'API Key 已清除' : '设置已保存')
+    } catch (error) {
+      setSettingsMessage(assistantErrorMessage(error))
+    } finally {
+      setSettingsBusy(false)
+    }
+  }
+
+  async function testProvider() {
+    if (!window.desktopBridge?.testAssistantProvider) return
+    setSettingsBusy(true)
+    setSettingsMessage('正在测试连接…')
+    try {
+      const result = await window.desktopBridge.testAssistantProvider({
+        settings: settingsDraft,
+        apiKey,
+      })
+      setSettingsMessage(result.message)
+      if (settingsDraft.mode === 'local' && !settingsDraft.localModel && result.models?.[0]) {
+        setSettingsDraft((current) => ({ ...current, localModel: result.models?.[0] ?? '' }))
+      }
+    } catch (error) {
+      setSettingsMessage(assistantErrorMessage(error))
+    } finally {
+      setSettingsBusy(false)
+    }
+  }
+
+  function confirmCandidates() {
+    let added = 0
+    let skipped = 0
+    const batchId = Date.now()
+    candidates.forEach((candidate, index) => {
+      if (!candidate.selected) return
+      const project = calendarProjects.find((item) => item.id === candidate.projectId)
+      const duplicate = calendarItems.some(
+        (item) =>
+          item.projectId === candidate.projectId &&
+          dateForCalendarItem(new Date(), item) === candidate.date &&
+          item.title.trim() === candidate.title.trim(),
+      )
+      if (!project || !candidate.date || !candidate.title.trim() || duplicate) {
+        skipped += 1
+        return
+      }
+      onAddCalendarPlan({
+        id: `C-AI-${batchId}-${index}`,
+        date: candidate.date,
+        projectId: project.id,
+        title: candidate.title,
+        owner: candidate.owner || project.manager,
+      })
+      added += 1
+    })
+    setCandidates([])
     setMessages((current) => [
       ...current,
-      { from: 'user', text: cleanText },
-      { from: 'assistant', text: assistantReply(cleanText, role, section, projects, tasks, calendarItems, canCreateProject) },
+      {
+        from: 'assistant',
+        text: `已写入 ${added} 条交付日历计划${skipped > 0 ? `，跳过 ${skipped} 条重复或不完整内容` : ''}。`,
+      },
     ])
-    setInput('')
   }
 
   if (!open) {
     return (
       <button className="assistantFab" type="button" onClick={() => setOpen(true)}>
         <MessageSquareText size={20} />
-        <span>制片助理</span>
+        <span>CrewFlow 助理</span>
       </button>
     )
   }
 
   return (
-    <section ref={assistantRef} className="assistantWindow" aria-label="制片助理">
+    <section ref={assistantRef} className="assistantWindow" aria-label="CrewFlow 助理">
       <header>
         <div>
-          <strong>制片助理</strong>
-          <span>工作提醒</span>
+          <strong>CrewFlow 助理</strong>
+          <span>{showSettings ? '模型与隐私设置' : modeLabel}</span>
         </div>
-        <button type="button" onClick={() => setOpen(false)} title="收起">
-          <Minimize2 size={16} />
-        </button>
+        <div className="assistantHeaderActions">
+          <button
+            type="button"
+            onClick={() => {
+              setShowSettings((current) => !current)
+              setSettingsMessage('')
+            }}
+            title={showSettings ? '返回对话' : '助理设置'}
+          >
+            {showSettings ? <ArrowLeft size={16} /> : <Settings2 size={16} />}
+          </button>
+          <button type="button" onClick={() => setOpen(false)} title="收起">
+            <Minimize2 size={16} />
+          </button>
+        </div>
       </header>
 
-      <div className="assistantBrief">
-        {suggestions.map((item) => (
-          <button key={item} type="button" onClick={() => sendMessage(item)}>
-            {item}
-          </button>
-        ))}
-      </div>
-
-      <div className="assistantMessages">
-        {messages.map((message, index) => (
-          <div key={`${message.from}-${index}`} className={`assistantMessage ${message.from}`}>
-            {message.text}
+      {showSettings ? (
+        <div className="assistantSettings">
+          <div className="assistantModeOptions" role="group" aria-label="助理模式">
+            {(
+              [
+                ['rules', '本地规则', ShieldCheck],
+                ['online', '在线 AI', Bot],
+                ['local', '本地模型', HardDrive],
+              ] as const
+            ).map(([mode, label, Icon]) => (
+              <button
+                key={mode}
+                className={settingsDraft.mode === mode ? 'active' : ''}
+                type="button"
+                onClick={() => setSettingsDraft((current) => ({ ...current, mode }))}
+              >
+                <Icon size={16} />
+                <span>{label}</span>
+              </button>
+            ))}
           </div>
-        ))}
-      </div>
 
-      <form
-        className="assistantInput"
-        onSubmit={(event) => {
-          event.preventDefault()
-          sendMessage()
-        }}
-      >
-        <input
-          value={input}
-          onChange={(event) => setInput(event.target.value)}
-          placeholder="问：今天优先盯什么？"
-        />
-        <button type="submit" title="发送">
-          <Send size={16} />
-        </button>
-      </form>
+          {settingsDraft.mode === 'rules' && (
+            <div className="assistantSettingsNote">
+              <ShieldCheck size={18} />
+              <div>
+                <strong>无需联网</strong>
+                <span>使用内置规则整理当前账号可见的项目、任务和交付提醒。</span>
+              </div>
+            </div>
+          )}
+
+          {settingsDraft.mode === 'online' && (
+            <div className="assistantSettingsFields">
+              <label>
+                <span>API 地址</span>
+                <input
+                  value={settingsDraft.onlineBaseUrl}
+                  onChange={(event) => setSettingsDraft((current) => ({ ...current, onlineBaseUrl: event.target.value }))}
+                  placeholder="例如：https://api.openai.com/v1"
+                />
+              </label>
+              <label>
+                <span>模型名称</span>
+                <input
+                  value={settingsDraft.onlineModel}
+                  onChange={(event) => setSettingsDraft((current) => ({ ...current, onlineModel: event.target.value }))}
+                  placeholder="填写服务商提供的模型名称"
+                />
+              </label>
+              <label>
+                <span>API Key</span>
+                <input
+                  type="password"
+                  value={apiKey}
+                  onChange={(event) => setApiKey(event.target.value)}
+                  placeholder={settings.hasApiKey ? '已安全保存，留空表示不修改' : '输入 API Key'}
+                  autoComplete="off"
+                />
+              </label>
+              <p className="assistantPrivacyNote">
+                API Key 只保存在当前电脑的系统安全存储中，不写入团队数据库。
+              </p>
+            </div>
+          )}
+
+          {settingsDraft.mode === 'local' && (
+            <div className="assistantSettingsFields">
+              <label>
+                <span>本地服务地址</span>
+                <input
+                  value={settingsDraft.localBaseUrl}
+                  onChange={(event) => setSettingsDraft((current) => ({ ...current, localBaseUrl: event.target.value }))}
+                  placeholder="http://127.0.0.1:11434"
+                />
+              </label>
+              <label>
+                <span>模型名称</span>
+                <input
+                  value={settingsDraft.localModel}
+                  onChange={(event) => setSettingsDraft((current) => ({ ...current, localModel: event.target.value }))}
+                  placeholder="例如：qwen3:8b"
+                />
+              </label>
+              <p className="assistantPrivacyNote">当前版本支持 Ollama 本地模型服务。</p>
+            </div>
+          )}
+
+          <div className="assistantContextOptions">
+            <label>
+              <input
+                type="checkbox"
+                checked={settingsDraft.includeProjectContext}
+                onChange={(event) =>
+                  setSettingsDraft((current) => ({ ...current, includeProjectContext: event.target.checked }))
+                }
+              />
+              <span>允许读取当前账号可见的项目、任务和日历摘要</span>
+            </label>
+            {(role === 'controller' || role === 'admin' || role === 'finance') && (
+              <label>
+                <input
+                  type="checkbox"
+                  checked={settingsDraft.includeFinanceContext}
+                  onChange={(event) =>
+                    setSettingsDraft((current) => ({ ...current, includeFinanceContext: event.target.checked }))
+                  }
+                />
+                <span>允许读取当前账号可见的财务摘要</span>
+              </label>
+            )}
+            <label>
+              <input
+                type="checkbox"
+                checked={settingsDraft.fallbackToRules}
+                onChange={(event) =>
+                  setSettingsDraft((current) => ({ ...current, fallbackToRules: event.target.checked }))
+                }
+              />
+              <span>模型连接失败时使用本地规则回答</span>
+            </label>
+          </div>
+          <p className="assistantPrivacyNote">
+            助理继承当前登录账号的数据范围和操作权限；所有数据写入仍需在界面中确认。
+          </p>
+
+          {settingsMessage && <div className="assistantSettingsMessage">{settingsMessage}</div>}
+          <div className="assistantSettingsActions">
+            {settingsDraft.mode !== 'rules' && (
+              <button type="button" disabled={settingsBusy} onClick={() => void testProvider()}>
+                测试连接
+              </button>
+            )}
+            {settingsDraft.mode === 'online' && settings.hasApiKey && (
+              <button type="button" disabled={settingsBusy} onClick={() => void saveSettings(true)}>
+                清除密钥
+              </button>
+            )}
+            <button className="primaryButton" type="button" disabled={settingsBusy} onClick={() => void saveSettings()}>
+              保存设置
+            </button>
+          </div>
+        </div>
+      ) : (
+        <>
+          <div className="assistantBrief">
+            {suggestions.map((item) => (
+              <button key={item} type="button" onClick={() => void sendMessage(item)}>
+                {item}
+              </button>
+            ))}
+          </div>
+
+          <div ref={messagesRef} className="assistantMessages">
+            {messages.map((message, index) => (
+              <div key={`${message.from}-${index}`} className={`assistantMessage ${message.from}`}>
+                {message.text}
+              </div>
+            ))}
+            {busy && <div className="assistantMessage assistant">正在思考…</div>}
+            {candidates.length > 0 && (
+              <div className="assistantCandidates">
+                <strong>确认写入交付日历</strong>
+                {candidates.map((candidate) => (
+                  <div className="assistantCandidate" key={candidate.id}>
+                    <input
+                      type="checkbox"
+                      checked={candidate.selected}
+                      onChange={(event) =>
+                        setCandidates((current) =>
+                          current.map((item) =>
+                            item.id === candidate.id ? { ...item, selected: event.target.checked } : item,
+                          ),
+                        )
+                      }
+                      aria-label="选择计划"
+                    />
+                    <div>
+                      <select
+                        value={candidate.projectId}
+                        onChange={(event) =>
+                          setCandidates((current) =>
+                            current.map((item) =>
+                              item.id === candidate.id ? { ...item, projectId: event.target.value } : item,
+                            ),
+                          )
+                        }
+                      >
+                        <option value="">选择项目</option>
+                        {calendarProjects.map((project) => (
+                          <option key={project.id} value={project.id}>
+                            {project.name}
+                          </option>
+                        ))}
+                      </select>
+                      <input
+                        type="date"
+                        value={candidate.date}
+                        onChange={(event) =>
+                          setCandidates((current) =>
+                            current.map((item) =>
+                              item.id === candidate.id ? { ...item, date: event.target.value } : item,
+                            ),
+                          )
+                        }
+                      />
+                      <input
+                        value={candidate.title}
+                        onChange={(event) =>
+                          setCandidates((current) =>
+                            current.map((item) =>
+                              item.id === candidate.id ? { ...item, title: event.target.value } : item,
+                            ),
+                          )
+                        }
+                        placeholder="计划内容"
+                      />
+                      <select
+                        value={candidate.owner}
+                        onChange={(event) =>
+                          setCandidates((current) =>
+                            current.map((item) =>
+                              item.id === candidate.id ? { ...item, owner: event.target.value } : item,
+                            ),
+                          )
+                        }
+                      >
+                        <option value="">使用项目负责人</option>
+                        {uniqueCleanOptions(
+                          [...staffMembers.map((member) => member.name), ...calendarProjects.map((project) => project.manager)],
+                          [],
+                        ).map((name) => (
+                          <option key={name} value={name}>
+                            {name}
+                          </option>
+                        ))}
+                      </select>
+                      {candidate.source && <small>依据：{candidate.source}</small>}
+                    </div>
+                  </div>
+                ))}
+                <div className="assistantCandidateActions">
+                  <button type="button" onClick={() => setCandidates([])}>
+                    取消
+                  </button>
+                  <button className="primaryButton" type="button" onClick={confirmCandidates}>
+                    确认写入
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+
+          <form
+            className="assistantInput"
+            onSubmit={(event) => {
+              event.preventDefault()
+              void sendMessage()
+            }}
+          >
+            <input
+              value={input}
+              onChange={(event) => setInput(event.target.value)}
+              placeholder={settings.mode === 'rules' ? '问：今天优先处理什么？' : '提问，或粘贴聊天记录提取计划'}
+              disabled={busy}
+            />
+            <button type="submit" title="发送" disabled={busy}>
+              <Send size={16} />
+            </button>
+          </form>
+        </>
+      )}
     </section>
   )
+}
+
+function assistantSettingsDraft(settings: AssistantSettings): AssistantSettingsDraft {
+  return {
+    mode: settings.mode,
+    onlineBaseUrl: settings.onlineBaseUrl,
+    onlineModel: settings.onlineModel,
+    localBaseUrl: settings.localBaseUrl,
+    localModel: settings.localModel,
+    includeProjectContext: settings.includeProjectContext,
+    includeFinanceContext: settings.includeFinanceContext,
+    fallbackToRules: settings.fallbackToRules,
+  }
+}
+
+function assistantModeLabel(mode: AssistantMode) {
+  if (mode === 'online') return '在线 AI'
+  if (mode === 'local') return '本地模型'
+  return '本地规则'
+}
+
+function assistantErrorMessage(error: unknown) {
+  const message = error instanceof Error ? error.message : '助理暂时无法响应'
+  const remoteMessage = message.match(/Error: (.+)$/)?.[1] ?? message
+  return remoteMessage.replace(/^Error invoking remote method '[^']+':\s*/i, '')
+}
+
+function assistantContext(
+  role: Role,
+  section: Section,
+  settings: AssistantSettings,
+  projects: Project[],
+  tasks: Task[],
+  calendarItems: CalendarItem[],
+  financeRecords: FinanceRecord[],
+  staffMembers: StaffMember[],
+) {
+  const context: Record<string, unknown> = {
+    today: localDateKey(new Date()),
+    role,
+    section,
+  }
+  if (settings.includeProjectContext) {
+    context.projects = projects.slice(0, 300).map((project) => ({
+      id: project.id,
+      name: project.name,
+      type: project.type,
+      client: project.client,
+      manager: project.manager,
+      stage: project.stage,
+      workStatus: project.workStatus,
+      nextMilestone: project.nextMilestone,
+      due: project.due,
+      progress: project.progress,
+      status: projectDisplayStatus(project),
+    }))
+    context.tasks = tasks.slice(0, 600).map((task) => ({
+      id: task.id,
+      projectId: task.projectId,
+      project: task.project,
+      title: task.title,
+      assignee: task.assignee,
+      due: task.due,
+      status: task.status,
+    }))
+    context.calendar = calendarItems.slice(0, 600).map((item) => ({
+      projectId: item.projectId,
+      project: item.project,
+      date: dateForCalendarItem(new Date(), item),
+      title: item.title,
+      owner: item.owner,
+    }))
+    context.staff = staffMembers.slice(0, 150).map((member) => ({ name: member.name, tags: member.tags }))
+  }
+  if (settings.includeFinanceContext && (role === 'controller' || role === 'admin' || role === 'finance')) {
+    context.finance = financeRecords.slice(0, 300).map((record) => ({
+      projectId: record.projectId,
+      contractAmount: record.contractAmount,
+      receivedAmount: record.receivedAmount,
+      invoiceAmount: record.invoiceAmount,
+      contractStatus: record.contractStatus,
+      invoiceStatus: record.invoiceStatus,
+      settlementStatus: record.settlementStatus,
+      nextCollectionDate: record.nextCollectionDate,
+    }))
+  }
+  return context
+}
+
+function normalizeAssistantCandidates(candidates: AssistantCalendarCandidate[], projects: Project[]) {
+  return candidates.slice(0, 20).map((candidate, index) => {
+    const project =
+      projects.find((item) => item.id === candidate.projectId) ??
+      projects.find((item) => item.name.trim() === candidate.projectName.trim())
+    return {
+      ...candidate,
+      id: `assistant-plan-${Date.now()}-${index}`,
+      projectId: project?.id ?? '',
+      owner: candidate.owner || project?.manager || '',
+      selected: Boolean(project && candidate.date && candidate.title),
+    }
+  })
 }
 
 function assistantSuggestions(
@@ -7386,11 +8050,11 @@ function assistantSuggestions(
   calendarItems: CalendarItem[],
 ) {
   const createAction = canRoleCreateProject(role) ? ['新建项目'] : []
-  const base = [...createAction, '今日优先盯什么', '有哪些风险', '下一步怎么安排']
+  const base = [...createAction, '今天优先处理什么', '哪些项目需要关注', '下一步如何安排']
   if (section === 'finance') return [...createAction, '哪些款项要跟进', '哪些项目待开票'].slice(0, 4)
-  if (section === 'calendar') return [...createAction, '本周交付压力', '哪些节点容易撞期', '按项目整理日程'].slice(0, 4)
-  if (section === 'tasks' || role === 'member') return ['我今天先做什么', '哪些任务在修改', '按优先级排序']
-  if (calendarItems.length > 5) return [...createAction, '今日优先盯什么', '本周交付压力', '有哪些风险'].slice(0, 4)
+  if (section === 'calendar') return [...createAction, '本周交付安排', '哪些节点即将到期', '按项目整理日程'].slice(0, 4)
+  if (section === 'tasks' || role === 'member') return ['我今天要做什么', '哪些任务在调整', '按优先级排序']
+  if (calendarItems.length > 5) return [...createAction, '今天优先处理什么', '本周交付安排', '哪些项目需要关注'].slice(0, 4)
   return base
 }
 
@@ -7401,6 +8065,7 @@ function assistantReply(
   projects: Project[],
   tasks: Task[],
   calendarItems: CalendarItem[],
+  financeRecords: FinanceRecord[],
   canCreateProject: boolean,
 ) {
   const riskProjects = projects.filter((project) => isRiskProject(project) || isLateProject(project))
@@ -7414,7 +8079,7 @@ function assistantReply(
   if (/智障|傻|乱答|不对|驴唇不对马嘴/.test(prompt)) {
     return [
       '这个问题我现在答得不够准。',
-      '目前更适合查项目、任务、交付日历、财务提醒，或打开新建项目窗口。',
+      '我可以整理项目、任务、交付日历、财务提醒，或打开新建项目窗口。',
       '其他问题我会尽量明确说明，避免给出没把握的回答。',
     ].join('\n')
   }
@@ -7422,8 +8087,8 @@ function assistantReply(
   if (!canAnswerLocally) {
     return [
       '这个问题我现在还不能准确回答。',
-      '你可以这样问我：今天优先盯什么、有哪些风险、哪些节点撞期、我有哪些任务、哪些款项要跟进，或者让我新建项目。',
-      '我会优先处理和项目、任务、交付、财务有关的内容。',
+      '你可以这样问我：今天优先处理什么、哪些项目需要关注、我有哪些任务、哪些款项要跟进，或者让我新建项目。',
+      '切换到在线 AI 或本地模型后，还可以粘贴聊天记录并提取交付日历候选。',
     ].join('\n')
   }
 
@@ -7437,11 +8102,11 @@ function assistantReply(
       '也可以按这个格式发我，我后续会继续增强为项目草稿：',
       '项目名称：',
       '客户单位：',
-      '项目类型：自定义项目类型',
-      '项目经理：',
-      '成片交付日期：2026-07-03',
-      '任务工种：剪辑、包装、调色',
-      'NAS路径：/Volumes/NEWNAS/...',
+      '项目类型：',
+      '项目负责人：',
+      '交付日期：2026-07-03',
+      '任务分工：方案、执行、审核',
+      '项目文件夹：',
     ].join('\n')
   }
 
@@ -7461,7 +8126,7 @@ function assistantReply(
     return [
       `当前可见交付节点 ${calendarItems.length} 个，涉及 ${new Set(calendarItems.map((item) => item.projectId)).size} 个项目。`,
       busyDays.length > 0 ? `重点日期：${busyDays.join('、')}。` : '暂时没有明确交付节点。',
-      '建议项目经理提前确认客户反馈窗口，避免审片和成片交付挤在同一天。'
+      '建议项目负责人提前确认反馈窗口，避免审核和最终交付集中在同一天。'
     ].join('\n')
   }
 
@@ -7477,7 +8142,7 @@ function assistantReply(
     `当前可见项目 ${projects.length} 个，风险/延期 ${riskProjects.length} 个，等反馈 ${waitingProjects.length} 个。`,
     riskProjects.length > 0 ? `优先盯：${riskProjects.map((project) => project.name).join('、')}。` : '目前没有明显风险项目。',
     waitingProjects.length > 0 ? `需要催反馈：${waitingProjects.map((project) => project.name).join('、')}。` : '当前等待反馈压力不高。',
-    '建议今天先看风险项目的下一节点，再确认任务是否已经指派到具体执行人。'
+    '建议今天先看需要关注项目的下一节点，再确认任务是否已经指派到具体执行人。'
   ].join('\n')
 }
 

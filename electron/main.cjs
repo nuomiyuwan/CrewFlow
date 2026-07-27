@@ -1,7 +1,13 @@
-const { app, BrowserWindow, clipboard, dialog, ipcMain, shell } = require('electron')
+const { app, BrowserWindow, clipboard, dialog, ipcMain, safeStorage, shell } = require('electron')
 const fs = require('fs')
 const path = require('path')
 const { pathToFileURL } = require('url')
+const {
+  DEFAULT_ASSISTANT_SETTINGS,
+  normalizeAssistantSettings,
+  requestAssistant,
+  testAssistantProvider,
+} = require('./assistant-service.cjs')
 
 const isDev = !app.isPackaged
 const isTeamServerMode = process.argv.includes('--team-server')
@@ -12,6 +18,71 @@ app.setPath('userData', path.join(app.getPath('appData'), 'CrewFlow'))
 
 function appDataPath() {
   return path.join(app.getPath('userData'), 'crewflow-data.json')
+}
+
+function assistantSettingsPath() {
+  return path.join(app.getPath('userData'), 'assistant-settings.json')
+}
+
+async function readAssistantSettingsFile() {
+  try {
+    const data = JSON.parse(await fs.promises.readFile(assistantSettingsPath(), 'utf8'))
+    return {
+      ...normalizeAssistantSettings(data),
+      encryptedApiKey: typeof data.encryptedApiKey === 'string' ? data.encryptedApiKey : '',
+    }
+  } catch {
+    return { ...DEFAULT_ASSISTANT_SETTINGS, encryptedApiKey: '' }
+  }
+}
+
+function decryptAssistantApiKey(encryptedApiKey) {
+  if (!encryptedApiKey || !safeStorage.isEncryptionAvailable()) return ''
+  try {
+    return safeStorage.decryptString(Buffer.from(encryptedApiKey, 'base64'))
+  } catch {
+    return ''
+  }
+}
+
+async function loadAssistantSettings() {
+  const saved = await readAssistantSettingsFile()
+  const { encryptedApiKey, ...settings } = saved
+  return {
+    ...settings,
+    hasApiKey: Boolean(decryptAssistantApiKey(encryptedApiKey)),
+    secureStorageAvailable: safeStorage.isEncryptionAvailable(),
+  }
+}
+
+async function saveAssistantSettings(payload = {}) {
+  const current = await readAssistantSettingsFile()
+  let encryptedApiKey = current.encryptedApiKey
+  const apiKey = typeof payload.apiKey === 'string' ? payload.apiKey.trim() : ''
+
+  if (payload.clearApiKey === true) {
+    encryptedApiKey = ''
+  } else if (apiKey) {
+    if (!safeStorage.isEncryptionAvailable()) {
+      throw new Error('当前系统安全存储不可用，API Key 未保存')
+    }
+    encryptedApiKey = safeStorage.encryptString(apiKey).toString('base64')
+  }
+
+  const settings = normalizeAssistantSettings(payload.settings)
+  const filePath = assistantSettingsPath()
+  const tempPath = `${filePath}.tmp`
+  await fs.promises.mkdir(path.dirname(filePath), { recursive: true })
+  await fs.promises.writeFile(tempPath, JSON.stringify({ ...settings, encryptedApiKey }, null, 2), 'utf8')
+  await fs.promises.rename(tempPath, filePath)
+  return loadAssistantSettings()
+}
+
+async function assistantApiKeyForPayload(payload = {}) {
+  const temporaryKey = typeof payload.apiKey === 'string' ? payload.apiKey.trim() : ''
+  if (temporaryKey) return temporaryKey
+  const saved = await readAssistantSettingsFile()
+  return decryptAssistantApiKey(saved.encryptedApiKey)
 }
 
 async function readAppData() {
@@ -229,6 +300,34 @@ if (isTeamServerMode) {
       if (typeof value !== 'string') return false
       clipboard.writeText(value)
       return true
+    })
+
+    ipcMain.handle('assistant-settings:load', async () => {
+      return loadAssistantSettings()
+    })
+
+    ipcMain.handle('assistant-settings:save', async (_event, payload) => {
+      return saveAssistantSettings(payload)
+    })
+
+    ipcMain.handle('assistant-provider:test', async (_event, payload = {}) => {
+      const settings = normalizeAssistantSettings(payload.settings)
+      return testAssistantProvider({
+        settings,
+        apiKey: await assistantApiKeyForPayload(payload),
+      })
+    })
+
+    ipcMain.handle('assistant:request', async (_event, payload = {}) => {
+      const saved = await readAssistantSettingsFile()
+      const settings = normalizeAssistantSettings(saved)
+      return requestAssistant({
+        settings,
+        apiKey: decryptAssistantApiKey(saved.encryptedApiKey),
+        messages: Array.isArray(payload.messages) ? payload.messages : [],
+        context: payload.context && typeof payload.context === 'object' ? payload.context : {},
+        task: payload.task === 'calendar_extract' ? 'calendar_extract' : 'chat',
+      })
     })
 
     createWindow()
