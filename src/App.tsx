@@ -258,6 +258,7 @@ type AssignmentDraft = {
 
 type FinanceRecord = {
   projectId: string
+  contractName: string
   contractAmount: number
   receivedAmount: number
   invoiceAmount: number
@@ -359,8 +360,6 @@ type ProjectPlanPayload = {
   date: string
   projectId: string
   title: string
-  time: string
-  type: string
   owner: string
 }
 
@@ -525,7 +524,7 @@ const welcomeGuides: Record<Role, WelcomeGuideContent> = {
         title: '新建和设置项目',
         items: [
           '在“首页控制台”查看自己负责的项目和近期交付节点。',
-          '点击右上角“新建项目”，录入客户、项目类型、项目路径和交付日期。',
+          '点击右上角“新建项目”，按需录入客户，并填写项目类型、项目路径和交付日期。',
           '项目创建后，在“设置交付和任务”里选择流程节点、任务工种和负责人。',
         ],
       },
@@ -2544,10 +2543,10 @@ function App() {
         date: plan.date,
         projectId: plan.projectId,
         day: date.getDate(),
-        time: plan.time.trim() || formatMonthDay(date),
+        time: formatMonthDay(date),
         project: project.name,
         title: plan.title.trim() || '项目计划',
-        type: plan.type.trim() || '项目计划',
+        type: '自定义计划',
         owner: plan.owner,
       },
       ...current,
@@ -2569,10 +2568,10 @@ function App() {
               date: plan.date,
               projectId: plan.projectId,
               day: date.getDate(),
-              time: plan.time.trim() || formatMonthDay(date),
+              time: item.time || formatMonthDay(date),
               project: project.name,
               title: plan.title.trim() || '项目计划',
-              type: plan.type.trim() || '项目计划',
+              type: item.type || '自定义计划',
               owner: plan.owner,
             }
           : item,
@@ -4231,7 +4230,7 @@ function Projects({
                 <div>
                   <strong>{project.name}</strong>
                   <span>
-                    {project.type} · {project.client} · 执行：{currentExecutorForProject(project.id, allTasks, allProjects)}
+                    {project.type} · {project.client || '客户未填写'} · 执行：{currentExecutorForProject(project.id, allTasks, allProjects)}
                   </span>
                   {departedNames.length > 0 && <em className="handoffInline">人员离职待处理：{departedNames.join('、')}</em>}
                 </div>
@@ -4275,7 +4274,7 @@ function Projects({
             <div className="detailTitle">
               <strong>{selectedProject.name}</strong>
               <span>
-                {selectedProject.type} · {selectedProject.client}
+                {selectedProject.type} · {selectedProject.client || '客户未填写'}
                 {selectedProject.clientContact ? ` · 对接：${selectedProject.clientContact}` : ''}
               </span>
             </div>
@@ -4399,15 +4398,18 @@ function Projects({
             })}
           </div>
 
-          <div className="projectDetailCard stageList projectDetailStages">
+          <div className="projectDetailStages">
             <div className="detailSectionHeading">
               <span>流程节点</span>
             </div>
-            {optionsWithCurrent(workflowOptions.workflowStages, selectedProject.stage).map((stage) => (
-              <span key={stage} className={stage === selectedProject.stage ? 'active' : ''}>
-                {stage}
-              </span>
-            ))}
+            <div className="workflowStageSequence">
+              {optionsWithCurrent(workflowOptions.workflowStages, selectedProject.stage).map((stage, index, stages) => (
+                <div key={stage} className="workflowStageItem">
+                  <span className={stage === selectedProject.stage ? 'active' : ''}>{stage}</span>
+                  {index < stages.length - 1 && <ChevronRight className="workflowStageArrow" size={16} aria-hidden="true" />}
+                </div>
+              ))}
+            </div>
           </div>
         </div>
         </section>
@@ -4454,7 +4456,7 @@ function ArchiveView({
               <article key={project.id} className="archiveCard">
                 <div>
                   <div className="archiveCardTop">
-                    <span className="eyebrow">{project.client}</span>
+                    <span className="eyebrow">{project.client || '客户未填写'}</span>
                     <span className={`financeStatus ${financeState.tone}`}>{financeState.label}</span>
                   </div>
                   <strong>{project.name}</strong>
@@ -4522,8 +4524,8 @@ function NewProjectModal({
   const [name, setName] = useState('')
   const [path, setPath] = useState('')
   const [type, setType] = useState(projectTypeOptions[0] ?? '')
-  const [province, setProvince] = useState(provinceOptions[0] ?? '')
-  const [client, setClient] = useState(provinceOptions[0] ? customerGroups[provinceOptions[0]]?.[0] ?? '' : '')
+  const [province, setProvince] = useState('')
+  const [client, setClient] = useState('')
   const [clientContact, setClientContact] = useState('')
   const [manager, setManager] = useState(preferredManager ?? projectManagers[0]?.name ?? '')
   const [priority, setPriority] = useState('重要')
@@ -4546,8 +4548,9 @@ function NewProjectModal({
   }, [projectTypeOptions, type])
 
   useEffect(() => {
-    if (province && provinceOptions.includes(province)) return
-    setProvince(provinceOptions[0] ?? '')
+    if (!province || provinceOptions.includes(province)) return
+    setProvince('')
+    setClient('')
   }, [province, provinceOptions])
 
   function handleProvinceSelect(nextProvince: string) {
@@ -4599,9 +4602,9 @@ function NewProjectModal({
 
   function submitProject() {
     const cleanClient = client.trim()
-    if (!name.trim() || !type || !province || !cleanClient) return
+    if (!name.trim() || !type) return
 
-    onAddCustomer(province, cleanClient)
+    if (province && cleanClient) onAddCustomer(province, cleanClient)
 
     onCreateProject({
       name: name.trim(),
@@ -4661,7 +4664,7 @@ function NewProjectModal({
             provinces={provinceOptions}
             customers={customerOptions}
             client={client}
-            linkedProjects={projects.filter((project) => project.client === client)}
+            linkedProjects={client ? projects.filter((project) => project.client === client) : []}
             canDelete={canDeleteCustomers}
             onProvinceSelect={handleProvinceSelect}
             onClientSelect={setClient}
@@ -4684,7 +4687,7 @@ function NewProjectModal({
           <button type="button" onClick={onClose}>
             取消
           </button>
-          <button className="primaryButton" type="button" onClick={submitProject} disabled={!name.trim() || !type || !province || !client.trim()}>
+          <button className="primaryButton" type="button" onClick={submitProject} disabled={!name.trim() || !type}>
             创建项目
           </button>
         </footer>
@@ -4860,18 +4863,17 @@ function CustomerPicker({
   return (
     <div className="customerPicker">
       <div className="optionGroup">
-        <span>客户省份</span>
-        {provinces.length === 0 ? (
-          <p className="fieldHint">暂无客户省份，请先添加。</p>
-        ) : (
-          <div>
-            {provinces.map((item) => (
+        <span>客户省份（选填）</span>
+        <div>
+          <button className={!province ? 'active' : ''} type="button" onClick={() => onProvinceSelect('')}>
+            暂不填写
+          </button>
+          {provinces.map((item) => (
               <button key={item} className={item === province ? 'active' : ''} type="button" onClick={() => onProvinceSelect(item)}>
                 {item}
               </button>
-            ))}
-          </div>
-        )}
+          ))}
+        </div>
       </div>
       <div className="customCustomer">
         <input value={customProvinceName} onChange={(event) => setCustomProvinceName(event.target.value)} placeholder="添加自定义省份" />
@@ -4880,7 +4882,7 @@ function CustomerPicker({
         </button>
       </div>
       <div className="optionGroup">
-        <span>客户单位</span>
+        <span>客户单位（选填）</span>
         <select value={customers.includes(client) ? client : ''} onChange={(event) => onClientSelect(event.target.value)}>
           <option value="">选择已保存客户单位</option>
           {customers.map((item) => (
@@ -4891,7 +4893,7 @@ function CustomerPicker({
         </select>
       </div>
       <div className="customCustomer">
-        <input value={client} onChange={(event) => onClientSelect(event.target.value)} placeholder={province ? `输入或修改${province}客户单位` : '请先添加客户省份'} />
+        <input value={client} onChange={(event) => onClientSelect(event.target.value)} placeholder={province ? `输入或修改${province}客户单位` : '输入客户单位（选填）'} />
         <button type="button" onClick={addCustomer} disabled={!province || !client.trim() || customers.includes(client.trim())}>
           保存自定义
         </button>
@@ -4997,7 +4999,7 @@ function ProjectEditModal({
         name: name.trim(),
         path,
         type,
-        client: client.trim() || project.client,
+        client: client.trim(),
         clientContact: clientContact.trim(),
         manager,
         stage,
@@ -5335,7 +5337,7 @@ function ProjectSetupModal({
         <div className="structuredForm">
           <div className="setupProjectName">
             <strong>{project.name}</strong>
-            <span>{project.client} · {project.type} · 项目经理：{project.manager}</span>
+            <span>{project.client || '客户未填写'} · {project.type} · 项目经理：{project.manager}</span>
           </div>
           <div className="setupGrid">
             <label className="textField">
@@ -5765,14 +5767,11 @@ function CalendarPlanModal({
     assignableStaff[0]?.name ||
     ''
   const [title, setTitle] = useState(item?.title ?? '项目计划')
-  const [time, setTime] = useState(item?.time ?? formatMonthDay(new Date(date)))
-  const [type, setType] = useState(item?.type ?? selectedProject?.stage ?? '项目计划')
   const [owner, setOwner] = useState(initialOwner)
 
   useEffect(() => {
     if (item) return
     if (!selectedProject) return
-    setType(selectedProject.stage)
     setOwner(staffNameInOptions(selectedProject.manager, assignableStaff) || assignableStaff[0]?.name || '')
   }, [assignableStaff, item, selectedProject])
 
@@ -5806,14 +5805,6 @@ function CalendarPlanModal({
             <input value={title} onChange={(event) => setTitle(event.target.value)} placeholder="例如：脚本初稿、拍摄计划、成片交付" />
           </label>
           <label className="textField">
-            <span>显示时间</span>
-            <input value={time} onChange={(event) => setTime(event.target.value)} placeholder="例如：7月6日 15:00" />
-          </label>
-          <label className="textField">
-            <span>计划类型</span>
-            <input value={type} onChange={(event) => setType(event.target.value)} placeholder="例如：客户节点、拍摄、审片" />
-          </label>
-          <label className="textField">
             <span>负责人</span>
             <select value={owner} onChange={(event) => setOwner(event.target.value)}>
               <option value="" disabled>
@@ -5840,8 +5831,6 @@ function CalendarPlanModal({
                 id: item?.id,
                 projectId,
                 title,
-                time,
-                type,
                 owner,
               })
             }
@@ -6608,6 +6597,8 @@ function TeamLoad({ projects, tasks, staffMembers }: { projects: Project[]; task
       load,
       risk,
       tasks: personTasks.length,
+      managedProjects: managedProjects.length,
+      isProjectManager: person.tags.includes('项目经理'),
     }
   })
 
@@ -6642,7 +6633,8 @@ function TeamLoad({ projects, tasks, staffMembers }: { projects: Project[]; task
                 </div>
               </div>
               <InfoLine label="任务" value={`${person.tasks} 个`} />
-              <InfoLine label="风险" value={`${person.risk} 个`} />
+              {person.isProjectManager && <InfoLine label="负责项目" value={`${person.managedProjects} 个`} />}
+              {person.risk > 0 && <InfoLine label="风险" value={`${person.risk} 个`} />}
             </article>
           ))}
         </div>
@@ -6852,7 +6844,7 @@ function FinanceView({
                 <div>
                   <strong>{project?.name}</strong>
                   <span>
-                    {project?.client} · {project?.type} · {record.nextCollection}
+                    {project?.client || '客户未填写'} · {project?.type} · 项目经理：{project?.manager || '未分配'}
                   </span>
                 </div>
                 <div className="moneyCell">
@@ -6940,7 +6932,7 @@ function FinanceProjectDetail({
         <div className="businessHeroTitle">
           <strong>{project.name}</strong>
           <span>
-            {project.client} · {project.type} · {project.manager}
+            {project.client || '客户未填写'} · {project.type} · {project.manager}
           </span>
         </div>
 
@@ -6958,6 +6950,12 @@ function FinanceProjectDetail({
           <p>报价、合同、开票、收款进度</p>
         </div>
         <div className="businessFieldGrid">
+          <EditableTextLine
+            label="合同名称"
+            value={record.contractName}
+            placeholder="填写合同上的正式名称"
+            onChange={(value) => onUpdateRecord({ contractName: value })}
+          />
           <EditableSelectLine
             label="报价是否制作"
             value={record.quoteStatus}
@@ -7566,6 +7564,7 @@ function financeLedgerKey(action: FinanceAction): keyof ReturnType<typeof emptyF
 function createBlankFinanceRecord(projectId: string): FinanceRecord {
   return {
     projectId,
+    contractName: '',
     contractAmount: 0,
     receivedAmount: 0,
     invoiceAmount: 0,
@@ -7628,6 +7627,7 @@ function normalizeProject(project: Project): Project {
 
   return {
     ...project,
+    client: project.client ?? '',
     clientContact: project.clientContact ?? '',
     calendarTitle: project.calendarTitle ?? milestoneTitleFrom(project.nextMilestone ?? project.stage),
     creatorAccountId: project.creatorAccountId,

@@ -2,6 +2,51 @@
 
 All notable changes to CrewFlow are documented in this file.
 
+## 1.2.8 - 2026-07-27
+
+### Improved
+
+- Made customer province and customer unit optional when creating a project.
+- Stopped auto-selecting the first saved customer and allowed existing projects to clear customer information.
+- Added a consistent `客户未填写` fallback across project and finance summaries.
+
+## 1.2.7 - 2026-07-23
+
+### Fixed
+
+- Show the project manager in each Project Settlement list row instead of an empty collection-plan placeholder.
+
+## 1.2.6 - 2026-07-23
+
+### Added
+
+- Added an editable contract-name field to Party A business details, independent from the project name.
+
+## 1.2.5 - 2026-07-23
+
+### Improved
+
+- Hide the Team Load risk row when a member has no related risk projects.
+
+## 1.2.4 - 2026-07-23
+
+### Improved
+
+- Show the active-project count for team members tagged as project managers in Team Load.
+
+## 1.2.3 - 2026-07-23
+
+### Improved
+
+- Refined the project-detail workflow display: removed the outer card frame and added directional arrows between stages.
+
+## 1.2.2 - 2026-07-23
+
+### Improved
+
+- Simplified right-click calendar plan entry: the clicked date is used automatically, and plan time/type are no longer requested.
+- New custom calendar plans are internally marked as `自定义计划`; editing existing plans preserves their original display metadata.
+
 ## 1.2.1 - 2026-07-22
 
 ### Fixed

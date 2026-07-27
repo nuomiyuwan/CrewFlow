@@ -1047,14 +1047,44 @@ button.pathBox {
   grid-column: 1 / -1;
 }
 
-.projectDetailStages .detailSectionHeading {
-  flex: 0 0 100%;
-}
-
 .projectDetailStages {
   grid-area: stages;
+  display: grid;
+  gap: 10px;
+  padding: 2px 0 0;
+}
+
+.workflowStageSequence {
+  display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  padding-bottom: 12px;
+  gap: 8px 4px;
+}
+
+.workflowStageItem {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.workflowStageItem > span {
+  border: 1px solid rgba(180, 202, 216, 0.18);
+  border-radius: 999px;
+  color: rgba(224, 233, 244, 0.66);
+  background: rgba(255, 255, 255, 0.04);
+  font-size: 12px;
+  padding: 5px 9px;
+}
+
+.workflowStageItem > span.active {
+  border-color: rgba(142, 238, 251, 0.46);
+  color: #91f3fb;
+  background: rgba(129, 237, 247, 0.12);
+}
+
+.workflowStageArrow {
+  flex: 0 0 auto;
+  color: rgba(135, 224, 235, 0.62);
 }
 
 .assignmentItem {
