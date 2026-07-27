@@ -6,6 +6,8 @@ It is built with Electron, React, and Vite, and supports both single-user local 
 
 Current stable version: **v1.2.8**. See [CHANGELOG.md](CHANGELOG.md) for release details.
 
+中文使用说明：[CrewFlow 用户使用说明](docs/USER_GUIDE.zh-CN.md)
+
 ## Screenshots
 
 ![Dashboard](docs/screenshots/dashboard.png)
