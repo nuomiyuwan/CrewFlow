@@ -15,6 +15,7 @@ import {
   Filter,
   FolderKanban,
   HardDrive,
+  ImagePlus,
   LayoutDashboard,
   ListChecks,
   MessageSquareText,
@@ -161,6 +162,7 @@ type AssistantSettings = {
   onlineModel: string
   localBaseUrl: string
   localModel: string
+  localThinking: boolean
   includeProjectContext: boolean
   includeFinanceContext: boolean
   fallbackToRules: boolean
@@ -186,13 +188,56 @@ type AssistantCalendarCandidate = {
   owner: string
   source: string
 }
+type AssistantOperationType = 'create_project' | 'update_project' | 'assign_task'
+type AssistantOperation = {
+  type: AssistantOperationType
+  projectId: string
+  projectName: string
+  name: string
+  path: string
+  projectType: string
+  client: string
+  clientContact: string
+  manager: string
+  priority: string
+  workTypes: string[]
+  deliveryDate: string
+  taskDue: string
+  stage: string
+  workStatus: string
+  calendarTitle: string
+  workType: string
+  assignmentMode: AssignmentMode
+  assignee: string
+  externalNote: string
+  taskStatus: string
+  source: string
+}
 type AssistantResponse =
-  | { kind: 'message'; message: string }
-  | { kind: 'calendar_candidates'; message: string; candidates: AssistantCalendarCandidate[] }
+  | { kind: 'message'; message: string; clearPending?: boolean }
+  | {
+      kind: 'calendar_candidates'
+      message: string
+      candidates: AssistantCalendarCandidate[]
+      openConfirmation?: boolean
+      clearPending?: boolean
+    }
+  | { kind: 'operation'; message: string; operation: AssistantOperation | null; clearPending?: boolean }
+type AssistantImageAttachment = {
+  id: string
+  name: string
+  mimeType: string
+  size: number
+  dataUrl: string
+}
 type AssistantRequestPayload = {
-  messages: Array<{ role: 'user' | 'assistant'; content: string }>
+  messages: Array<{
+    role: 'user' | 'assistant'
+    content: string
+    images?: Array<Pick<AssistantImageAttachment, 'name' | 'mimeType' | 'dataUrl'>>
+  }>
   context: Record<string, unknown>
-  task: 'chat' | 'calendar_extract'
+  task: 'chat' | 'calendar_extract' | 'operation_extract' | 'assistant_route'
 }
 
 type DesktopBridge = {
@@ -303,6 +348,23 @@ type AssignmentDraft = {
   mode: AssignmentMode
   assignee: string
   externalNote: string
+}
+
+type AssistantNewProjectDraft = Partial<NewProjectPayload>
+type AssistantProjectEditDraft = {
+  stage?: string
+  workStatus?: WorkStatus
+  due?: string
+  calendarTitle?: string
+  manager?: string
+  assignment?: {
+    workType: string
+    mode: AssignmentMode
+    assignee: string
+    externalNote: string
+    status: TaskStatus
+    due?: string
+  }
 }
 
 type FinanceRecord = {
@@ -1292,6 +1354,7 @@ function App() {
   const [appProjects, setAppProjects] = useState<Project[]>(() => loadStoredProjects())
   const [appTasks, setAppTasks] = useState<Task[]>(() => loadStoredTasks())
   const [appCalendarItems, setAppCalendarItems] = useState<CalendarItem[]>(() => loadStoredCalendarItems())
+  const [assistantCalendarDrafts, setAssistantCalendarDrafts] = useState<ProjectPlanPayload[]>([])
   const [appFinanceRecords, setAppFinanceRecords] = useState<FinanceRecord[]>(() => loadStoredFinanceRecords())
   const [appStaffMembers, setAppStaffMembers] = useState<StaffMember[]>(() => loadStoredStaffMembers())
   const [appAccounts, setAppAccounts] = useState<Account[]>(() => loadStoredAccounts())
@@ -1312,6 +1375,8 @@ function App() {
   const [section, setSection] = useState<Section>(() => navItemsForRole(loadStoredAccounts().find((account) => account.id === loadStoredAccountId())?.role ?? 'controller')[0]?.id ?? 'dashboard')
   const [selectedProjectId, setSelectedProjectId] = useState(projects[0]?.id ?? '')
   const [showNewProjectModal, setShowNewProjectModal] = useState(false)
+  const [assistantNewProjectDraft, setAssistantNewProjectDraft] = useState<AssistantNewProjectDraft | null>(null)
+  const [assistantProjectEditDraft, setAssistantProjectEditDraft] = useState<AssistantProjectEditDraft | null>(null)
   const [showControllerAccountModal, setShowControllerAccountModal] = useState(false)
   const [showWorkflowOptionsModal, setShowWorkflowOptionsModal] = useState(false)
   const [setupDraft, setSetupDraft] = useState<ProjectSetupDraft | null>(null)
@@ -1511,8 +1576,9 @@ function App() {
       const normalizedData = normalizeTeamAppData(savedData)
       rememberRemoteSlices(normalizedData)
       const calendarItems = ensureProjectCalendarItems(normalizedData.projects, normalizedData.calendarItems)
+      const projects = reconcileProjectTimelines(normalizedData.projects, calendarItems)
 
-      setAppProjects(normalizedData.projects)
+      setAppProjects(projects)
       setAppTasks(normalizedData.tasks)
       setAppCalendarItems(calendarItems)
       setAppFinanceRecords(normalizedData.financeRecords)
@@ -1712,6 +1778,11 @@ function App() {
       canceled = true
     }
   }, [applyAppDataToState, dataMode, dataSourceKey, loadCurrentAppData, rememberConnectedTeamHost])
+
+  useEffect(() => {
+    if (!dataSourceReady) return
+    setAppProjects((current) => reconcileProjectTimelines(current, appCalendarItems))
+  }, [appCalendarItems, dataSourceReady])
 
   useEffect(() => {
     if (!dataSourceReady) return
@@ -1952,7 +2023,7 @@ function App() {
 
   const selectedProject = activeProjects.find((project) => project.id === selectedProjectId) ?? activeProjects[0] ?? null
   const currentAccountTitle = accountDisplayTitle(currentAccount, appStaffMembers)
-  const riskCount = activeProjects.filter(isRiskProject).length
+  const riskCount = activeProjects.filter((project) => isProjectAtRisk(project, now)).length
   const waitingCount = activeProjects.filter(isWaitingProject).length
   const pendingSettlementCount = activeProjects.filter((project) => {
     const record = appFinanceRecords.find((item) => item.projectId === project.id)
@@ -2043,6 +2114,7 @@ function App() {
 
   function openProjectEditor(project: Project) {
     if (isArchivedProject(project) && !canEditArchivedProjects) return
+    setAssistantProjectEditDraft(null)
     setEditingProject(project)
   }
 
@@ -2425,6 +2497,7 @@ function App() {
     setSelectedProjectId(projectId)
     setSection('projects')
     setShowNewProjectModal(false)
+    setAssistantNewProjectDraft(null)
     setSetupDraft({ projectId, workTypes: payload.workTypes, deliveryDate: payload.deliveryDate })
   }
 
@@ -2573,6 +2646,7 @@ function App() {
       addCustomerOption(previousClientProvince, updatedProject.client)
     }
     setEditingProject(null)
+    setAssistantProjectEditDraft(null)
   }
 
   function canDeleteProject(project: Project) {
@@ -2663,6 +2737,100 @@ function App() {
       return
     }
     setAppCalendarItems((current) => current.filter((item) => calendarItemKey(item) !== itemKey))
+  }
+
+  function handleReviewAssistantCalendarPlans(plans: ProjectPlanPayload[]) {
+    const allowedPlans = plans.filter(
+      (plan) =>
+        canEditCalendarProject(plan.projectId) &&
+        appProjects.some((project) => project.id === plan.projectId && !isArchivedProject(project)),
+    )
+    if (allowedPlans.length === 0) return
+
+    setSearchQuery('')
+    setFilterStatus('all')
+    setFilterType('全部类型')
+    setSection('calendar')
+    setAssistantCalendarDrafts(allowedPlans)
+  }
+
+  function handleReviewAssistantOperation(operation: AssistantOperation) {
+    if (operation.type === 'create_project') {
+      if (!canCreateProject) return false
+      const manager =
+        role === 'manager'
+          ? currentUser ?? ''
+          : activeStaffMembers.some((member) => member.name === operation.manager && canManageProject(member))
+            ? operation.manager
+            : ''
+      const workTypes = operation.workTypes.filter((item) => appWorkflowOptions.taskWorkTypes.includes(item))
+      setAssistantNewProjectDraft({
+        name: operation.name,
+        path: operation.path,
+        type: appWorkflowOptions.projectTypes.includes(operation.projectType) ? operation.projectType : '',
+        client: operation.client,
+        clientContact: operation.clientContact,
+        manager,
+        priority: priorityOptions.includes(operation.priority) ? operation.priority : '',
+        workTypes,
+        deliveryDate: operation.deliveryDate,
+      })
+      setShowNewProjectModal(true)
+      return true
+    }
+
+    const project =
+      appProjects.find((item) => item.id === operation.projectId) ??
+      appProjects.find((item) => item.name.trim() === operation.projectName.trim())
+    if (!project || isArchivedProject(project)) return false
+    const canEditProject =
+      role === 'controller' ||
+      role === 'admin' ||
+      (role === 'manager' && Boolean(currentUser) && project.manager === currentUser)
+    if (!canEditProject) return false
+    if (operation.type === 'assign_task' && !canEditProjectTaskBoard) return false
+
+    const manager = activeStaffMembers.some((member) => member.name === operation.manager && canManageProject(member))
+      ? operation.manager
+      : undefined
+    const stage = appWorkflowOptions.workflowStages.includes(operation.stage) ? operation.stage : undefined
+    const workStatus = appWorkflowOptions.nodeStatuses.includes(operation.workStatus)
+      ? (operation.workStatus as WorkStatus)
+      : undefined
+    const assignmentWorkType = appWorkflowOptions.taskWorkTypes.includes(operation.workType)
+      ? operation.workType
+      : appWorkflowOptions.taskWorkTypes[0] ?? defaultTaskWorkOptions[0]
+    const assignmentAssignee = activeStaffMembers.some((member) => member.name === operation.assignee)
+      ? operation.assignee
+      : ''
+
+    setSearchQuery('')
+    setFilterStatus('all')
+    setFilterType('全部类型')
+    setSelectedProjectId(project.id)
+    setSection('projects')
+    setAssistantProjectEditDraft({
+      stage,
+      workStatus,
+      due: operation.deliveryDate || undefined,
+      calendarTitle: operation.calendarTitle || undefined,
+      manager,
+      assignment:
+        operation.type === 'assign_task'
+          ? {
+              workType: assignmentWorkType,
+              mode: operation.assignmentMode,
+              assignee: assignmentAssignee,
+              externalNote: operation.externalNote,
+              status: taskStatusOptions.includes(operation.taskStatus as TaskStatus)
+                ? (operation.taskStatus as TaskStatus)
+                : '未开始',
+              due: operation.taskDue || undefined,
+            }
+          : undefined,
+    })
+    setEditingProject(project)
+    return true
   }
 
   function handleUpdateStaffMember(updatedMember: StaffMember, previousName: string) {
@@ -2927,10 +3095,11 @@ function App() {
 
       <main className="workspace">
         <header className="topbar">
-          <div>
+          <div className="topbarTitle">
             <div className="eyebrow">{formatFullDate(now)}</div>
             <h1>{titleForSection(section, role)}</h1>
           </div>
+          <div className="topbarDragArea" aria-hidden="true" />
           <div className="topActions">
             <div className="search">
               <Search size={18} />
@@ -2940,7 +3109,14 @@ function App() {
               <Filter size={18} />
             </button>
             {canCreateProject && (
-              <button className="primaryButton" type="button" onClick={() => setShowNewProjectModal(true)}>
+              <button
+                className="primaryButton"
+                type="button"
+                onClick={() => {
+                  setAssistantNewProjectDraft(null)
+                  setShowNewProjectModal(true)
+                }}
+              >
                 新建项目
               </button>
             )}
@@ -3041,6 +3217,8 @@ function App() {
             onAddPlan={handleAddCalendarPlan}
             onUpdatePlan={handleUpdateCalendarPlan}
             onDeletePlan={handleDeleteCalendarPlan}
+            assistantDraft={assistantCalendarDrafts[0] ?? null}
+            onAssistantDraftHandled={() => setAssistantCalendarDrafts((current) => current.slice(1))}
           />
         )}
         {section === 'team' && <TeamLoad projects={appProjects} tasks={appTasks} staffMembers={appStaffMembers} />}
@@ -3095,8 +3273,14 @@ function App() {
         calendarProjects={assistantCalendarProjects}
         staffMembers={activeStaffMembers}
         canCreateProject={canCreateProject}
-        onOpenNewProject={() => setShowNewProjectModal(true)}
-        onAddCalendarPlan={handleAddCalendarPlan}
+        workflowOptions={appWorkflowOptions}
+        canEditProjectTaskBoard={canEditProjectTaskBoard}
+        onOpenNewProject={() => {
+          setAssistantNewProjectDraft(null)
+          setShowNewProjectModal(true)
+        }}
+        onReviewCalendarPlans={handleReviewAssistantCalendarPlans}
+        onReviewOperation={handleReviewAssistantOperation}
       />
 
       {showNewProjectModal && (
@@ -3107,11 +3291,15 @@ function App() {
             canDeleteCustomers={canManageWorkflowOptions}
             preferredManager={role === 'manager' ? currentUser ?? undefined : undefined}
             lockManager={role === 'manager'}
+            draft={assistantNewProjectDraft ?? undefined}
             onAddProjectType={addProjectTypeOption}
             onAddCustomerProvince={addCustomerProvinceOption}
             onAddCustomer={addCustomerOption}
             onDeleteCustomer={deleteCustomerOption}
-            onClose={() => setShowNewProjectModal(false)}
+            onClose={() => {
+              setShowNewProjectModal(false)
+              setAssistantNewProjectDraft(null)
+            }}
             onCreateProject={handleCreateProject}
           />
       )}
@@ -3133,7 +3321,11 @@ function App() {
           workflowOptions={appWorkflowOptions}
           canDelete={canDeleteProject(editingProject)}
           canEditTaskBoard={canEditProjectTaskBoard}
-          onClose={() => setEditingProject(null)}
+          draft={assistantProjectEditDraft ?? undefined}
+          onClose={() => {
+            setEditingProject(null)
+            setAssistantProjectEditDraft(null)
+          }}
           onSave={handleUpdateProject}
           onDelete={handleDeleteProject}
         />
@@ -4231,7 +4423,7 @@ function Dashboard({
         <TaskRows tasks={openTasks.slice(0, 4)} />
       </section>
 
-      <section className="panel span5">
+      <section className="panel span5 calendarListPanel">
         <div className="panelHeader">
           <div>
             <h2>交付节点</h2>
@@ -4579,6 +4771,7 @@ function NewProjectModal({
   canDeleteCustomers,
   preferredManager,
   lockManager = false,
+  draft,
   onAddProjectType,
   onAddCustomerProvince,
   onAddCustomer,
@@ -4592,6 +4785,7 @@ function NewProjectModal({
   canDeleteCustomers: boolean
   preferredManager?: string
   lockManager?: boolean
+  draft?: AssistantNewProjectDraft
   onAddProjectType: (typeName: string) => void
   onAddCustomerProvince: (provinceName: string) => void
   onAddCustomer: (provinceName: string, customerName: string) => void
@@ -4603,17 +4797,30 @@ function NewProjectModal({
   const projectTypeOptions = workflowOptions.projectTypes
   const customerGroups = workflowOptions.customerGroups
   const provinceOptions = useMemo(() => Object.keys(customerGroups), [customerGroups])
+  const draftProvince =
+    Object.entries(customerGroups).find(([, customers]) => Boolean(draft?.client && customers.includes(draft.client)))?.[0] ?? ''
   const lockedManagerAvailable = Boolean(preferredManager && projectManagers.some((member) => member.name === preferredManager))
-  const [name, setName] = useState('')
-  const [path, setPath] = useState('')
-  const [type, setType] = useState(projectTypeOptions[0] ?? '')
-  const [province, setProvince] = useState('')
-  const [client, setClient] = useState('')
-  const [clientContact, setClientContact] = useState('')
-  const [manager, setManager] = useState(preferredManager ?? projectManagers[0]?.name ?? '')
-  const [priority, setPriority] = useState('重要')
-  const [workTypes, setWorkTypes] = useState<string[]>([workflowOptions.taskWorkTypes[0] ?? defaultTaskWorkOptions[0]])
-  const [deliveryDate, setDeliveryDate] = useState(defaultDeliveryDate())
+  const [name, setName] = useState(draft?.name ?? '')
+  const [path, setPath] = useState(draft?.path ?? '')
+  const [type, setType] = useState(
+    draft?.type && projectTypeOptions.includes(draft.type) ? draft.type : (projectTypeOptions[0] ?? ''),
+  )
+  const [province, setProvince] = useState(draftProvince)
+  const [client, setClient] = useState(draft?.client ?? '')
+  const [clientContact, setClientContact] = useState(draft?.clientContact ?? '')
+  const [manager, setManager] = useState(
+    preferredManager ||
+      (draft?.manager && projectManagers.some((member) => member.name === draft.manager) ? draft.manager : '') ||
+      projectManagers[0]?.name ||
+      '',
+  )
+  const [priority, setPriority] = useState(draft?.priority || '重要')
+  const [workTypes, setWorkTypes] = useState<string[]>(
+    draft?.workTypes?.filter((item) => workflowOptions.taskWorkTypes.includes(item)).length
+      ? draft.workTypes.filter((item) => workflowOptions.taskWorkTypes.includes(item))
+      : [workflowOptions.taskWorkTypes[0] ?? defaultTaskWorkOptions[0]],
+  )
+  const [deliveryDate, setDeliveryDate] = useState(draft?.deliveryDate || defaultDeliveryDate())
   const customerOptions = useMemo(() => (province ? customerGroups[province] ?? [] : []), [customerGroups, province])
 
   useEffect(() => {
@@ -4708,7 +4915,7 @@ function NewProjectModal({
         <header>
           <div>
             <span className="eyebrow">项目录入</span>
-            <h2>新建项目</h2>
+            <h2>{draft ? '确认助理新建项目' : '新建项目'}</h2>
             <p>先录入项目基础信息和 NAS 路径，项目经理收到后继续拆任务。</p>
           </div>
           <button type="button" onClick={onClose} title="关闭">
@@ -5032,6 +5239,7 @@ function ProjectEditModal({
   workflowOptions,
   canDelete,
   canEditTaskBoard,
+  draft,
   onClose,
   onSave,
   onDelete,
@@ -5042,6 +5250,7 @@ function ProjectEditModal({
   workflowOptions: WorkflowOptions
   canDelete: boolean
   canEditTaskBoard: boolean
+  draft?: AssistantProjectEditDraft
   onClose: () => void
   onSave: (project: Project, tasks: Task[]) => void
   onDelete: (project: Project) => void
@@ -5054,13 +5263,46 @@ function ProjectEditModal({
   const [type, setType] = useState(project.type)
   const [client, setClient] = useState(project.client)
   const [clientContact, setClientContact] = useState(project.clientContact ?? '')
-  const [manager, setManager] = useState(initialManager)
-  const [stage, setStage] = useState(project.stage)
-  const [calendarTitle, setCalendarTitle] = useState(project.calendarTitle ?? milestoneTitleFrom(project.nextMilestone))
-  const [workStatus, setWorkStatus] = useState<WorkStatus>(project.workStatus)
+  const [manager, setManager] = useState(
+    draft?.manager && projectManagers.some((member) => member.name === draft.manager) ? draft.manager : initialManager,
+  )
+  const [stage, setStage] = useState(draft?.stage ?? project.stage)
+  const [calendarTitle, setCalendarTitle] = useState(
+    draft?.calendarTitle ?? project.calendarTitle ?? milestoneTitleFrom(project.nextMilestone),
+  )
+  const [workStatus, setWorkStatus] = useState<WorkStatus>(draft?.workStatus ?? project.workStatus)
   const [projectStatus, setProjectStatus] = useState<ProjectHealthStatus>(() => projectHealthStatus(project))
-  const [due, setDue] = useState(project.due)
-  const [taskDrafts, setTaskDrafts] = useState<Task[]>(() => normalizeTaskAssigneesForStaff(projectTasks, assignableStaff))
+  const [due, setDue] = useState(draft?.due ?? project.due)
+  const [taskDrafts, setTaskDrafts] = useState<Task[]>(() => {
+    const normalizedTasks = normalizeTaskAssigneesForStaff(projectTasks, assignableStaff)
+    if (!draft?.assignment || !canEditTaskBoard) return normalizedTasks
+
+    const assignment = draft.assignment
+    const existingTaskIndex = normalizedTasks.findIndex(
+      (task) => taskWorkType(task, project, workflowOptions.taskWorkTypes) === assignment.workType,
+    )
+    const assignee =
+      assignment.mode === 'external'
+        ? `外包：${assignment.externalNote || '待补充'}`
+        : staffNameInOptions(assignment.assignee, assignableStaff) || assignableStaff[0]?.name || initialManager
+    const nextTask: Task = {
+      id: existingTaskIndex >= 0 ? normalizedTasks[existingTaskIndex].id : `T-${Date.now().toString().slice(-6)}-assistant`,
+      title: taskTitleForWorkType(project.name, assignment.workType),
+      projectId: project.id,
+      project: project.name,
+      workType: assignment.workType,
+      assignmentMode: assignment.mode,
+      assignee,
+      due: formatMonthDay(new Date(assignment.due ?? project.due)),
+      status: assignment.status,
+      note:
+        assignment.mode === 'external'
+          ? `外包任务，由${project.manager}跟进。外包给：${assignment.externalNote || '待补充'}。`
+          : `${assignment.workType}执行任务，来自助理预填。`,
+    }
+    if (existingTaskIndex < 0) return [...normalizedTasks, nextTask]
+    return normalizedTasks.map((task, index) => (index === existingTaskIndex ? { ...task, ...nextTask } : task))
+  })
 
   async function selectProjectFolder() {
     const selectedPath = await window.desktopBridge?.selectProjectFolder()
@@ -5132,7 +5374,7 @@ function ProjectEditModal({
         <header>
           <div>
             <span className="eyebrow">项目维护</span>
-            <h2>编辑项目</h2>
+            <h2>{draft ? '确认助理修改' : '编辑项目'}</h2>
             <p>用于修正项目名称、客户、项目经理、流程节点、下一节点日期和 NAS 路径。</p>
           </div>
           <button type="button" onClick={onClose} title="关闭">
@@ -5337,7 +5579,7 @@ function ProjectEditModal({
           </div>
           <button type="button" onClick={onClose}>取消</button>
           <button className="primaryButton" type="button" onClick={saveProject} disabled={!name.trim()}>
-            保存修改
+            {draft ? '确认并保存' : '保存修改'}
           </button>
         </footer>
       </section>
@@ -5571,6 +5813,8 @@ function CalendarView({
   onAddPlan,
   onUpdatePlan,
   onDeletePlan,
+  assistantDraft,
+  onAssistantDraftHandled,
 }: {
   projects: Project[]
   calendarItems: CalendarItem[]
@@ -5586,6 +5830,8 @@ function CalendarView({
   onAddPlan: (plan: ProjectPlanPayload) => void
   onUpdatePlan: (itemKey: string, plan: ProjectPlanPayload) => void
   onDeletePlan: (itemKey: string) => void
+  assistantDraft: ProjectPlanPayload | null
+  onAssistantDraftHandled: () => void
 }) {
   const calendarProjects = projects.filter((project) => calendarItems.some((item) => item.projectId === project.id))
   const [selectedProjectId, setSelectedProjectId] = useState(calendarProjects[0]?.id ?? projects[0]?.id ?? '')
@@ -5608,8 +5854,22 @@ function CalendarView({
   const days = Array.from({ length: visibleEnd - clampedPageStart }, (_, index) => addDays(now, clampedPageStart + index))
 
   useEffect(() => {
-    setPageStart(0)
-  }, [rangeDays])
+    setPageStart((current) => Math.min(current, Math.max(0, rangeDays - visibleDayCount)))
+  }, [rangeDays, visibleDayCount])
+
+  useEffect(() => {
+    if (!assistantDraft) return
+    setSelectedProjectId(assistantDraft.projectId)
+    const draftDate = new Date(`${assistantDraft.date}T00:00:00`)
+    const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate())
+    const dayOffset = Math.floor((draftDate.getTime() - todayStart.getTime()) / 86400000)
+    if (Number.isFinite(dayOffset) && dayOffset >= 0) {
+      const requiredRange = dayOffset + 1
+      const nextRange = [14, 30, 60, 90].find((value) => value >= requiredRange) ?? 90
+      setRangeDays(nextRange)
+      setPageStart(Math.floor(dayOffset / visibleDayCount) * visibleDayCount)
+    }
+  }, [assistantDraft, now])
 
   return (
     <div className="contentGrid">
@@ -5712,7 +5972,7 @@ function CalendarView({
             <p>点击项目，右侧显示完整时间安排</p>
           </div>
         </div>
-        <div className="calendarProjectList">
+        <div className="calendarProjectList" tabIndex={0} aria-label="项目列表">
           {calendarProjects.map((project) => (
             <button
               key={project.id}
@@ -5733,7 +5993,7 @@ function CalendarView({
         </div>
       </section>
 
-      <section className="panel span7">
+      <section className="panel span7 calendarListPanel">
         <div className="panelHeader">
           <div>
             <h2>{selectedProject?.name ?? '暂无项目节点'}</h2>
@@ -5743,7 +6003,7 @@ function CalendarView({
             <span className={`pill ${statusTone[projectDisplayStatus(selectedProject)]}`}>{statusLabel[projectDisplayStatus(selectedProject)]}</span>
           )}
         </div>
-        <div className="projectSchedule">
+        <div className="projectSchedule" tabIndex={0} aria-label="当前项目节点列表">
           {selectedProjectSchedule.map((item) => {
             const itemKey = calendarItemKey(item)
 
@@ -5799,6 +6059,21 @@ function CalendarView({
           }}
         />
       )}
+      {canManagePlans && assistantDraft && (
+        <CalendarPlanModal
+          key={`${assistantDraft.projectId}-${assistantDraft.date}-${assistantDraft.title}`}
+          date={assistantDraft.date}
+          projects={projects}
+          staffMembers={staffMembers}
+          draft={assistantDraft}
+          onClose={onAssistantDraftHandled}
+          onSave={(plan) => {
+            onAddPlan(plan)
+            setSelectedProjectId(plan.projectId)
+            onAssistantDraftHandled()
+          }}
+        />
+      )}
       {canManagePlans && editingPlan && (
         <CalendarPlanModal
           date={editingPlan.date}
@@ -5831,6 +6106,7 @@ function CalendarPlanModal({
   projects,
   staffMembers,
   item,
+  draft,
   onClose,
   onSave,
 }: {
@@ -5838,25 +6114,26 @@ function CalendarPlanModal({
   projects: Project[]
   staffMembers: StaffMember[]
   item?: CalendarItem
+  draft?: ProjectPlanPayload
   onClose: () => void
   onSave: (plan: ProjectPlanPayload) => void
 }) {
   const assignableStaff = useMemo(() => staffMembers.filter((member) => member.status === '在职'), [staffMembers])
-  const [projectId, setProjectId] = useState(item?.projectId ?? projects[0]?.id ?? '')
+  const [projectId, setProjectId] = useState(item?.projectId ?? draft?.projectId ?? projects[0]?.id ?? '')
   const selectedProject = projects.find((project) => project.id === projectId) ?? projects[0]
   const initialOwner =
-    staffNameInOptions(item?.owner ?? '', assignableStaff) ||
+    staffNameInOptions(item?.owner ?? draft?.owner ?? '', assignableStaff) ||
     staffNameInOptions(selectedProject?.manager ?? '', assignableStaff) ||
     assignableStaff[0]?.name ||
     ''
-  const [title, setTitle] = useState(item?.title ?? '项目计划')
+  const [title, setTitle] = useState(item?.title ?? draft?.title ?? '项目计划')
   const [owner, setOwner] = useState(initialOwner)
 
   useEffect(() => {
-    if (item) return
+    if (item || draft?.owner) return
     if (!selectedProject) return
     setOwner(staffNameInOptions(selectedProject.manager, assignableStaff) || assignableStaff[0]?.name || '')
-  }, [assignableStaff, item, selectedProject])
+  }, [assignableStaff, draft?.owner, item, selectedProject])
 
   if (!selectedProject) return null
 
@@ -5866,7 +6143,7 @@ function CalendarPlanModal({
         <header>
           <div>
             <span className="eyebrow">{formatMonthDay(new Date(date))}</span>
-            <h2>{item ? '编辑计划' : '添加计划'}</h2>
+            <h2>{item ? '编辑计划' : draft ? '确认助理计划' : '添加计划'}</h2>
           </div>
           <button type="button" onClick={onClose} title="关闭">
             <X size={18} />
@@ -5918,7 +6195,7 @@ function CalendarPlanModal({
               })
             }
           >
-            {item ? '保存修改' : '保存计划'}
+            {item ? '保存修改' : draft ? '确认并保存' : '保存计划'}
           </button>
         </footer>
       </section>
@@ -6671,7 +6948,7 @@ function TeamLoad({ projects, tasks, staffMembers }: { projects: Project[]; task
     const managedProjects = activeProjects.filter((project) => project.manager === person.name)
     const ownedProjects = activeProjects.filter((project) => project.owner === person.name)
     const relatedProjectIds = new Set([...personTasks.map((task) => task.projectId), ...managedProjects.map((project) => project.id), ...ownedProjects.map((project) => project.id)])
-    const risk = activeProjects.filter((project) => relatedProjectIds.has(project.id) && isRiskProject(project)).length
+    const risk = activeProjects.filter((project) => relatedProjectIds.has(project.id) && isProjectAtRisk(project)).length
     const revisionTasks = personTasks.filter((task) => task.status === '修改中').length
     const load = Math.min(100, personTasks.length * 12 + managedProjects.length * 10 + ownedProjects.length * 8 + revisionTasks * 6)
 
@@ -7353,6 +7630,7 @@ const defaultAssistantSettings: AssistantSettings = {
   onlineModel: '',
   localBaseUrl: 'http://127.0.0.1:11434',
   localModel: '',
+  localThinking: false,
   includeProjectContext: true,
   includeFinanceContext: false,
   fallbackToRules: true,
@@ -7360,8 +7638,33 @@ const defaultAssistantSettings: AssistantSettings = {
   secureStorageAvailable: true,
 }
 
-type AssistantMessage = { from: 'assistant' | 'user'; text: string }
+const assistantImageMimeTypes = new Set(['image/jpeg', 'image/png', 'image/gif', 'image/webp'])
+const assistantImageCountLimit = 4
+const assistantImageSizeLimit = 10 * 1024 * 1024
+const assistantImageTotalSizeLimit = 20 * 1024 * 1024
+
+type AssistantMessage = {
+  from: 'assistant' | 'user'
+  text: string
+  images?: AssistantImageAttachment[]
+}
+type AssistantSuggestion = {
+  label: string
+  prompt: string
+}
 type AssistantCandidateDraft = AssistantCalendarCandidate & { id: string; selected: boolean }
+
+function readAssistantImage(file: File) {
+  return new Promise<string>((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => {
+      if (typeof reader.result === 'string') resolve(reader.result)
+      else reject(new Error('无法读取图片'))
+    }
+    reader.onerror = () => reject(new Error('无法读取图片'))
+    reader.readAsDataURL(file)
+  })
+}
 
 function CrewFlowAssistant({
   role,
@@ -7372,9 +7675,12 @@ function CrewFlowAssistant({
   financeRecords,
   calendarProjects,
   staffMembers,
+  workflowOptions,
   canCreateProject,
+  canEditProjectTaskBoard,
   onOpenNewProject,
-  onAddCalendarPlan,
+  onReviewCalendarPlans,
+  onReviewOperation,
 }: {
   role: Role
   section: Section
@@ -7384,9 +7690,12 @@ function CrewFlowAssistant({
   financeRecords: FinanceRecord[]
   calendarProjects: Project[]
   staffMembers: StaffMember[]
+  workflowOptions: WorkflowOptions
   canCreateProject: boolean
+  canEditProjectTaskBoard: boolean
   onOpenNewProject: () => void
-  onAddCalendarPlan: (plan: ProjectPlanPayload) => void
+  onReviewCalendarPlans: (plans: ProjectPlanPayload[]) => void
+  onReviewOperation: (operation: AssistantOperation) => boolean
 }) {
   const [open, setOpen] = useState(false)
   const [input, setInput] = useState('')
@@ -7397,17 +7706,22 @@ function CrewFlowAssistant({
   const [apiKey, setApiKey] = useState('')
   const [settingsMessage, setSettingsMessage] = useState('')
   const [settingsBusy, setSettingsBusy] = useState(false)
+  const [localModels, setLocalModels] = useState<string[]>([])
+  const [localModelsLoading, setLocalModelsLoading] = useState(false)
   const [candidates, setCandidates] = useState<AssistantCandidateDraft[]>([])
-  const [waitingForChatRecord, setWaitingForChatRecord] = useState(false)
+  const [pendingImages, setPendingImages] = useState<AssistantImageAttachment[]>([])
+  const [imageMessage, setImageMessage] = useState('')
   const assistantRef = useRef<HTMLElement | null>(null)
   const messagesRef = useRef<HTMLDivElement | null>(null)
+  const inputRef = useRef<HTMLInputElement | null>(null)
+  const imageInputRef = useRef<HTMLInputElement | null>(null)
   const [messages, setMessages] = useState<AssistantMessage[]>([
     {
       from: 'assistant',
       text: '我可以帮你整理项目、任务、交付节点和工作提醒。',
     },
   ])
-  const suggestions = assistantSuggestions(role, section, projects, tasks, calendarItems)
+  const suggestions = assistantSuggestions(role, section, projects, tasks, calendarItems, financeRecords)
   const modeLabel = assistantModeLabel(settings.mode)
 
   useEffect(() => {
@@ -7422,6 +7736,43 @@ function CrewFlowAssistant({
         setSettingsDraft(assistantSettingsDraft(defaultAssistantSettings))
       })
   }, [])
+
+  useEffect(() => {
+    if (!open || !showSettings || settingsDraft.mode !== 'local' || !window.desktopBridge?.testAssistantProvider) return
+
+    let active = true
+    const localBaseUrl = settingsDraft.localBaseUrl
+    setLocalModelsLoading(true)
+    window.desktopBridge
+      .testAssistantProvider({
+        settings: {
+          ...assistantSettingsDraft(defaultAssistantSettings),
+          mode: 'local',
+          localBaseUrl,
+        },
+      })
+      .then((result) => {
+        if (!active) return
+        const models = result.models ?? []
+        setLocalModels(models)
+        setSettingsDraft((current) => {
+          if (current.mode !== 'local' || current.localBaseUrl !== localBaseUrl) return current
+          if (current.localModel && models.includes(current.localModel)) return current
+          return models[0] ? { ...current, localModel: models[0] } : current
+        })
+        if (models.length === 0) setSettingsMessage(result.message)
+      })
+      .catch((error) => {
+        if (active) setSettingsMessage(assistantErrorMessage(error))
+      })
+      .finally(() => {
+        if (active) setLocalModelsLoading(false)
+      })
+
+    return () => {
+      active = false
+    }
+  }, [open, settingsDraft.localBaseUrl, settingsDraft.mode, showSettings])
 
   useEffect(() => {
     if (!open) return
@@ -7448,23 +7799,88 @@ function CrewFlowAssistant({
     return () => window.cancelAnimationFrame(frame)
   }, [busy, candidates, messages, open, showSettings])
 
-  async function sendMessage(text = input) {
-    const cleanText = text.trim()
-    if (!cleanText || busy) return
-    const wantsNewProject = /新建项目|创建项目|立项|录入项目/.test(cleanText)
-    if (wantsNewProject && canCreateProject) onOpenNewProject()
+  useEffect(() => {
+    if (!open || showSettings) return
+    const frame = window.requestAnimationFrame(() => inputRef.current?.focus({ preventScroll: true }))
+    return () => window.cancelAnimationFrame(frame)
+  }, [busy, open, showSettings])
 
-    const userMessage: AssistantMessage = { from: 'user', text: cleanText }
+  useEffect(() => {
+    if (settings.mode === 'online') return
+    setPendingImages([])
+    setImageMessage('')
+  }, [settings.mode])
+
+  async function addAssistantImages(files: File[]) {
+    if (settings.mode !== 'online' || files.length === 0) return
+
+    const nextImages: AssistantImageAttachment[] = []
+    const errors: string[] = []
+    let totalSize = pendingImages.reduce((sum, image) => sum + image.size, 0)
+
+    for (const file of files) {
+      if (pendingImages.length + nextImages.length >= assistantImageCountLimit) {
+        errors.push(`每条消息最多添加 ${assistantImageCountLimit} 张图片`)
+        break
+      }
+      if (!assistantImageMimeTypes.has(file.type)) {
+        errors.push(`${file.name || '所选文件'}不是支持的图片格式`)
+        continue
+      }
+      if (file.size > assistantImageSizeLimit) {
+        errors.push(`${file.name || '所选图片'}超过 10 MB`)
+        continue
+      }
+      if (totalSize + file.size > assistantImageTotalSizeLimit) {
+        errors.push('本条消息的图片总大小不能超过 20 MB')
+        break
+      }
+
+      try {
+        const dataUrl = await readAssistantImage(file)
+        nextImages.push({
+          id: `assistant-image-${Date.now()}-${nextImages.length}`,
+          name: file.name || `图片 ${pendingImages.length + nextImages.length + 1}`,
+          mimeType: file.type,
+          size: file.size,
+          dataUrl,
+        })
+        totalSize += file.size
+      } catch {
+        errors.push(`${file.name || '所选图片'}读取失败`)
+      }
+    }
+
+    if (nextImages.length > 0) setPendingImages((current) => [...current, ...nextImages])
+    setImageMessage(errors[0] ?? '')
+    window.requestAnimationFrame(() => inputRef.current?.focus({ preventScroll: true }))
+  }
+
+  async function sendMessage(text = input, includePendingImages = true) {
+    const cleanText = text.trim()
+    const images = includePendingImages && settings.mode === 'online' ? pendingImages : []
+    if ((!cleanText && images.length === 0) || busy) return
+    const messageText =
+      cleanText || '请分析这些图片；如果包含项目节点或工作安排，请整理成可确认的操作。'
+    const wantsNewProject = /新建项目|创建项目|立项|录入项目/.test(messageText)
+
+    const userMessage: AssistantMessage = { from: 'user', text: messageText, images }
     const currentMessages = [...messages, userMessage]
     setMessages(currentMessages)
     setInput('')
+    if (includePendingImages) {
+      setPendingImages([])
+      setImageMessage('')
+    }
+    window.requestAnimationFrame(() => inputRef.current?.focus({ preventScroll: true }))
 
-    if (settings.mode === 'rules' || wantsNewProject) {
+    if (settings.mode === 'rules') {
+      if (wantsNewProject && canCreateProject) onOpenNewProject()
       setMessages((current) => [
         ...current,
         {
           from: 'assistant',
-          text: assistantReply(cleanText, role, section, projects, tasks, calendarItems, financeRecords, canCreateProject),
+          text: assistantReply(messageText, role, section, projects, tasks, calendarItems, financeRecords, canCreateProject),
         },
       ])
       return
@@ -7475,73 +7891,90 @@ function CrewFlowAssistant({
       return
     }
 
-    const mentionsChatExtraction =
-      /聊天记录|群聊|微信|提取.*(?:日历|计划|节点|进度)|总结.*(?:节点|进度)|写入.*日历/.test(cleanText)
-    const changesTopicWhileWaiting =
-      waitingForChatRecord &&
-      (/不用了|取消|算了|先不发/.test(cleanText) ||
-        /能干什么|可以做什么|能力|边界|界线|闲聊|聊闲天|聊天范围|支持什么/.test(cleanText))
-    if (changesTopicWhileWaiting) setWaitingForChatRecord(false)
-    const containsInlineChat =
-      cleanText.length >= 120 ||
-      cleanText.split('\n').filter((line) => line.trim()).length >= 3 ||
-      /(?:聊天记录|群聊|微信)\s*[:：]\s*\S{5,}/.test(cleanText)
-    const shouldWaitForChat = mentionsChatExtraction && !waitingForChatRecord && !changesTopicWhileWaiting && !containsInlineChat
-
-    if (shouldWaitForChat) {
-      setWaitingForChatRecord(true)
-      setMessages((current) => [
-        ...current,
-        {
-          from: 'assistant',
-          text: '可以，请把聊天记录直接粘贴过来。我会整理其中明确的项目、日期、工作节点和负责人，再生成待确认的交付日历计划。',
-        },
-      ])
-      return
-    }
-
-    const wantsCalendarExtraction = !changesTopicWhileWaiting && (waitingForChatRecord || mentionsChatExtraction)
-    if (wantsCalendarExtraction) setWaitingForChatRecord(false)
-    const canCreateCalendarCandidates = wantsCalendarExtraction && calendarProjects.length > 0
-
     setBusy(true)
     try {
       const response = await window.desktopBridge.requestAssistant({
         messages: currentMessages.slice(-12).map((message) => ({
           role: message.from,
           content: message.text,
+          images: message.images?.map(({ name, mimeType, dataUrl }) => ({ name, mimeType, dataUrl })),
         })),
-        context: assistantContext(
-          role,
-          section,
-          settings,
-          projects,
-          tasks,
-          calendarItems,
-          financeRecords,
-          staffMembers,
-        ),
-        task: canCreateCalendarCandidates ? 'calendar_extract' : 'chat',
+        context: {
+          ...assistantContext(
+            role,
+            section,
+            settings,
+            projects,
+            tasks,
+            calendarItems,
+            financeRecords,
+            staffMembers,
+          ),
+          workflowOptions,
+          editableCalendarProjectIds: calendarProjects.map((project) => project.id),
+          pendingCalendarCandidates: candidates.map((candidate) => ({
+            projectId: candidate.projectId,
+            date: candidate.date,
+            title: candidate.title,
+            owner: candidate.owner,
+            source: candidate.source,
+          })),
+          capabilities: {
+            canCreateProject,
+            canEditProject: role === 'controller' || role === 'admin' || role === 'manager',
+            canAssignTask: canEditProjectTaskBoard,
+          },
+        },
+        task: 'assistant_route',
       })
 
+      if (response.clearPending) setCandidates([])
       if (response.kind === 'calendar_candidates') {
         const nextCandidates = normalizeAssistantCandidates(response.candidates, calendarProjects)
-        setCandidates(nextCandidates)
-        setMessages((current) => [
-          ...current,
-          {
-            from: 'assistant',
-            text:
-              nextCandidates.length > 0
-                ? response.message
-                : '没有找到日期和项目都明确的计划。请补充项目名称及具体日期后再试。',
-          },
-        ])
+        const directPlans = assistantPlansFromCandidates(nextCandidates, calendarProjects, calendarItems)
+        if (response.openConfirmation && nextCandidates.length === 1 && directPlans.plans.length === 1) {
+          setCandidates([])
+          setMessages((current) => [
+            ...current,
+            {
+              from: 'assistant',
+              text: '已整理这条节点，正在打开交付日历确认窗口。',
+            },
+          ])
+          setOpen(false)
+          onReviewCalendarPlans(directPlans.plans)
+        } else {
+          setCandidates(nextCandidates)
+          setMessages((current) => [
+            ...current,
+            {
+              from: 'assistant',
+              text:
+                nextCandidates.length > 0
+                  ? response.message || `已整理 ${nextCandidates.length} 条计划，请核对后前往交付日历确认。`
+                  : response.message || '没有找到日期和项目都明确的计划。请补充项目名称及具体日期后再试。',
+            },
+          ])
+        }
+      } else if (response.kind === 'operation') {
+        if (response.operation) {
+          const opened = onReviewOperation(response.operation)
+          setMessages((current) => [
+            ...current,
+            {
+              from: 'assistant',
+              text: opened ? response.message : '当前账号无法打开这项操作，或目标项目已经归档。',
+            },
+          ])
+          if (opened) setOpen(false)
+        } else {
+          setMessages((current) => [...current, { from: 'assistant', text: response.message }])
+        }
       } else {
         setMessages((current) => [...current, { from: 'assistant', text: response.message }])
       }
     } catch (error) {
-      const fallback = assistantReply(cleanText, role, section, projects, tasks, calendarItems, financeRecords, canCreateProject)
+      const fallback = assistantReply(messageText, role, section, projects, tasks, calendarItems, financeRecords, canCreateProject)
       setMessages((current) => [
         ...current,
         {
@@ -7585,6 +8018,7 @@ function CrewFlowAssistant({
         apiKey,
       })
       setSettingsMessage(result.message)
+      if (settingsDraft.mode === 'local') setLocalModels(result.models ?? [])
       if (settingsDraft.mode === 'local' && !settingsDraft.localModel && result.models?.[0]) {
         setSettingsDraft((current) => ({ ...current, localModel: result.models?.[0] ?? '' }))
       }
@@ -7595,40 +8029,52 @@ function CrewFlowAssistant({
     }
   }
 
-  function confirmCandidates() {
-    let added = 0
-    let skipped = 0
-    const batchId = Date.now()
-    candidates.forEach((candidate, index) => {
-      if (!candidate.selected) return
-      const project = calendarProjects.find((item) => item.id === candidate.projectId)
-      const duplicate = calendarItems.some(
-        (item) =>
-          item.projectId === candidate.projectId &&
-          dateForCalendarItem(new Date(), item) === candidate.date &&
-          item.title.trim() === candidate.title.trim(),
-      )
-      if (!project || !candidate.date || !candidate.title.trim() || duplicate) {
-        skipped += 1
-        return
-      }
-      onAddCalendarPlan({
-        id: `C-AI-${batchId}-${index}`,
-        date: candidate.date,
-        projectId: project.id,
-        title: candidate.title,
-        owner: candidate.owner || project.manager,
+  async function refreshLocalModels() {
+    if (!window.desktopBridge?.testAssistantProvider || localModelsLoading) return
+    setLocalModelsLoading(true)
+    setSettingsMessage('正在读取本地模型…')
+    try {
+      const result = await window.desktopBridge.testAssistantProvider({
+        settings: { ...settingsDraft, mode: 'local', localModel: '' },
       })
-      added += 1
-    })
+      const models = result.models ?? []
+      setLocalModels(models)
+      setSettingsDraft((current) => {
+        if (current.localModel && models.includes(current.localModel)) return current
+        return models[0] ? { ...current, localModel: models[0] } : current
+      })
+      setSettingsMessage(models.length > 0 ? `已读取 ${models.length} 个本地模型` : result.message)
+    } catch (error) {
+      setSettingsMessage(assistantErrorMessage(error))
+    } finally {
+      setLocalModelsLoading(false)
+    }
+  }
+
+  function reviewCandidates() {
+    const { plans, skipped } = assistantPlansFromCandidates(candidates, calendarProjects, calendarItems)
+
+    if (plans.length === 0) {
+      setMessages((current) => [
+        ...current,
+        {
+          from: 'assistant',
+          text: `没有可带入日历的计划${skipped > 0 ? '，请检查日期、项目、内容是否完整或是否已经存在' : ''}。`,
+        },
+      ])
+      return
+    }
+
     setCandidates([])
     setMessages((current) => [
       ...current,
       {
         from: 'assistant',
-        text: `已写入 ${added} 条交付日历计划${skipped > 0 ? `，跳过 ${skipped} 条重复或不完整内容` : ''}。`,
+        text: `已准备 ${plans.length} 条计划，正在打开交付日历供你逐条确认${skipped > 0 ? `；另有 ${skipped} 条重复或不完整内容未带入` : ''}。`,
       },
     ])
+    setOpen(false)
+    onReviewCalendarPlans(plans)
   }
 
   if (!open) {
@@ -7740,15 +8186,65 @@ function CrewFlowAssistant({
                   placeholder="http://127.0.0.1:11434"
                 />
               </label>
-              <label>
-                <span>模型名称</span>
-                <input
-                  value={settingsDraft.localModel}
-                  onChange={(event) => setSettingsDraft((current) => ({ ...current, localModel: event.target.value }))}
-                  placeholder="例如：qwen3:8b"
-                />
-              </label>
-              <p className="assistantPrivacyNote">当前版本支持 Ollama 本地模型服务。</p>
+              <div className="assistantLocalModelRow">
+                <label>
+                  <span>模型名称</span>
+                  <select
+                    value={settingsDraft.localModel}
+                    disabled={localModelsLoading && localModels.length === 0}
+                    onChange={(event) => setSettingsDraft((current) => ({ ...current, localModel: event.target.value }))}
+                  >
+                    {!settingsDraft.localModel && (
+                      <option value="" disabled>
+                        {localModelsLoading ? '正在读取…' : '请选择模型'}
+                      </option>
+                    )}
+                    {settingsDraft.localModel && !localModels.includes(settingsDraft.localModel) && (
+                      <option value={settingsDraft.localModel}>{settingsDraft.localModel}</option>
+                    )}
+                    {localModels.map((model) => (
+                      <option key={model} value={model}>
+                        {model}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <button
+                  className="assistantModelRefresh"
+                  type="button"
+                  disabled={localModelsLoading}
+                  onClick={() => void refreshLocalModels()}
+                  title="刷新本地模型"
+                >
+                  <RefreshCw size={16} className={localModelsLoading ? 'spinning' : ''} />
+                </button>
+              </div>
+              <div className="assistantLocalResponseMode">
+                <span>响应模式</span>
+                <div className="assistantResponseModeOptions" role="group" aria-label="本地模型响应模式">
+                  <button
+                    type="button"
+                    className={!settingsDraft.localThinking ? 'active' : ''}
+                    aria-pressed={!settingsDraft.localThinking}
+                    onClick={() => setSettingsDraft((current) => ({ ...current, localThinking: false }))}
+                  >
+                    快速响应
+                  </button>
+                  <button
+                    type="button"
+                    className={settingsDraft.localThinking ? 'active' : ''}
+                    aria-pressed={settingsDraft.localThinking}
+                    onClick={() => setSettingsDraft((current) => ({ ...current, localThinking: true }))}
+                  >
+                    深度思考
+                  </button>
+                </div>
+              </div>
+              <p className="assistantPrivacyNote">
+                {settingsDraft.localThinking
+                  ? '适合复杂分析，等待时间会明显增加。'
+                  : '适合日常对话、信息提取和表单预填。'}
+              </p>
             </div>
           )}
 
@@ -7809,24 +8305,23 @@ function CrewFlowAssistant({
         </div>
       ) : (
         <>
-          <div className="assistantBrief">
-            {suggestions.map((item) => (
-              <button key={item} type="button" onClick={() => void sendMessage(item)}>
-                {item}
-              </button>
-            ))}
-          </div>
-
           <div ref={messagesRef} className="assistantMessages">
             {messages.map((message, index) => (
               <div key={`${message.from}-${index}`} className={`assistantMessage ${message.from}`}>
-                {message.text}
+                {message.images && message.images.length > 0 && (
+                  <div className="assistantMessageImages">
+                    {message.images.map((image) => (
+                      <img key={image.id} src={image.dataUrl} alt={image.name} title={image.name} />
+                    ))}
+                  </div>
+                )}
+                {message.text && <span>{message.text}</span>}
               </div>
             ))}
             {busy && <div className="assistantMessage assistant">正在思考…</div>}
             {candidates.length > 0 && (
               <div className="assistantCandidates">
-                <strong>确认写入交付日历</strong>
+                <strong>选择要带入日历的计划</strong>
                 {candidates.map((candidate) => (
                   <div className="assistantCandidate" key={candidate.id}>
                     <input
@@ -7909,8 +8404,8 @@ function CrewFlowAssistant({
                   <button type="button" onClick={() => setCandidates([])}>
                     取消
                   </button>
-                  <button className="primaryButton" type="button" onClick={confirmCandidates}>
-                    确认写入
+                  <button className="primaryButton" type="button" onClick={reviewCandidates}>
+                    前往日历确认
                   </button>
                 </div>
               </div>
@@ -7918,19 +8413,98 @@ function CrewFlowAssistant({
           </div>
 
           <form
-            className="assistantInput"
+            className={`assistantInput${settings.mode === 'online' ? ' withImages' : ''}`}
+            onDragOver={(event) => {
+              if (settings.mode === 'online') event.preventDefault()
+            }}
+            onDrop={(event) => {
+              if (settings.mode !== 'online') return
+              event.preventDefault()
+              void addAssistantImages(Array.from(event.dataTransfer.files))
+            }}
             onSubmit={(event) => {
               event.preventDefault()
               void sendMessage()
             }}
           >
+            <div className="assistantQuickActions" aria-label="快捷提问">
+              {suggestions.map((item) => (
+                <button
+                  key={item.prompt}
+                  type="button"
+                  title={item.prompt}
+                  disabled={busy}
+                  onClick={() => void sendMessage(item.prompt, false)}
+                >
+                  {item.label}
+                </button>
+              ))}
+            </div>
+            {pendingImages.length > 0 && (
+              <div className="assistantPendingImages">
+                {pendingImages.map((image) => (
+                  <div key={image.id} className="assistantPendingImage">
+                    <img src={image.dataUrl} alt={image.name} />
+                    <button
+                      type="button"
+                      title={`移除 ${image.name}`}
+                      onClick={() => setPendingImages((current) => current.filter((item) => item.id !== image.id))}
+                    >
+                      <X size={12} />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+            {imageMessage && <span className="assistantImageMessage">{imageMessage}</span>}
+            {settings.mode === 'online' && (
+              <>
+                <input
+                  ref={imageInputRef}
+                  className="assistantImageInput"
+                  type="file"
+                  accept="image/jpeg,image/png,image/gif,image/webp"
+                  multiple
+                  tabIndex={-1}
+                  onChange={(event) => {
+                    void addAssistantImages(Array.from(event.target.files ?? []))
+                    event.currentTarget.value = ''
+                  }}
+                />
+                <button
+                  className="assistantImageButton"
+                  type="button"
+                  title="添加图片"
+                  onClick={() => imageInputRef.current?.click()}
+                >
+                  <ImagePlus size={16} />
+                </button>
+              </>
+            )}
             <input
+              ref={inputRef}
               value={input}
               onChange={(event) => setInput(event.target.value)}
-              placeholder={settings.mode === 'rules' ? '问：今天优先处理什么？' : '提问，或粘贴聊天记录提取计划'}
-              disabled={busy}
+              onPaste={(event) => {
+                if (settings.mode !== 'online') return
+                const images = Array.from(event.clipboardData.items)
+                  .filter((item) => item.kind === 'file' && item.type.startsWith('image/'))
+                  .map((item) => item.getAsFile())
+                  .filter((file): file is File => Boolean(file))
+                if (images.length === 0) return
+                event.preventDefault()
+                void addAssistantImages(images)
+              }}
+              placeholder={
+                settings.mode === 'rules'
+                  ? '问：今天优先处理什么？'
+                  : settings.mode === 'online'
+                    ? '提问，或添加/粘贴图片'
+                    : '提问，或粘贴聊天记录提取计划'
+              }
+              aria-busy={busy}
             />
-            <button type="submit" title="发送" disabled={busy}>
+            <button type="submit" title={busy ? '等待上一条处理完成' : '发送'} disabled={busy}>
               <Send size={16} />
             </button>
           </form>
@@ -7947,6 +8521,7 @@ function assistantSettingsDraft(settings: AssistantSettings): AssistantSettingsD
     onlineModel: settings.onlineModel,
     localBaseUrl: settings.localBaseUrl,
     localModel: settings.localModel,
+    localThinking: settings.localThinking,
     includeProjectContext: settings.includeProjectContext,
     includeFinanceContext: settings.includeFinanceContext,
     fallbackToRules: settings.fallbackToRules,
@@ -8031,7 +8606,7 @@ function normalizeAssistantCandidates(candidates: AssistantCalendarCandidate[], 
   return candidates.slice(0, 20).map((candidate, index) => {
     const project =
       projects.find((item) => item.id === candidate.projectId) ??
-      projects.find((item) => item.name.trim() === candidate.projectName.trim())
+      findAssistantProjectByName(candidate.projectName, projects)
     return {
       ...candidate,
       id: `assistant-plan-${Date.now()}-${index}`,
@@ -8042,20 +8617,138 @@ function normalizeAssistantCandidates(candidates: AssistantCalendarCandidate[], 
   })
 }
 
+function assistantProjectAliases(name: string) {
+  const compactName = name.replace(/\s+/g, '').trim()
+  const aliases = [
+    compactName,
+    compactName.replace(/[（(][^）)]*[）)]$/g, ''),
+    compactName.replace(/[-_ ]?[vV]?\d+(?:\.\d+)*$/g, ''),
+    ...Array.from(compactName.matchAll(/[（(]([^）)]+)[）)]/g), (match) => match[1]),
+  ]
+  return uniqueCleanOptions(aliases.filter((alias) => alias.length >= 2), [])
+}
+
+function findAssistantProjectByName(name: string, projects: Project[]) {
+  const compactName = name.replace(/\s+/g, '').trim()
+  if (!compactName) return undefined
+  const exactProject = projects.find((project) => project.name.replace(/\s+/g, '').trim() === compactName)
+  if (exactProject) return exactProject
+
+  const fuzzyProjects = projects.filter((project) =>
+    assistantProjectAliases(project.name).some(
+      (alias) => alias === compactName || alias.includes(compactName) || compactName.includes(alias),
+    ),
+  )
+  return fuzzyProjects.length === 1 ? fuzzyProjects[0] : undefined
+}
+
+function assistantPlansFromCandidates(
+  candidates: AssistantCandidateDraft[],
+  projects: Project[],
+  calendarItems: CalendarItem[],
+) {
+  const plans: ProjectPlanPayload[] = []
+  let skipped = 0
+  candidates.forEach((candidate) => {
+    if (!candidate.selected) return
+    const project = projects.find((item) => item.id === candidate.projectId)
+    const duplicate = calendarItems.some(
+      (item) =>
+        item.projectId === candidate.projectId &&
+        dateForCalendarItem(new Date(), item) === candidate.date &&
+        item.title.trim() === candidate.title.trim(),
+    )
+    if (!project || !candidate.date || !candidate.title.trim() || duplicate) {
+      skipped += 1
+      return
+    }
+    plans.push({
+      date: candidate.date,
+      projectId: project.id,
+      title: candidate.title.trim(),
+      owner: candidate.owner || project.manager,
+    })
+  })
+  return { plans, skipped }
+}
+
 function assistantSuggestions(
   role: Role,
   section: Section,
-  _projects: Project[],
-  _tasks: Task[],
+  projects: Project[],
+  tasks: Task[],
   calendarItems: CalendarItem[],
-) {
-  const createAction = canRoleCreateProject(role) ? ['新建项目'] : []
-  const base = [...createAction, '今天优先处理什么', '哪些项目需要关注', '下一步如何安排']
-  if (section === 'finance') return [...createAction, '哪些款项要跟进', '哪些项目待开票'].slice(0, 4)
-  if (section === 'calendar') return [...createAction, '本周交付安排', '哪些节点即将到期', '按项目整理日程'].slice(0, 4)
-  if (section === 'tasks' || role === 'member') return ['我今天要做什么', '哪些任务在调整', '按优先级排序']
-  if (calendarItems.length > 5) return [...createAction, '今天优先处理什么', '本周交付安排', '哪些项目需要关注'].slice(0, 4)
-  return base
+  financeRecords: FinanceRecord[],
+): AssistantSuggestion[] {
+  const now = new Date()
+  const riskCount = projects.filter((project) => isProjectAtRisk(project, now)).length
+  const waitingCount = projects.filter(isWaitingProject).length
+  const openTasks = tasks.filter((task) => task.status !== '已完成')
+  const activeTaskCount = openTasks.filter((task) => task.status === '制作中').length
+  const revisionTaskCount = openTasks.filter((task) => task.status === '修改中').length
+  const weekCalendarCount = calendarItems.filter((item) => isCalendarItemInCurrentWeek(now, item)).length
+  const pendingCollectionCount = financeRecords.filter(
+    (record) => record.contractAmount > 0 && record.receivedAmount < record.contractAmount,
+  ).length
+  const pendingInvoiceCount = financeRecords.filter(
+    (record) => record.contractAmount > 0 && record.invoiceStatus !== '已开票',
+  ).length
+  const pendingSettlementCount = financeRecords.filter(
+    (record) => record.clientSettlementStatus !== '已结算',
+  ).length
+  const labelWithCount = (label: string, count: number) => (count > 0 ? `${label} ${count}` : label)
+
+  if (section === 'finance') {
+    return [
+      { label: labelWithCount('待收款', pendingCollectionCount), prompt: '结合当前财务数据，哪些项目需要跟进收款？' },
+      { label: labelWithCount('待开票', pendingInvoiceCount), prompt: '结合当前财务数据，哪些项目需要处理开票？' },
+      { label: labelWithCount('待结算', pendingSettlementCount), prompt: '结合当前财务数据，整理需要跟进的结算事项。' },
+    ]
+  }
+  if (section === 'calendar') {
+    return [
+      { label: labelWithCount('本周节点', weekCalendarCount), prompt: '结合当前交付日历，整理本周的关键节点。' },
+      { label: '临期安排', prompt: '哪些交付节点即将到期，需要优先关注？' },
+      { label: '整理日程', prompt: '按项目整理接下来的交付日程。' },
+    ]
+  }
+  if (section === 'tasks' || role === 'member') {
+    return [
+      { label: labelWithCount(role === 'member' ? '我的待办' : '待办', openTasks.length), prompt: '按优先级整理我当前需要处理的任务。' },
+      { label: labelWithCount('制作中', activeTaskCount), prompt: '哪些任务正在制作中，当前进度如何？' },
+      { label: labelWithCount('修改中', revisionTaskCount), prompt: '哪些任务处于修改中，需要关注什么？' },
+    ]
+  }
+  if (section === 'projects') {
+    return [
+      { label: '项目概况', prompt: '结合当前可见数据，概括项目整体进度。' },
+      { label: labelWithCount('风险项目', riskCount), prompt: '哪些项目存在风险？请说明判断依据和建议。' },
+      { label: labelWithCount('待反馈', waitingCount), prompt: '哪些项目正在等待反馈，下一步应该如何跟进？' },
+    ]
+  }
+  if (section === 'team' || section === 'people') {
+    return [
+      { label: '人员负载', prompt: '结合当前任务，分析团队成员的工作负载。' },
+      { label: labelWithCount('待办任务', openTasks.length), prompt: '当前待办任务主要集中在哪些人员和项目？' },
+      { label: labelWithCount('项目风险', riskCount), prompt: '哪些风险项目可能与人员负载有关？' },
+    ]
+  }
+  if (section === 'archive') {
+    return [
+      { label: '项目复盘', prompt: '根据当前可见信息，给出项目复盘的整理框架。' },
+      { label: '归档检查', prompt: '项目归档前通常还需要确认哪些事项？' },
+      { label: '经验总结', prompt: '帮我整理一份适用于已完成项目的经验总结提纲。' },
+    ]
+  }
+
+  return [
+    {
+      label: riskCount > 0 ? `风险项目 ${riskCount}` : '项目概况',
+      prompt: riskCount > 0 ? '哪些项目存在风险？请说明判断依据和建议。' : '结合当前可见数据，概括项目整体进度。',
+    },
+    { label: labelWithCount('待办任务', openTasks.length), prompt: '结合当前项目和任务，今天优先处理什么？' },
+    { label: labelWithCount('本周节点', weekCalendarCount), prompt: '结合当前交付日历，整理本周的关键节点。' },
+  ]
 }
 
 function assistantReply(
@@ -8068,7 +8761,7 @@ function assistantReply(
   financeRecords: FinanceRecord[],
   canCreateProject: boolean,
 ) {
-  const riskProjects = projects.filter((project) => isRiskProject(project) || isLateProject(project))
+  const riskProjects = projects.filter((project) => isProjectAtRisk(project))
   const waitingProjects = projects.filter(isWaitingProject)
   const revisionTasks = tasks.filter((task) => task.status === '修改中')
   const activeTasks = tasks.filter((task) => task.status === '制作中' || task.status === '未开始')
@@ -8339,6 +9032,51 @@ function ensureProjectCalendarItems(projects: Project[], calendarItems: Calendar
   return missingDeliveryItems.length > 0 ? [...missingDeliveryItems, ...calendarItems] : calendarItems
 }
 
+function reconcileProjectTimelines(projects: Project[], calendarItems: CalendarItem[], today = new Date()) {
+  const todayKey = localDateKey(today)
+  let changed = false
+  const nextProjects = projects.map((project) => {
+    if (isArchivedProject(project)) return project
+
+    const projectPlans = calendarItems
+      .filter((item) => item.projectId === project.id)
+      .map((item) => ({
+        item,
+        date: dateForCalendarItem(today, item).match(/^\d{4}-\d{2}-\d{2}/)?.[0] ?? '',
+      }))
+      .filter((entry) => entry.date)
+      .sort((left, right) => left.date.localeCompare(right.date))
+    if (projectPlans.length === 0) return project
+
+    const currentDue = project.due.match(/^\d{4}-\d{2}-\d{2}/)?.[0] ?? ''
+    if (projectPlans.some((entry) => entry.date === currentDue)) return project
+
+    const replacement = projectPlans.find((entry) => entry.date >= todayKey) ?? projectPlans.at(-1)
+    if (!replacement) return project
+
+    const milestoneTitle = replacement.item.title.trim() || replacement.item.type.trim() || project.stage
+    const milestoneDate = new Date(`${replacement.date}T00:00:00`)
+    const nextMilestone = `${formatMonthDay(milestoneDate)} ${milestoneTitle}`
+    if (
+      project.due === replacement.date &&
+      project.nextMilestone === nextMilestone &&
+      project.calendarTitle === milestoneTitle
+    ) {
+      return project
+    }
+
+    changed = true
+    return {
+      ...project,
+      due: replacement.date,
+      nextMilestone,
+      calendarTitle: milestoneTitle,
+    }
+  })
+
+  return changed ? nextProjects : projects
+}
+
 function isArchivedProject(project: Project) {
   return project.stage === '归档完成' || project.workStatus === '已完成'
 }
@@ -8356,6 +9094,10 @@ function isLateProject(project: Project, today = new Date()) {
 
   const dueDateKey = project.due.match(/^\d{4}-\d{2}-\d{2}/)?.[0]
   return Boolean(dueDateKey && dueDateKey < localDateKey(today))
+}
+
+function isProjectAtRisk(project: Project, today = new Date()) {
+  return isRiskProject(project) || isLateProject(project, today)
 }
 
 function projectHealthStatus(project: Project): ProjectHealthStatus {
@@ -8400,7 +9142,7 @@ function filterProjects(
     if (status === 'archived' && !isArchivedProject(project)) return false
     if (status !== 'archived' && status !== 'all' && isArchivedProject(project)) return false
     if (status === 'normal' && projectDisplayStatus(project, today) !== 'normal') return false
-    if (status === 'risk' && !isRiskProject(project)) return false
+    if (status === 'risk' && !isProjectAtRisk(project, today)) return false
     if (status === 'late' && !isLateProject(project, today)) return false
     if (status === 'waiting' && !isWaitingProject(project)) return false
 

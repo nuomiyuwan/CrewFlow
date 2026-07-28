@@ -326,7 +326,14 @@ if (isTeamServerMode) {
         apiKey: decryptAssistantApiKey(saved.encryptedApiKey),
         messages: Array.isArray(payload.messages) ? payload.messages : [],
         context: payload.context && typeof payload.context === 'object' ? payload.context : {},
-        task: payload.task === 'calendar_extract' ? 'calendar_extract' : 'chat',
+        task:
+          payload.task === 'assistant_route'
+            ? 'assistant_route'
+            : payload.task === 'calendar_extract'
+              ? 'calendar_extract'
+              : payload.task === 'operation_extract'
+                ? 'operation_extract'
+                : 'chat',
       })
     })
 

@@ -2,6 +2,37 @@
 
 All notable changes to CrewFlow are documented in this file.
 
+## 1.3.2 - 2026-07-28
+
+### Added
+
+- Added high-detail image understanding for online multimodal models, with image selection, drag-and-drop, clipboard paste, previews, and explicit size limits.
+- Added automatic discovery of installed Ollama chat models and fast-response or deep-thinking modes for local AI.
+
+### Improved
+
+- Routed model-recognized natural-language intents through the same confirmation-window workflow regardless of the user's phrasing.
+- Moved assistant quick prompts beside the composer and made them reflect the current page, visible workload, risks, calendar nodes, and finance follow-ups.
+- Added independent, viewport-bounded scrolling for Delivery Calendar project and node lists so growing schedules no longer stretch the entire workspace.
+- Changed assistant calendar actions to open the existing Delivery Calendar plan form with the extracted project, date, content, and owner prefilled.
+- Kept the final save under the signed-in user's existing calendar permissions and explicit confirmation.
+- Recognized follow-up instructions such as “直接加进去” by extracting plan details from the recent conversation.
+- Reused the most recently extracted plan for immediate follow-up actions instead of depending on the model to repeat structured output.
+- Recognized short follow-up instructions such as “你帮我写入” and aligned model capability descriptions with the calendar-prefill workflow.
+- Automatically treated messages containing a visible project, explicit dates, and node details as calendar candidates.
+- Normalized misleading model replies that denied all write support, while preserving the required user-confirmed save step.
+- Added a unified assistant operation-draft protocol for project creation, project stage/status updates, and task assignment.
+- Reused the existing project forms for all assistant operations so account permissions, field validation, data synchronization, and final confirmation remain unchanged.
+- Added deterministic local intent fallback for project, work-type, staff, status, and date matching when an online model returns malformed structured output.
+- Counted overdue active projects consistently in dashboard, filtering, assistant, and team-load risk summaries.
+- Kept the assistant composer focused after sending and moved compact, context-aware shortcuts beside the input area.
+
+### Fixed
+
+- Reconciled each project's key date and next milestone after delivery-calendar changes so rescheduled projects no longer remain incorrectly overdue or at risk.
+- Kept Delivery Calendar project and milestone lists within the viewport while allowing normal page scrolling when an inner list has nothing to scroll.
+- Removed accidental horizontal scrolling from the assistant panel and restored reliable window dragging from non-interactive top-bar areas.
+
 ## 1.3.0 - 2026-07-27
 
 ### Added
