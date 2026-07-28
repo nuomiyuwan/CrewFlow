@@ -355,6 +355,30 @@ Windows 用户应先完整解压 ZIP，再从解压后的文件夹运行 `CrewFl
 
 API Key 使用 macOS 钥匙串或 Windows 系统凭据保护，只保存在当前电脑，不写入单人数据文件、团队 SQLite 数据库或 Git 仓库。项目上下文也只包含当前登录账号有权查看的摘要。
 
+#### 使用 OpenRouter 免费模型
+
+OpenRouter 提供 OpenAI 兼容接口，可以使用一个账号连接多种模型。只想免费体验的用户可以按下面的流程操作。
+
+1. 打开 [OpenRouter 注册页面](https://openrouter.ai/sign-up)，使用 GitHub、Google 或邮箱注册并登录。
+2. 进入 [API Keys 页面](https://openrouter.ai/settings/keys)，点击“Create Key”。
+3. `Name` 填写 `CrewFlow`。
+4. `Expiration` 可以保持 `No expiration`。
+5. `Credit limit (optional)` 留空，`Reset limit every` 保持 `N/A`。
+6. 点击“Create”，立即复制生成的 `sk-or-v1-...`。完整 Key 通常只显示一次，不要发给其他人。
+7. 回到 CrewFlow 助理设置，选择“在线 AI”，按下面的内容填写：
+
+```text
+服务地址：https://openrouter.ai/api/v1
+模型名称：openrouter/free
+API Key：刚才复制的 sk-or-v1-...
+```
+
+8. 点击“测试连接”，测试成功后保存设置。
+
+`openrouter/free` 只会在当前可用的免费模型中选择，不产生模型调用费用。也可以在 [OpenRouter 模型列表](https://openrouter.ai/models) 中选择特定模型，但模型 ID 必须明确带有 `:free` 后缀。不要填写没有 `:free` 后缀的付费模型，也不要启用付费模型作为备用线路。
+
+免费模型适合个人试用和低频使用，通常存在每日调用次数少、高峰期响应慢或暂时不可用等限制。免费额度和模型列表可能随平台政策变化，请以 [OpenRouter 免费模型说明](https://openrouter.ai/docs/guides/routing/routers/free-router) 和 [OpenRouter FAQ](https://openrouter.ai/docs/faq) 为准。如果以后充值并使用付费模型，建议重新创建一个设置了消费上限的 API Key。
+
 在线模型支持图片理解时，可以点击输入框旁的图片按钮、拖入图片，或直接粘贴剪贴板截图。支持 JPEG、PNG、GIF 和 WEBP，单张不超过 10 MB，每条消息最多 4 张、合计不超过 20 MB。
 
 - 排期表、聊天截图和节点截图可以整理成交付日历候选，再由用户确认保存。
