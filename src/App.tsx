@@ -71,6 +71,10 @@ type UpdateRelease = {
   version: string
   url: string
   notes: string
+  assets: Array<{
+    name: string
+    url: string
+  }>
 }
 
 type UpdateCheckStatus = 'idle' | 'checking' | 'available' | 'up-to-date' | 'error'
@@ -241,6 +245,8 @@ type AssistantRequestPayload = {
 }
 
 type DesktopBridge = {
+  platform: string
+  arch: string
   selectProjectFolder: () => Promise<string | null>
   openProjectFolder: (folderPath: string) => Promise<boolean>
   selectProjectFile: (title: string) => Promise<string | null>
@@ -992,9 +998,16 @@ function readCachedUpdateRelease() {
     const checkedAt = cached.checkedAt
     if (typeof checkedAt !== 'number' || !Number.isFinite(checkedAt) || !cached.release?.version || !cached.release.url) return null
 
+    const assets = Array.isArray(cached.release.assets)
+      ? cached.release.assets.filter((asset) => asset?.name && asset?.url)
+      : []
+
     return {
       checkedAt,
-      release: cached.release,
+      release: {
+        ...cached.release,
+        assets,
+      },
     }
   } catch {
     return null
@@ -1015,7 +1028,12 @@ async function fetchLatestCrewFlowRelease() {
   })
   if (!response.ok) throw new Error(`版本检查失败：${response.status}`)
 
-  const release = (await response.json()) as { tag_name?: string; html_url?: string; body?: string }
+  const release = (await response.json()) as {
+    tag_name?: string
+    html_url?: string
+    body?: string
+    assets?: Array<{ name?: string; browser_download_url?: string }>
+  }
   const version = release.tag_name?.replace(/^v/i, '').trim() ?? ''
   if (!version || !release.html_url) throw new Error('版本检查失败：未找到正式版')
 
@@ -1023,6 +1041,9 @@ async function fetchLatestCrewFlowRelease() {
     version,
     url: release.html_url,
     notes: release.body?.trim() ?? '',
+    assets: (release.assets ?? [])
+      .filter((asset) => asset.name && asset.browser_download_url)
+      .map((asset) => ({ name: asset.name as string, url: asset.browser_download_url as string })),
   } satisfies UpdateRelease
 }
 
@@ -1395,7 +1416,7 @@ function App() {
   const [showWelcomeGuide, setShowWelcomeGuide] = useState(false)
   const [updateCheckStatus, setUpdateCheckStatus] = useState<UpdateCheckStatus>('idle')
   const [availableUpdate, setAvailableUpdate] = useState<UpdateRelease | null>(null)
-  const [showUpdateNotice, setShowUpdateNotice] = useState(false)
+  const [showUpdateDialog, setShowUpdateDialog] = useState(false)
   const [weatherLocation, setWeatherLocation] = useState<WeatherLocation | null>(() => loadStoredWeatherLocation())
   const [weatherSnapshot, setWeatherSnapshot] = useState<WeatherSnapshot | null>(() => {
     const location = loadStoredWeatherLocation()
@@ -1448,7 +1469,6 @@ function App() {
       if (isNewerVersion(cached.release.version, appVersion)) {
         setAvailableUpdate(cached.release)
         setUpdateCheckStatus('available')
-        setShowUpdateNotice(true)
       } else {
         setAvailableUpdate(null)
         setUpdateCheckStatus('up-to-date')
@@ -1465,7 +1485,6 @@ function App() {
       if (isNewerVersion(release.version, appVersion)) {
         setAvailableUpdate(release)
         setUpdateCheckStatus('available')
-        setShowUpdateNotice(true)
       } else {
         setAvailableUpdate(null)
         setUpdateCheckStatus('up-to-date')
@@ -3024,19 +3043,10 @@ function App() {
                 version={appVersion}
                 release={availableUpdate}
                 status={updateCheckStatus}
-                open={showUpdateNotice}
-                onToggle={() => {
-                  if (availableUpdate) {
-                    setShowUpdateNotice((current) => !current)
-                    return
-                  }
-                  void checkForUpdates(true)
-                }}
-                onClose={() => setShowUpdateNotice(false)}
-                onOpenRelease={() => {
-                  if (!availableUpdate) return
-                  setShowUpdateNotice(false)
-                  window.open(availableUpdate.url, '_blank', 'noopener,noreferrer')
+                open={showUpdateDialog}
+                onOpen={() => {
+                  setShowUpdateDialog(true)
+                  if (updateCheckStatus === 'idle' || updateCheckStatus === 'error') void checkForUpdates(true)
                 }}
               />
             </div>
@@ -3392,6 +3402,19 @@ function App() {
           onReset={() => handleUpdateWorkflowOptions(defaultWorkflowOptions)}
         />
       )}
+      {showUpdateDialog && (
+        <VersionUpdateModal
+          version={appVersion}
+          release={availableUpdate}
+          status={updateCheckStatus}
+          onClose={() => setShowUpdateDialog(false)}
+          onRetry={() => void checkForUpdates(true)}
+          onDownload={(url) => {
+            setShowUpdateDialog(false)
+            window.open(url, '_blank', 'noopener,noreferrer')
+          }}
+        />
+      )}
       {currentAccount && showWelcomeGuide && <WelcomeGuideModal guide={welcomeGuides[currentAccount.role]} onClose={closeWelcomeGuide} onDismiss={dismissWelcomeGuide} />}
     </div>
   )
@@ -3643,52 +3666,253 @@ function BrandVersionStatus({
   release,
   status,
   open,
-  onToggle,
-  onClose,
-  onOpenRelease,
+  onOpen,
 }: {
   version: string
   release: UpdateRelease | null
   status: UpdateCheckStatus
   open: boolean
-  onToggle: () => void
-  onClose: () => void
-  onOpenRelease: () => void
+  onOpen: () => void
 }) {
   return (
     <div className="brandVersionWrap">
       <button
         className={`brandVersion ${status}`}
         type="button"
-        onClick={onToggle}
-        disabled={status === 'checking'}
+        onClick={onOpen}
         title={updateStatusText(status, release?.version)}
-        aria-expanded={open && Boolean(release)}
+        aria-expanded={open}
       >
         {status === 'checking' && <RefreshCw size={10} className="spinning" />}
         <span>v{version}</span>
         {status === 'available' && <i aria-hidden="true" />}
       </button>
-      {open && release && (
-        <section className="versionUpdatePopover" role="dialog" aria-label="发现软件更新">
+    </div>
+  )
+}
+
+function updateRuntimeGuide() {
+  const platform =
+    window.desktopBridge?.platform ??
+    (navigator.userAgent.toLowerCase().includes('windows')
+      ? 'win32'
+      : navigator.userAgent.toLowerCase().includes('macintosh')
+        ? 'darwin'
+        : 'unknown')
+  const arch = window.desktopBridge?.arch ?? 'unknown'
+
+  if (platform === 'win32') {
+    return {
+      platformLabel: 'Windows 64 位',
+      packageLabel: 'Windows-x64 ZIP',
+      assetPattern: /Windows-x64.*\.zip$/i,
+      steps: [
+        '退出正在运行的旧版 CrewFlow。',
+        '下载 Windows-x64 ZIP，并完整解压到一个新文件夹。',
+        '从新文件夹运行 CrewFlow.exe，确认账号、项目数据和团队连接正常。',
+        '确认新版正常后，再删除旧版程序文件夹。',
+      ],
+    }
+  }
+
+  if (platform === 'darwin') {
+    const isIntel = arch === 'x64'
+    return {
+      platformLabel: isIntel ? 'Intel 芯片 Mac' : arch === 'arm64' ? 'Apple 芯片 Mac' : 'macOS',
+      packageLabel: isIntel ? 'macOS-x64 ZIP' : arch === 'arm64' ? 'macOS-arm64 ZIP' : '与芯片匹配的 macOS ZIP',
+      assetPattern: isIntel ? /macOS-x64.*\.zip$/i : arch === 'arm64' ? /macOS-arm64.*\.zip$/i : null,
+      steps: [
+        '退出正在运行的旧版 CrewFlow。',
+        `下载并解压${isIntel ? ' macOS-x64' : arch === 'arm64' ? ' macOS-arm64' : '与电脑芯片匹配的 macOS'} ZIP。`,
+        '用新版 CrewFlow.app 替换旧版应用，再重新打开。',
+        '确认账号、项目数据和团队连接正常。',
+      ],
+    }
+  }
+
+  return {
+    platformLabel: '当前电脑',
+    packageLabel: '与系统匹配的 ZIP',
+    assetPattern: null,
+    steps: [
+      '退出正在运行的旧版 CrewFlow。',
+      '从 GitHub Release 下载与当前系统匹配的 ZIP，并完整解压。',
+      '从新目录打开 CrewFlow，确认数据和团队连接正常。',
+      '确认新版正常后，再删除旧版程序文件。',
+    ],
+  }
+}
+
+function releaseNotesForDisplay(notes: string) {
+  const items: string[] = []
+
+  for (const rawLine of notes.split(/\r?\n/)) {
+    const line = rawLine.trim()
+    if (!line) continue
+
+    const heading = line.replace(/^#{1,6}\s*/, '').trim()
+    if (/^(下载说明|downloads?|installation)/i.test(heading)) break
+    if (/^(CrewFlow\s+v?\d|发布日期|本次更新|what'?s changed)/i.test(heading)) continue
+    if (/^#{1,6}\s/.test(line)) continue
+
+    const cleanLine = line
+      .replace(/^[-*]\s+/, '')
+      .replace(/^\d+\.\s+/, '')
+      .replace(/`([^`]+)`/g, '$1')
+      .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
+      .trim()
+    if (cleanLine) items.push(cleanLine)
+    if (items.length >= 12) break
+  }
+
+  return items
+}
+
+function VersionUpdateModal({
+  version,
+  release,
+  status,
+  onClose,
+  onRetry,
+  onDownload,
+}: {
+  version: string
+  release: UpdateRelease | null
+  status: UpdateCheckStatus
+  onClose: () => void
+  onRetry: () => void
+  onDownload: (url: string) => void
+}) {
+  const guide = updateRuntimeGuide()
+  const matchingAsset = guide.assetPattern
+    ? release?.assets.find((asset) => guide.assetPattern?.test(asset.name))
+    : undefined
+  const releaseNotes = releaseNotesForDisplay(release?.notes ?? '')
+  const hasUpdate = status === 'available' && Boolean(release)
+  const dialogTitle =
+    status === 'checking'
+      ? '正在检查更新'
+      : hasUpdate
+        ? '发现新版本'
+        : status === 'up-to-date'
+          ? '当前已是最新版本'
+          : status === 'error'
+            ? '版本检查失败'
+            : '软件更新'
+
+  return (
+    <div className="modalBackdrop versionUpdateBackdrop" role="presentation" onMouseDown={onClose}>
+      <section
+        className="versionUpdateModal"
+        role="dialog"
+        aria-modal="true"
+        aria-label="CrewFlow 软件更新"
+        onMouseDown={(event) => event.stopPropagation()}
+      >
+        <header>
           <div>
-            <strong>发现新版本 v{release.version}</strong>
-            <span>当前版本 v{version}</span>
+            <span className="eyebrow">软件更新</span>
+            <h2>{dialogTitle}</h2>
           </div>
           <button type="button" onClick={onClose} title="关闭">
-            <X size={14} />
+            <X size={18} />
           </button>
-          <div className="versionUpdateActions">
-            <button type="button" onClick={onClose}>
-              稍后
-            </button>
-            <button className="primaryButton" type="button" onClick={onOpenRelease}>
-              <Download size={14} />
-              前往下载
-            </button>
+        </header>
+
+        <div className="versionUpdateBody">
+          <div className="versionUpdateVersions">
+            <div>
+              <span>当前版本</span>
+              <strong>v{version}</strong>
+            </div>
+            <ChevronRight size={20} aria-hidden="true" />
+            <div className={hasUpdate ? 'available' : ''}>
+              <span>{hasUpdate ? '最新版本' : '检查结果'}</span>
+              <strong>{hasUpdate && release ? `v${release.version}` : status === 'checking' ? '检测中' : `v${version}`}</strong>
+            </div>
           </div>
-        </section>
-      )}
+
+          {status === 'checking' && (
+            <div className="versionUpdateState">
+              <RefreshCw size={22} className="spinning" />
+              <div>
+                <strong>正在连接 GitHub Releases</strong>
+                <span>请稍候，不会影响当前项目数据。</span>
+              </div>
+            </div>
+          )}
+
+          {status === 'error' && (
+            <div className="versionUpdateState error">
+              <AlertTriangle size={22} />
+              <div>
+                <strong>暂时无法读取最新版本</strong>
+                <span>请检查网络后重新检查；当前版本仍可正常使用。</span>
+              </div>
+            </div>
+          )}
+
+          {status === 'up-to-date' && (
+            <div className="versionUpdateState success">
+              <CheckCircle2 size={22} />
+              <div>
+                <strong>当前安装的 CrewFlow 已是最新版本</strong>
+                <span>有新版本时，左上角版本号旁会出现提示圆点。</span>
+              </div>
+            </div>
+          )}
+
+          {hasUpdate && release && (
+            <>
+              <section className="versionUpdateSection">
+                <h3>v{release.version} 更新内容</h3>
+                {releaseNotes.length > 0 ? (
+                  <ul>
+                    {releaseNotes.map((item, index) => (
+                      <li key={`${index}-${item}`}>{item}</li>
+                    ))}
+                  </ul>
+                ) : (
+                  <p>该版本暂未提供详细更新说明，可前往 GitHub Release 查看。</p>
+                )}
+              </section>
+
+              <section className="versionUpdateSection">
+                <div className="versionUpdateSectionTitle">
+                  <h3>如何手动更新</h3>
+                  <span>{guide.platformLabel} · {matchingAsset?.name ?? guide.packageLabel}</span>
+                </div>
+                <ol>
+                  {guide.steps.map((step) => (
+                    <li key={step}>{step}</li>
+                  ))}
+                </ol>
+                <div className="versionUpdateNote">
+                  单人数据、团队数据库和助理 API Key 都保存在程序目录之外，正常更新不会删除数据。如果这台电脑是团队常驻主机，请先在新版“工作模式”中重新开启团队服务并确认运行，再删除旧版目录。
+                </div>
+              </section>
+            </>
+          )}
+        </div>
+
+        <footer>
+          <button type="button" onClick={onClose}>
+            {hasUpdate ? '稍后下载' : '关闭'}
+          </button>
+          {status === 'error' && (
+            <button className="primaryButton" type="button" onClick={onRetry}>
+              <RefreshCw size={15} />
+              重新检查
+            </button>
+          )}
+          {hasUpdate && release && (
+            <button className="primaryButton" type="button" onClick={() => onDownload(matchingAsset?.url ?? release.url)}>
+              <Download size={15} />
+              下载新版本
+            </button>
+          )}
+        </footer>
+      </section>
     </div>
   )
 }
