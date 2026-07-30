@@ -1,4 +1,12 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type MouseEvent as ReactMouseEvent,
+  type PointerEvent as ReactPointerEvent,
+} from 'react'
 import {
   AlertTriangle,
   ArrowLeft,
@@ -9,10 +17,10 @@ import {
   ChevronRight,
   Clock3,
   CloudSun,
-  Copy,
   Download,
   DollarSign,
   Filter,
+  FolderOpen,
   FolderKanban,
   HardDrive,
   ImagePlus,
@@ -20,6 +28,8 @@ import {
   ListChecks,
   MessageSquareText,
   Minimize2,
+  Pencil,
+  Plus,
   Settings2,
   ShieldCheck,
   Archive,
@@ -54,6 +64,7 @@ type ProjectStatus = 'normal' | 'risk' | 'late' | 'waiting'
 type ProjectHealthStatus = Exclude<ProjectStatus, 'late'>
 type WorkStatus = string
 type TaskStatus = '未开始' | '制作中' | '修改中' | '已完成'
+type TaskDateFilter = 'all' | 'today' | 'week' | 'custom'
 type AssignmentMode = 'internal' | 'external'
 type ProjectFilterStatus = 'all' | 'normal' | 'risk' | 'late' | 'waiting' | 'archived'
 type WelcomeGuideContent = {
@@ -287,6 +298,7 @@ type Project = {
   workStatus: WorkStatus
   owner: string
   path: string
+  additionalPaths?: string[]
   creatorAccountId?: string
 }
 
@@ -301,6 +313,7 @@ type Task = {
   due: string
   status: TaskStatus
   note: string
+  evidencePath?: string
 }
 
 type CalendarItem = {
@@ -435,6 +448,10 @@ type AppData = {
   updatedAt?: string
 }
 type CustomerGroups = Record<string, string[]>
+type CustomerFieldLabels = {
+  primary: string
+  secondary: string
+}
 type WorkflowOptions = {
   taskWorkTypes: string[]
   nodeStatuses: string[]
@@ -442,8 +459,9 @@ type WorkflowOptions = {
   staffTags: string[]
   projectTypes: string[]
   customerGroups: CustomerGroups
+  customerFieldLabels: CustomerFieldLabels
 }
-type WorkflowOptionCategory = Exclude<keyof WorkflowOptions, 'customerGroups'>
+type WorkflowOptionCategory = 'taskWorkTypes' | 'nodeStatuses' | 'workflowStages' | 'staffTags' | 'projectTypes'
 type WorkflowOptionRename = {
   category: WorkflowOptionCategory
   from: string
@@ -478,6 +496,34 @@ type ProjectPlanPayload = {
   projectId: string
   title: string
   owner: string
+}
+
+type CalendarDragSession = {
+  itemKey: string
+  pointerId: number
+  project: string
+  sourceDate: string
+  startX: number
+  startY: number
+  title: string
+  x: number
+  y: number
+  active: boolean
+}
+
+type CalendarDragPreview = Pick<CalendarDragSession, 'itemKey' | 'project' | 'sourceDate' | 'title' | 'x' | 'y'>
+
+type CalendarMoveNotice = {
+  itemKey: string
+  fromDate: string
+  toDate: string
+  title: string
+}
+
+type CalendarDayPopoverState = {
+  date: string
+  left: number
+  top: number
 }
 
 const taskStatusOptions: TaskStatus[] = ['未开始', '制作中', '修改中', '已完成']
@@ -546,6 +592,10 @@ const defaultWorkflowOptions: WorkflowOptions = {
   staffTags: defaultStaffTagOptions,
   projectTypes: defaultProjectTypeOptions,
   customerGroups: defaultCustomerGroups,
+  customerFieldLabels: {
+    primary: '客户省份',
+    secondary: '客户单位',
+  },
 }
 const financeStorageVersion = 'finance-ledger-v5'
 const projectDataStorageVersion = 'project-flow-v1'
@@ -1429,6 +1479,7 @@ function App() {
   const [showWorkScheduleSettings, setShowWorkScheduleSettings] = useState(false)
   const dataSourceKey = dataMode === 'team' ? `team:${normalizeTeamServerUrl(teamServerUrl)}:${teamAccessKey.trim()}` : 'single'
   const dataSourceReady = dataReady && loadedDataSourceKey === dataSourceKey
+  const workspaceRef = useRef<HTMLElement | null>(null)
   const teamDataRevisionRef = useRef<number | null>(null)
   const teamSaveQueueRef = useRef<Promise<void>>(Promise.resolve())
   const teamSavePendingRef = useRef(0)
@@ -1940,6 +1991,10 @@ function App() {
   }, [activeNavItems, section])
 
   useEffect(() => {
+    if (workspaceRef.current) workspaceRef.current.scrollTop = 0
+  }, [section])
+
+  useEffect(() => {
     if (!currentWelcomeGuideKey) {
       setShowWelcomeGuide(false)
       return
@@ -2046,7 +2101,7 @@ function App() {
   const waitingCount = activeProjects.filter(isWaitingProject).length
   const pendingSettlementCount = activeProjects.filter((project) => {
     const record = appFinanceRecords.find((item) => item.projectId === project.id)
-    return Boolean(record && record.contractAmount > 0 && record.clientSettlementStatus !== '已结算' && record.receivedAmount < record.contractAmount)
+    return !record || record.clientSettlementStatus !== '已结算'
   }).length
   const canAccessProjects = activeNavItems.some((item) => item.id === 'projects')
   const canCreateProject = canRoleCreateProject(role)
@@ -2363,6 +2418,21 @@ function App() {
         },
       })
     })
+  }
+
+  function updateCustomerFieldLabel(field: keyof CustomerFieldLabels, value: string) {
+    const cleanValue = value.trim()
+    if (!cleanValue) return
+
+    setAppWorkflowOptions((current) =>
+      normalizeWorkflowOptions({
+        ...current,
+        customerFieldLabels: {
+          ...current.customerFieldLabels,
+          [field]: cleanValue,
+        },
+      }),
+    )
   }
 
   function deleteCustomerOption(province: string, value: string, replacementValue = '') {
@@ -2700,6 +2770,39 @@ function App() {
     return appProjects.some((project) => project.id === projectId && project.manager === currentUser)
   }
 
+  function syncPrimaryProjectDate(project: Project, targetDate: string, title: string) {
+    const date = new Date(`${targetDate}T00:00:00`)
+    if (Number.isNaN(date.getTime())) return
+
+    const previousDueDate = new Date(`${project.due}T00:00:00`)
+    const previousDueText = Number.isNaN(previousDueDate.getTime()) ? '' : formatMonthDay(previousDueDate)
+    const nextDueText = formatMonthDay(date)
+    const milestoneTitle = title.trim() || project.calendarTitle?.trim() || project.stage
+
+    setAppProjects((current) =>
+      current.map((item) =>
+        item.id === project.id
+          ? {
+              ...item,
+              due: targetDate,
+              nextMilestone: `${nextDueText} ${milestoneTitle}`,
+              calendarTitle: milestoneTitle,
+            }
+          : item,
+      ),
+    )
+    setAppTasks((current) =>
+      current.map((task) =>
+        task.projectId === project.id && (task.due === project.due || task.due === previousDueText)
+          ? {
+              ...task,
+              due: nextDueText,
+            }
+          : task,
+      ),
+    )
+  }
+
   function handleAddCalendarPlan(plan: ProjectPlanPayload) {
     const project = appProjects.find((item) => item.id === plan.projectId)
     if (!project || !canEditCalendarProject(plan.projectId)) return
@@ -2727,7 +2830,10 @@ function App() {
     const project = appProjects.find((item) => item.id === plan.projectId)
     if (!project) return
 
-    const date = new Date(plan.date)
+    const date = new Date(`${plan.date}T00:00:00`)
+    const updatesPrimaryTimeline =
+      currentItem.projectId === plan.projectId &&
+      appProjects.some((item) => item.id === currentItem.projectId && isPrimaryProjectCalendarItem(currentItem, item))
     setAppCalendarItems((current) =>
       current.map((item) =>
         calendarItemKey(item) === itemKey
@@ -2736,15 +2842,49 @@ function App() {
               date: plan.date,
               projectId: plan.projectId,
               day: date.getDate(),
-              time: item.time || formatMonthDay(date),
+              time: formatMonthDay(date),
               project: project.name,
               title: plan.title.trim() || '项目计划',
               type: item.type || '自定义计划',
               owner: plan.owner,
             }
           : item,
+        ),
+    )
+    if (updatesPrimaryTimeline) syncPrimaryProjectDate(project, plan.date, plan.title)
+  }
+
+  function handleMoveCalendarPlan(itemKey: string, targetDate: string) {
+    const normalizedTargetDate = targetDate.match(/^\d{4}-\d{2}-\d{2}/)?.[0] ?? ''
+    const currentItem = appCalendarItems.find((item) => calendarItemKey(item) === itemKey)
+    if (!normalizedTargetDate || !currentItem || !canEditCalendarProject(currentItem.projectId)) return null
+
+    const sourceDate = dateForCalendarItem(now, currentItem).match(/^\d{4}-\d{2}-\d{2}/)?.[0] ?? ''
+    if (!sourceDate || sourceDate === normalizedTargetDate) return null
+
+    const date = new Date(`${normalizedTargetDate}T00:00:00`)
+    const project = appProjects.find((item) => item.id === currentItem.projectId)
+    if (!project || Number.isNaN(date.getTime())) return null
+
+    const stableItemId = currentItem.id ?? `C-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
+    const updatesPrimaryTimeline = isPrimaryProjectCalendarItem(currentItem, project)
+
+    setAppCalendarItems((current) =>
+      current.map((item) =>
+        calendarItemKey(item) === itemKey
+          ? {
+              ...item,
+              id: stableItemId,
+              date: normalizedTargetDate,
+              day: date.getDate(),
+              time: formatMonthDay(date),
+            }
+          : item,
       ),
     )
+    if (updatesPrimaryTimeline) syncPrimaryProjectDate(project, normalizedTargetDate, currentItem.title)
+
+    return stableItemId
   }
 
   function handleDeleteCalendarPlan(itemKey: string) {
@@ -3103,7 +3243,7 @@ function App() {
         </div>
       </aside>
 
-      <main className="workspace">
+      <main ref={workspaceRef} className="workspace">
         <header className="topbar">
           <div className="topbarTitle">
             <div className="eyebrow">{formatFullDate(now)}</div>
@@ -3221,11 +3361,13 @@ function App() {
             now={now}
             staffMembers={activeStaffMembers}
             canManagePlans={role === 'controller' || role === 'admin' || role === 'manager'}
+            canEditPlan={canEditCalendarProject}
             canManageHolidays={role === 'controller' || role === 'admin'}
             onHolidayItemsChange={setAppHolidayItems}
             onRefreshChinaHolidays={() => void refreshChinaHolidays(true)}
             onAddPlan={handleAddCalendarPlan}
             onUpdatePlan={handleUpdateCalendarPlan}
+            onMovePlan={handleMoveCalendarPlan}
             onDeletePlan={handleDeleteCalendarPlan}
             assistantDraft={assistantCalendarDrafts[0] ?? null}
             onAssistantDraftHandled={() => setAssistantCalendarDrafts((current) => current.slice(1))}
@@ -3305,6 +3447,7 @@ function App() {
             onAddProjectType={addProjectTypeOption}
             onAddCustomerProvince={addCustomerProvinceOption}
             onAddCustomer={addCustomerOption}
+            onUpdateCustomerFieldLabel={updateCustomerFieldLabel}
             onDeleteCustomer={deleteCustomerOption}
             onClose={() => {
               setShowNewProjectModal(false)
@@ -4575,8 +4718,15 @@ function Dashboard({
   setSelectedProjectId: (id: string) => void
 }) {
   const deliveryCount = calendarItems.filter((item) => isCalendarItemInCurrentWeek(now, item)).length
-  const openTasks = visibleTasks.filter((task) => task.status !== '已完成')
+  const todayTasks = visibleTasks
+    .filter((task) => isTaskInTodayWork(task, now))
+    .sort((left, right) => todayTaskPriority(left) - todayTaskPriority(right))
   const priorityProjects = [...visibleProjects].sort((left, right) => projectPriorityScore(right) - projectPriorityScore(left))
+  const todayKey = localDateKey(now)
+  const upcomingCalendarItems = [...calendarItems]
+    .filter((item) => dateForCalendarItem(now, item) >= todayKey)
+    .sort((left, right) => dateForCalendarItem(now, left).localeCompare(dateForCalendarItem(now, right)))
+    .slice(0, 5)
   const weatherContent = weatherCardContent(weatherLocation, weatherSnapshot, weatherStatus, weatherError)
 
   return (
@@ -4631,20 +4781,24 @@ function Dashboard({
 
       <MetricCard icon={AlertTriangle} label="风险项目" value={`${riskCount}`} tone="danger" />
       <MetricCard icon={MessageSquareText} label="等反馈" value={`${waitingCount}`} tone="wait" />
-      <MetricCard icon={CheckCircle2} label="今日任务" value={`${openTasks.length}`} tone="ok" />
+      <MetricCard icon={CheckCircle2} label="今日任务" value={`${todayTasks.length}`} tone="ok" />
       <MetricCard icon={DollarSign} label="待结款项目" value={`${pendingSettlementCount}`} tone="info" />
 
       <section className="panel span7">
         <div className="panelHeader">
           <div>
             <h2>今日任务流</h2>
-            <p>项目经理和成员需要更新的事项</p>
+            <p>正在制作、修改中，以及今天到期的任务</p>
           </div>
           <button type="button" onClick={() => setSection('tasks')}>
             查看任务
           </button>
         </div>
-        <TaskRows tasks={openTasks.slice(0, 4)} />
+        <TaskRows
+          tasks={todayTasks.slice(0, 4)}
+          emptyTitle="今日暂无任务"
+          emptyNote="当前没有制作中、修改中或今天到期的任务。"
+        />
       </section>
 
       <section className="panel span5 calendarListPanel">
@@ -4657,7 +4811,7 @@ function Dashboard({
             日历
           </button>
         </div>
-        <Timeline calendarItems={calendarItems} />
+        <Timeline calendarItems={upcomingCalendarItems} />
       </section>
     </div>
   )
@@ -4704,6 +4858,12 @@ function Projects({
   const selectedDepartedNames = selectedProject ? departedPeopleForProject(selectedProject, allTasks, allCalendarItems, departedStaff) : []
   const selectedProjectProgress = selectedProject ? progressForProject(selectedProject, selectedProjectTasks) : 0
   const canDeleteSelectedProject = selectedProject ? canDeleteProject(selectedProject) : false
+
+  async function selectTaskEvidenceFolder(task: Task) {
+    if (!canEditTaskBoard) return
+    const selectedPath = await window.desktopBridge?.selectProjectFolder()
+    if (selectedPath) onUpdateTask({ ...task, evidencePath: selectedPath })
+  }
 
   return (
     <div className="contentGrid">
@@ -4797,11 +4957,15 @@ function Projects({
                 <span style={{ width: `${selectedProjectProgress}%` }} />
               </div>
             </div>
-            <button className="pathBox" type="button" onClick={() => openProjectPath(selectedProject.path)}>
-              <HardDrive size={16} />
-              <span>{selectedProject.path}</span>
-              <Copy size={15} />
-            </button>
+            <div className="projectPathList">
+              {projectFolderPaths(selectedProject).map((folderPath, index) => (
+                <button className="pathBox" type="button" key={folderPath} onClick={() => openProjectPath(folderPath)}>
+                  {index === 0 ? <HardDrive size={16} /> : <FolderOpen size={16} />}
+                  <span>{folderPath}</span>
+                  <FolderOpen size={15} />
+                </button>
+              ))}
+            </div>
           </div>
 
           <div className="projectDetailCard detailInfoGrid">
@@ -4892,6 +5056,44 @@ function Projects({
                   ) : (
                     <span className={`readonlyValue task-${task.status}`}>{task.status}</span>
                   )}
+                  <div className="taskEvidenceField">
+                    <span className="taskEvidenceLabel">完成实证资料</span>
+                    <div className="taskEvidenceControls">
+                      <button
+                        className={`taskEvidencePath${!task.evidencePath && canEditTaskBoard ? ' empty' : ''}`}
+                        type="button"
+                        disabled={!task.evidencePath && !canEditTaskBoard}
+                        onClick={() =>
+                          task.evidencePath ? openProjectPath(task.evidencePath) : canEditTaskBoard ? selectTaskEvidenceFolder(task) : undefined
+                        }
+                        title={task.evidencePath || '选择完成资料文件夹'}
+                      >
+                        <FolderOpen size={15} />
+                        <span>{task.evidencePath || '选择完成资料文件夹'}</span>
+                        {!task.evidencePath && canEditTaskBoard && <Plus size={15} />}
+                      </button>
+                      {canEditTaskBoard && task.evidencePath && (
+                        <button
+                          className="taskEvidenceAction"
+                          type="button"
+                          onClick={() => selectTaskEvidenceFolder(task)}
+                          title="更换实证资料文件夹"
+                        >
+                          <Pencil size={15} />
+                        </button>
+                      )}
+                      {canEditTaskBoard && task.evidencePath && (
+                        <button
+                          className="taskEvidenceAction dangerPathButton"
+                          type="button"
+                          onClick={() => onUpdateTask({ ...task, evidencePath: '' })}
+                          title="清除实证资料路径"
+                        >
+                          <Trash2 size={15} />
+                        </button>
+                      )}
+                    </div>
+                  </div>
                 </div>
               )
             })}
@@ -4970,9 +5172,11 @@ function ArchiveView({
                   <InfoLine label="财务状态" value={financeState.label} />
                 </div>
                 <div className="archiveActions">
-                  <button type="button" onClick={() => openProjectPath(project.path)}>
-                    打开 NAS
-                  </button>
+                  {projectFolderPaths(project).map((folderPath, index) => (
+                    <button type="button" key={folderPath} onClick={() => openProjectPath(folderPath)} title={folderPath}>
+                      {index === 0 ? '打开主路径' : `打开路径 ${index + 1}`}
+                    </button>
+                  ))}
                   {canEditArchivedProjects && (
                     <button type="button" onClick={() => onEditProject(project)}>
                       编辑项目
@@ -4999,6 +5203,7 @@ function NewProjectModal({
   onAddProjectType,
   onAddCustomerProvince,
   onAddCustomer,
+  onUpdateCustomerFieldLabel,
   onDeleteCustomer,
   onClose,
   onCreateProject,
@@ -5013,6 +5218,7 @@ function NewProjectModal({
   onAddProjectType: (typeName: string) => void
   onAddCustomerProvince: (provinceName: string) => void
   onAddCustomer: (provinceName: string, customerName: string) => void
+  onUpdateCustomerFieldLabel: (field: keyof CustomerFieldLabels, value: string) => void
   onDeleteCustomer: (provinceName: string, customerName: string, replacementName?: string) => string | null
   onClose: () => void
   onCreateProject: (payload: NewProjectPayload) => void
@@ -5180,10 +5386,12 @@ function NewProjectModal({
             client={client}
             linkedProjects={client ? projects.filter((project) => project.client === client) : []}
             canDelete={canDeleteCustomers}
+            labels={workflowOptions.customerFieldLabels}
             onProvinceSelect={handleProvinceSelect}
             onClientSelect={setClient}
             onAddCustomProvince={addCustomProvince}
             onAddCustomCustomer={addCustomCustomer}
+            onUpdateLabel={onUpdateCustomerFieldLabel}
             onDeleteCustomer={(customerName, replacementName) => onDeleteCustomer(province, customerName, replacementName)}
           />
           <OptionGroup
@@ -5306,6 +5514,64 @@ function MultiOptionGroup({
   )
 }
 
+function EditableCustomerFieldLabel({
+  value,
+  canEdit,
+  onSave,
+}: {
+  value: string
+  canEdit: boolean
+  onSave: (value: string) => void
+}) {
+  const [editing, setEditing] = useState(false)
+  const [draft, setDraft] = useState(value)
+
+  useEffect(() => {
+    if (!editing) setDraft(value)
+  }, [editing, value])
+
+  function save() {
+    const cleanValue = draft.trim()
+    if (!cleanValue) return
+    onSave(cleanValue)
+    setEditing(false)
+  }
+
+  if (editing) {
+    return (
+      <div className="customerFieldLabelEditor">
+        <input
+          autoFocus
+          value={draft}
+          onChange={(event) => setDraft(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter') save()
+            if (event.key === 'Escape') setEditing(false)
+          }}
+          aria-label="修改字段名称"
+        />
+        <button type="button" onClick={save} disabled={!draft.trim()} title="保存字段名称">
+          <CheckCircle2 size={15} />
+        </button>
+        <button type="button" onClick={() => setEditing(false)} title="取消修改">
+          <X size={15} />
+        </button>
+      </div>
+    )
+  }
+
+  return (
+    <div className="customerFieldLabel">
+      <span>{value}（选填）</span>
+      {canEdit && (
+        <button type="button" onClick={() => setEditing(true)} title={`修改“${value}”字段名称`}>
+          <Pencil size={14} />
+        </button>
+      )}
+    </div>
+  )
+}
+
 function CustomerPicker({
   province,
   provinces,
@@ -5313,10 +5579,12 @@ function CustomerPicker({
   client,
   linkedProjects,
   canDelete,
+  labels,
   onProvinceSelect,
   onClientSelect,
   onAddCustomProvince,
   onAddCustomCustomer,
+  onUpdateLabel,
   onDeleteCustomer,
 }: {
   province: string
@@ -5325,10 +5593,12 @@ function CustomerPicker({
   client: string
   linkedProjects: Project[]
   canDelete: boolean
+  labels: CustomerFieldLabels
   onProvinceSelect: (province: string) => void
   onClientSelect: (client: string) => void
   onAddCustomProvince: (provinceName: string) => void
   onAddCustomCustomer: (customerName: string) => void
+  onUpdateLabel: (field: keyof CustomerFieldLabels, value: string) => void
   onDeleteCustomer: (customerName: string, replacementName?: string) => string | null
 }) {
   const [customProvinceName, setCustomProvinceName] = useState('')
@@ -5377,7 +5647,11 @@ function CustomerPicker({
   return (
     <div className="customerPicker">
       <div className="optionGroup">
-        <span>客户省份（选填）</span>
+        <EditableCustomerFieldLabel
+          value={labels.primary}
+          canEdit={canDelete}
+          onSave={(value) => onUpdateLabel('primary', value)}
+        />
         <div>
           <button className={!province ? 'active' : ''} type="button" onClick={() => onProvinceSelect('')}>
             暂不填写
@@ -5390,15 +5664,19 @@ function CustomerPicker({
         </div>
       </div>
       <div className="customCustomer">
-        <input value={customProvinceName} onChange={(event) => setCustomProvinceName(event.target.value)} placeholder="添加自定义省份" />
+        <input value={customProvinceName} onChange={(event) => setCustomProvinceName(event.target.value)} placeholder={`添加自定义${labels.primary}`} />
         <button type="button" onClick={addProvince} disabled={!customProvinceName.trim()}>
-          添加省份
+          添加{labels.primary}
         </button>
       </div>
       <div className="optionGroup">
-        <span>客户单位（选填）</span>
+        <EditableCustomerFieldLabel
+          value={labels.secondary}
+          canEdit={canDelete}
+          onSave={(value) => onUpdateLabel('secondary', value)}
+        />
         <select value={customers.includes(client) ? client : ''} onChange={(event) => onClientSelect(event.target.value)}>
-          <option value="">选择已保存客户单位</option>
+          <option value="">选择已保存{labels.secondary}</option>
           {customers.map((item) => (
             <option key={item} value={item}>
               {item}
@@ -5407,9 +5685,13 @@ function CustomerPicker({
         </select>
       </div>
       <div className="customCustomer">
-        <input value={client} onChange={(event) => onClientSelect(event.target.value)} placeholder={province ? `输入或修改${province}客户单位` : '输入客户单位（选填）'} />
+        <input
+          value={client}
+          onChange={(event) => onClientSelect(event.target.value)}
+          placeholder={province ? `添加自定义${labels.secondary}` : `先选择${labels.primary}`}
+        />
         <button type="button" onClick={addCustomer} disabled={!province || !client.trim() || customers.includes(client.trim())}>
-          保存自定义
+          添加{labels.secondary}
         </button>
         {canDelete && (
           <button className="dangerIconButton" type="button" onClick={requestDeleteCustomer} disabled={!customers.includes(client.trim())} title="删除客户单位">
@@ -5484,6 +5766,9 @@ function ProjectEditModal({
   const initialManager = staffNameInOptions(project.manager, projectManagers) || projectManagers[0]?.name || ''
   const [name, setName] = useState(project.name)
   const [path, setPath] = useState(project.path)
+  const [additionalPaths, setAdditionalPaths] = useState<string[]>(() =>
+    uniqueProjectPaths(project.additionalPaths ?? [], project.path),
+  )
   const [type, setType] = useState(project.type)
   const [client, setClient] = useState(project.client)
   const [clientContact, setClientContact] = useState(project.clientContact ?? '')
@@ -5538,6 +5823,20 @@ function ProjectEditModal({
     await window.desktopBridge?.openProjectFolder(path)
   }
 
+  async function addAdditionalProjectFolder() {
+    const selectedPath = await window.desktopBridge?.selectProjectFolder()
+    if (!selectedPath || selectedPath === path) return
+    setAdditionalPaths((current) => uniqueProjectPaths([...current, selectedPath], path))
+  }
+
+  async function replaceAdditionalProjectFolder(index: number) {
+    const selectedPath = await window.desktopBridge?.selectProjectFolder()
+    if (!selectedPath || selectedPath === path) return
+    setAdditionalPaths((current) =>
+      uniqueProjectPaths(current.map((folderPath, currentIndex) => (currentIndex === index ? selectedPath : folderPath)), path),
+    )
+  }
+
   function saveProject() {
     if (!name.trim()) return
 
@@ -5547,6 +5846,7 @@ function ProjectEditModal({
         ...project,
         name: name.trim(),
         path,
+        additionalPaths: uniqueProjectPaths(additionalPaths, path),
         type,
         client: client.trim(),
         clientContact: clientContact.trim(),
@@ -5612,7 +5912,7 @@ function ProjectEditModal({
             <input value={name} onChange={(event) => setName(event.target.value)} />
           </label>
           <label className="textField">
-            <span>客户单位</span>
+            <span>{workflowOptions.customerFieldLabels.secondary}</span>
             <input value={client} onChange={(event) => setClient(event.target.value)} />
           </label>
           <label className="textField">
@@ -5779,9 +6079,9 @@ function ProjectEditModal({
               )
             })}
           </div>
-          <label className="textField">
-            <span>NAS 项目路径</span>
-            <div className="pathField">
+          <div className="textField projectPathEditor">
+            <span>项目文件夹路径</span>
+            <div className="pathField pathFieldWithActions">
               <HardDrive size={17} />
               <button type="button" onClick={selectProjectFolder}>
                 {path || '选择项目文件夹'}
@@ -5789,8 +6089,30 @@ function ProjectEditModal({
               <button type="button" onClick={openProjectFolder} disabled={!path}>
                 打开
               </button>
+              <button className="pathIconButton" type="button" onClick={addAdditionalProjectFolder} title="添加项目路径">
+                <Plus size={17} />
+              </button>
             </div>
-          </label>
+            {additionalPaths.map((folderPath, index) => (
+              <div className="pathField pathFieldWithActions" key={`${folderPath}-${index}`}>
+                <FolderOpen size={17} />
+                <button type="button" onClick={() => replaceAdditionalProjectFolder(index)} title={folderPath}>
+                  {folderPath}
+                </button>
+                <button type="button" onClick={() => openProjectPath(folderPath)}>
+                  打开
+                </button>
+                <button
+                  className="pathIconButton dangerPathButton"
+                  type="button"
+                  onClick={() => setAdditionalPaths((current) => current.filter((_, currentIndex) => currentIndex !== index))}
+                  title="删除该路径"
+                >
+                  <Trash2 size={17} />
+                </button>
+              </div>
+            ))}
+          </div>
         </div>
 
         <footer>
@@ -6001,6 +6323,24 @@ function Tasks({
   onUpdateTaskStatus?: (taskId: string, status: TaskStatus) => void
 }) {
   const isGlobalMode = mode === 'global'
+  const [dateFilter, setDateFilter] = useState<TaskDateFilter>('all')
+  const [customDate, setCustomDate] = useState('')
+  const filteredTasks = useMemo(() => {
+    if (dateFilter === 'all') return tasks
+
+    const today = new Date()
+    if (dateFilter === 'today') return tasks.filter((task) => isTaskDueOnDate(task, today))
+    if (dateFilter === 'custom') {
+      if (!customDate) return tasks
+      const selectedDate = new Date(`${customDate}T00:00:00`)
+      return Number.isNaN(selectedDate.getTime()) ? tasks : tasks.filter((task) => isTaskDueOnDate(task, selectedDate))
+    }
+
+    const weekStart = new Date(today)
+    weekStart.setDate(today.getDate() - ((today.getDay() + 6) % 7))
+    const weekDates = Array.from({ length: 7 }, (_, index) => addDays(weekStart, index))
+    return tasks.filter((task) => weekDates.some((date) => isTaskDueOnDate(task, date)))
+  }, [customDate, dateFilter, tasks])
 
   return (
     <div className="contentGrid">
@@ -6016,7 +6356,44 @@ function Tasks({
           <strong>{isGlobalMode ? '总控查看所有项目中的执行任务' : '项目经理在项目中心指派后，这里显示个人任务'}</strong>
           <em>{isGlobalMode ? '用于掌握大家正在做什么，不参与任务状态更新' : '执行成员只看与自己相关的项目节点'}</em>
         </div>
-        <TaskRows tasks={tasks} large onUpdateTaskStatus={onUpdateTaskStatus} />
+        <div className="taskDateFilter" aria-label="任务日期筛选">
+          <div className="taskDateSegments">
+            {([
+              ['all', '全部'],
+              ['today', '今天'],
+              ['week', '本周'],
+            ] as Array<[TaskDateFilter, string]>).map(([value, label]) => (
+              <button
+                key={value}
+                className={dateFilter === value ? 'active' : ''}
+                type="button"
+                onClick={() => setDateFilter(value)}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+          <label className={dateFilter === 'custom' ? 'taskDatePicker active' : 'taskDatePicker'}>
+            <CalendarDays size={16} />
+            <input
+              type="date"
+              value={customDate}
+              aria-label="指定任务日期"
+              onChange={(event) => {
+                setCustomDate(event.target.value)
+                setDateFilter(event.target.value ? 'custom' : 'all')
+              }}
+            />
+          </label>
+          <span>显示 {filteredTasks.length}/{tasks.length}</span>
+        </div>
+        <TaskRows
+          tasks={filteredTasks}
+          large
+          onUpdateTaskStatus={onUpdateTaskStatus}
+          emptyTitle="该日期暂无任务"
+          emptyNote="换一个日期或切换到“全部”查看任务。"
+        />
       </section>
     </div>
   )
@@ -6031,11 +6408,13 @@ function CalendarView({
   now,
   staffMembers,
   canManagePlans,
+  canEditPlan,
   canManageHolidays,
   onHolidayItemsChange,
   onRefreshChinaHolidays,
   onAddPlan,
   onUpdatePlan,
+  onMovePlan,
   onDeletePlan,
   assistantDraft,
   onAssistantDraftHandled,
@@ -6048,11 +6427,13 @@ function CalendarView({
   now: Date
   staffMembers: StaffMember[]
   canManagePlans: boolean
+  canEditPlan: (projectId: string) => boolean
   canManageHolidays: boolean
   onHolidayItemsChange: (items: HolidayItem[]) => void
   onRefreshChinaHolidays: () => void
   onAddPlan: (plan: ProjectPlanPayload) => void
   onUpdatePlan: (itemKey: string, plan: ProjectPlanPayload) => void
+  onMovePlan: (itemKey: string, targetDate: string) => string | null
   onDeletePlan: (itemKey: string) => void
   assistantDraft: ProjectPlanPayload | null
   onAssistantDraftHandled: () => void
@@ -6064,6 +6445,13 @@ function CalendarView({
   const [pageStart, setPageStart] = useState(0)
   const [editingPlan, setEditingPlan] = useState<{ item: CalendarItem; key: string; date: string } | null>(null)
   const [showHolidaySettings, setShowHolidaySettings] = useState(false)
+  const [draggingPlan, setDraggingPlan] = useState<CalendarDragPreview | null>(null)
+  const [dragTargetDate, setDragTargetDate] = useState<string | null>(null)
+  const [moveNotice, setMoveNotice] = useState<CalendarMoveNotice | null>(null)
+  const [dayPopover, setDayPopover] = useState<CalendarDayPopoverState | null>(null)
+  const dragSessionRef = useRef<CalendarDragSession | null>(null)
+  const dragHoldTimerRef = useRef<number | null>(null)
+  const suppressCalendarClickRef = useRef(false)
   const effectiveSelectedProjectId = calendarProjects.some((project) => project.id === selectedProjectId)
     ? selectedProjectId
     : (calendarProjects[0]?.id ?? '')
@@ -6076,6 +6464,9 @@ function CalendarView({
   const clampedPageStart = Math.min(pageStart, maxPageStart)
   const visibleEnd = Math.min(clampedPageStart + visibleDayCount, rangeDays)
   const days = Array.from({ length: visibleEnd - clampedPageStart }, (_, index) => addDays(now, clampedPageStart + index))
+  const dayPopoverItems = dayPopover
+    ? calendarItems.filter((item) => dateForCalendarItem(now, item) === dayPopover.date)
+    : []
 
   useEffect(() => {
     setPageStart((current) => Math.min(current, Math.max(0, rangeDays - visibleDayCount)))
@@ -6094,6 +6485,182 @@ function CalendarView({
       setPageStart(Math.floor(dayOffset / visibleDayCount) * visibleDayCount)
     }
   }, [assistantDraft, now])
+
+  useEffect(() => {
+    if (!moveNotice) return
+    const timer = window.setTimeout(() => setMoveNotice(null), 6000)
+    return () => window.clearTimeout(timer)
+  }, [moveNotice])
+
+  useEffect(() => {
+    if (!dayPopover) return
+
+    const closeOnOutsidePointer = (event: PointerEvent) => {
+      const target = event.target
+      if (!(target instanceof Element)) return
+      if (target.closest('.calendarDayPopover') || target.closest('.calendarOverflowButton')) return
+      setDayPopover(null)
+    }
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setDayPopover(null)
+    }
+    const closeOnResize = () => setDayPopover(null)
+
+    window.addEventListener('pointerdown', closeOnOutsidePointer, true)
+    window.addEventListener('keydown', closeOnEscape)
+    window.addEventListener('resize', closeOnResize)
+    return () => {
+      window.removeEventListener('pointerdown', closeOnOutsidePointer, true)
+      window.removeEventListener('keydown', closeOnEscape)
+      window.removeEventListener('resize', closeOnResize)
+    }
+  }, [dayPopover])
+
+  useEffect(
+    () => () => {
+      if (dragHoldTimerRef.current !== null) window.clearTimeout(dragHoldTimerRef.current)
+      document.body.classList.remove('calendarDragging')
+    },
+    [],
+  )
+
+  function clearCalendarDragHoldTimer() {
+    if (dragHoldTimerRef.current === null) return
+    window.clearTimeout(dragHoldTimerRef.current)
+    dragHoldTimerRef.current = null
+  }
+
+  function cancelCalendarDrag() {
+    clearCalendarDragHoldTimer()
+    dragSessionRef.current = null
+    setDraggingPlan(null)
+    setDragTargetDate(null)
+    document.body.classList.remove('calendarDragging')
+  }
+
+  function activateCalendarDrag() {
+    const session = dragSessionRef.current
+    if (!session || session.active) return
+
+    session.active = true
+    setDraggingPlan({
+      itemKey: session.itemKey,
+      project: session.project,
+      sourceDate: session.sourceDate,
+      title: session.title,
+      x: session.x,
+      y: session.y,
+    })
+    setDragTargetDate(session.sourceDate)
+    document.body.classList.add('calendarDragging')
+  }
+
+  function calendarDateAtPoint(clientX: number, clientY: number) {
+    const target = document.elementFromPoint(clientX, clientY)?.closest<HTMLElement>('[data-calendar-date]')
+    return target?.dataset.calendarDate ?? null
+  }
+
+  function handleCalendarEventPointerDown(event: ReactPointerEvent<HTMLButtonElement>, item: CalendarItem) {
+    if (!canManagePlans || !canEditPlan(item.projectId)) return
+    if (event.pointerType === 'mouse' && event.button !== 0) return
+
+    const sourceDate = dateForCalendarItem(now, item).match(/^\d{4}-\d{2}-\d{2}/)?.[0] ?? ''
+    if (!sourceDate) return
+
+    clearCalendarDragHoldTimer()
+    dragSessionRef.current = {
+      itemKey: calendarItemKey(item),
+      pointerId: event.pointerId,
+      project: item.project,
+      sourceDate,
+      startX: event.clientX,
+      startY: event.clientY,
+      title: item.title,
+      x: event.clientX,
+      y: event.clientY,
+      active: false,
+    }
+    event.currentTarget.setPointerCapture(event.pointerId)
+    dragHoldTimerRef.current = window.setTimeout(activateCalendarDrag, 250)
+  }
+
+  function handleCalendarEventPointerMove(event: ReactPointerEvent<HTMLButtonElement>) {
+    const session = dragSessionRef.current
+    if (!session || session.pointerId !== event.pointerId) return
+
+    session.x = event.clientX
+    session.y = event.clientY
+    const movedDistance = Math.hypot(event.clientX - session.startX, event.clientY - session.startY)
+    if (!session.active && movedDistance >= 6) {
+      clearCalendarDragHoldTimer()
+      activateCalendarDrag()
+    }
+    if (!session.active) return
+
+    event.preventDefault()
+    setDraggingPlan((current) => (current ? { ...current, x: event.clientX, y: event.clientY } : current))
+    setDragTargetDate(calendarDateAtPoint(event.clientX, event.clientY))
+  }
+
+  function handleCalendarEventPointerUp(event: ReactPointerEvent<HTMLButtonElement>) {
+    const session = dragSessionRef.current
+    if (!session || session.pointerId !== event.pointerId) return
+
+    clearCalendarDragHoldTimer()
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId)
+    if (!session.active) {
+      dragSessionRef.current = null
+      return
+    }
+
+    event.preventDefault()
+    suppressCalendarClickRef.current = true
+    window.setTimeout(() => {
+      suppressCalendarClickRef.current = false
+    }, 0)
+
+    const targetDate = calendarDateAtPoint(event.clientX, event.clientY)
+    if (targetDate && targetDate !== session.sourceDate) {
+      const stableItemKey = onMovePlan(session.itemKey, targetDate)
+      if (stableItemKey) {
+        setMoveNotice({
+          itemKey: stableItemKey,
+          fromDate: session.sourceDate,
+          toDate: targetDate,
+          title: session.title,
+        })
+      }
+    }
+    setDayPopover(null)
+    cancelCalendarDrag()
+  }
+
+  function handleCalendarEventPointerCancel() {
+    cancelCalendarDrag()
+    setDayPopover(null)
+  }
+
+  function toggleCalendarDayPopover(event: ReactMouseEvent<HTMLButtonElement>, date: string, itemCount: number) {
+    if (dayPopover?.date === date) {
+      setDayPopover(null)
+      return
+    }
+
+    const cell = event.currentTarget.closest<HTMLElement>('[data-calendar-date]')
+    if (!cell) return
+
+    const cellBounds = cell.getBoundingClientRect()
+    const popoverWidth = 360
+    const popoverHeight = Math.min(420, Math.max(184, 74 + itemCount * 62))
+    const left = Math.min(Math.max(16, cellBounds.left), window.innerWidth - popoverWidth - 16)
+    const belowTop = cellBounds.bottom + 8
+    const top =
+      belowTop + popoverHeight <= window.innerHeight - 16
+        ? belowTop
+        : Math.max(16, cellBounds.top - popoverHeight - 8)
+
+    setDayPopover({ date, left, top })
+  }
 
   return (
     <div className="contentGrid">
@@ -6139,6 +6706,7 @@ function CalendarView({
         </div>
         <div className="calendarGrid">
           {days.map((date) => {
+            const dateKey = localDateKey(date)
             const dayItems = calendarItems.filter((item) => isCalendarItemOnDate(now, item, date))
             const isToday = isSameDay(date, now)
             const holiday = holidayForDate(holidayItems, date)
@@ -6146,19 +6714,21 @@ function CalendarView({
 
             return (
               <div
-                key={date.toISOString()}
+                key={dateKey}
+                data-calendar-date={dateKey}
                 className={[
                   dayItems.length > 0 ? 'calendarDay hasEvent' : 'calendarDay',
                   isToday ? 'today' : '',
                   weekend && holiday?.type !== '班' ? 'weekend' : '',
                   holiday?.type === '休' ? 'holidayRest' : '',
                   holiday?.type === '班' ? 'holidayWork' : '',
+                  draggingPlan && dragTargetDate === dateKey ? 'dropTarget' : '',
                 ]
                   .filter(Boolean)
                   .join(' ')}
                 onContextMenu={(event) => {
                   event.preventDefault()
-                  if (canManagePlans && projects.length > 0) setPlanDate(date.toISOString().slice(0, 10))
+                  if (canManagePlans && projects.length > 0) setPlanDate(dateKey)
                 }}
               >
                 <div className="calendarDayHeader">
@@ -6170,26 +6740,119 @@ function CalendarView({
                 </div>
                 {holiday && <span className="holidayName">{holiday.name}</span>}
                 <div className="calendarEvents">
-                  {dayItems.slice(0, 2).map((item) => (
+                  {dayItems.slice(0, 2).map((item) => {
+                    const itemKey = calendarItemKey(item)
+                    const canDragItem = canManagePlans && canEditPlan(item.projectId)
+                    const isDraggingItem = draggingPlan?.itemKey === itemKey
+
+                    return (
+                      <button
+                        key={itemKey}
+                        type="button"
+                        draggable={false}
+                        aria-grabbed={isDraggingItem}
+                        className={[
+                          item.projectId === effectiveSelectedProjectId ? 'calendarEvent active' : 'calendarEvent',
+                          canDragItem ? 'canDrag' : '',
+                          isDraggingItem ? 'dragging' : '',
+                        ]
+                          .filter(Boolean)
+                          .join(' ')}
+                        onClick={(event) => {
+                          if (suppressCalendarClickRef.current) {
+                            event.preventDefault()
+                            return
+                          }
+                          setSelectedProjectId(item.projectId)
+                        }}
+                        onPointerDown={canDragItem ? (event) => handleCalendarEventPointerDown(event, item) : undefined}
+                        onPointerMove={canDragItem ? handleCalendarEventPointerMove : undefined}
+                        onPointerUp={canDragItem ? handleCalendarEventPointerUp : undefined}
+                        onPointerCancel={canDragItem ? handleCalendarEventPointerCancel : undefined}
+                      >
+                        <span>{item.project}</span>
+                        <strong>{item.title}</strong>
+                      </button>
+                    )
+                  })}
+                  {dayItems.length > 2 && (
                     <button
-                      key={calendarItemKey(item)}
+                      className="calendarOverflowButton"
                       type="button"
-                      className={item.projectId === effectiveSelectedProjectId ? 'calendarEvent active' : 'calendarEvent'}
-                      onClick={() => setSelectedProjectId(item.projectId)}
+                      aria-expanded={dayPopover?.date === dateKey}
+                      onClick={(event) => toggleCalendarDayPopover(event, dateKey, dayItems.length)}
                     >
-                      <span>{item.project}</span>
-                      <strong>{item.title}</strong>
+                      +{dayItems.length - 2} 个节点
                     </button>
-                  ))}
-                  {dayItems.length > 2 && <em>+{dayItems.length - 2} 个节点</em>}
+                  )}
                 </div>
               </div>
             )
           })}
         </div>
+        {dayPopover && dayPopoverItems.length > 0 && (
+          <div
+            className={draggingPlan ? 'calendarDayPopover dragHidden' : 'calendarDayPopover'}
+            role="dialog"
+            aria-label={`${formatMonthDay(new Date(`${dayPopover.date}T00:00:00`))}全部安排`}
+            style={{ left: dayPopover.left, top: dayPopover.top }}
+          >
+            <header>
+              <div>
+                <span>{formatMonthDay(new Date(`${dayPopover.date}T00:00:00`))}</span>
+                <strong>{dayPopoverItems.length} 个安排</strong>
+              </div>
+              <button type="button" title="关闭" onClick={() => setDayPopover(null)}>
+                <X size={16} />
+              </button>
+            </header>
+            <div className="calendarDayPopoverList">
+              {dayPopoverItems.map((item) => {
+                const itemKey = calendarItemKey(item)
+                const canDragItem = canManagePlans && canEditPlan(item.projectId)
+                const isDraggingItem = draggingPlan?.itemKey === itemKey
+
+                return (
+                  <button
+                    key={itemKey}
+                    type="button"
+                    draggable={false}
+                    aria-grabbed={isDraggingItem}
+                    className={[
+                      'calendarDayPopoverItem',
+                      item.projectId === effectiveSelectedProjectId ? 'active' : '',
+                      canDragItem ? 'canDrag' : '',
+                      isDraggingItem ? 'dragging' : '',
+                    ]
+                      .filter(Boolean)
+                      .join(' ')}
+                    onClick={(event) => {
+                      if (suppressCalendarClickRef.current) {
+                        event.preventDefault()
+                        return
+                      }
+                      setSelectedProjectId(item.projectId)
+                      setDayPopover(null)
+                    }}
+                    onPointerDown={canDragItem ? (event) => handleCalendarEventPointerDown(event, item) : undefined}
+                    onPointerMove={canDragItem ? handleCalendarEventPointerMove : undefined}
+                    onPointerUp={canDragItem ? handleCalendarEventPointerUp : undefined}
+                    onPointerCancel={canDragItem ? handleCalendarEventPointerCancel : undefined}
+                  >
+                    <div>
+                      <span>{item.project}</span>
+                      <strong>{item.title}</strong>
+                    </div>
+                    <em>{item.owner}</em>
+                  </button>
+                )
+              })}
+            </div>
+          </div>
+        )}
       </section>
 
-      <section className="panel span5">
+      <section className="panel span5 calendarListPanel">
         <div className="panelHeader">
           <div>
             <h2>项目列表</h2>
@@ -6270,6 +6933,39 @@ function CalendarView({
           )}
         </div>
       </section>
+      {draggingPlan && (
+        <div
+          className="calendarDragPreview"
+          aria-hidden="true"
+          style={{
+            left: `clamp(12px, ${draggingPlan.x + 14}px, calc(100vw - 230px))`,
+            top: `clamp(12px, ${draggingPlan.y + 14}px, calc(100vh - 84px))`,
+          }}
+        >
+          <span>{draggingPlan.project}</span>
+          <strong>{draggingPlan.title}</strong>
+        </div>
+      )}
+      {moveNotice && (
+        <div className="calendarMoveNotice" role="status" aria-live="polite">
+          <div>
+            <strong>已移动“{moveNotice.title}”</strong>
+            <span>
+              {formatMonthDay(new Date(`${moveNotice.fromDate}T00:00:00`))} 至{' '}
+              {formatMonthDay(new Date(`${moveNotice.toDate}T00:00:00`))}
+            </span>
+          </div>
+          <button
+            type="button"
+            onClick={() => {
+              onMovePlan(moveNotice.itemKey, moveNotice.fromDate)
+              setMoveNotice(null)
+            }}
+          >
+            撤销
+          </button>
+        </div>
+      )}
       {canManagePlans && planDate && (
         <CalendarPlanModal
           date={planDate}
@@ -7172,6 +7868,7 @@ function TeamLoad({ projects, tasks, staffMembers }: { projects: Project[]; task
     const managedProjects = activeProjects.filter((project) => project.manager === person.name)
     const ownedProjects = activeProjects.filter((project) => project.owner === person.name)
     const relatedProjectIds = new Set([...personTasks.map((task) => task.projectId), ...managedProjects.map((project) => project.id), ...ownedProjects.map((project) => project.id)])
+    const relatedProjects = activeProjects.filter((project) => relatedProjectIds.has(project.id))
     const risk = activeProjects.filter((project) => relatedProjectIds.has(project.id) && isProjectAtRisk(project)).length
     const revisionTasks = personTasks.filter((task) => task.status === '修改中').length
     const load = Math.min(100, personTasks.length * 12 + managedProjects.length * 10 + ownedProjects.length * 8 + revisionTasks * 6)
@@ -7182,6 +7879,7 @@ function TeamLoad({ projects, tasks, staffMembers }: { projects: Project[]; task
       risk,
       tasks: personTasks.length,
       managedProjects: managedProjects.length,
+      relatedProjects,
       isProjectManager: person.tags.includes('项目经理'),
     }
   })
@@ -7202,18 +7900,35 @@ function TeamLoad({ projects, tasks, staffMembers }: { projects: Project[]; task
                 <strong>{person.name}</strong>
                 <span>{person.tags.join(' / ')}</span>
               </div>
-              <div
-                className="loadRing"
-                style={
-                  {
-                    '--load': `${person.load}%`,
-                    '--load-angle': `${person.load * 3.6}deg`,
-                  } as React.CSSProperties
-                }
-              >
-                <div className="loadRingInner">
-                  <strong>{person.load}%</strong>
-                  <span>负载</span>
+              <div className="teamLoadOverview">
+                <div
+                  className="loadRing"
+                  style={
+                    {
+                      '--load': `${person.load}%`,
+                      '--load-angle': `${person.load * 3.6}deg`,
+                    } as React.CSSProperties
+                  }
+                >
+                  <div className="loadRingInner">
+                    <strong>{person.load}%</strong>
+                    <span>负载</span>
+                  </div>
+                </div>
+                <div className="teamProjectProgress">
+                  <span className="teamProjectProgressTitle">参与项目进度</span>
+                  {person.relatedProjects.length > 0 ? (
+                    <div className="teamProjectProgressList">
+                      {person.relatedProjects.map((project) => (
+                        <div className="teamProjectProgressItem" key={project.id} title={`${project.name} · ${project.stage || '待设置流程节点'}`}>
+                          <strong>{project.name}</strong>
+                          <span>{project.stage || '待设置流程节点'}</span>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <span className="teamProjectProgressEmpty">暂无参与项目</span>
+                  )}
                 </div>
               </div>
               <InfoLine label="任务" value={`${person.tasks} 个`} />
@@ -9211,6 +9926,8 @@ function normalizeProject(project: Project): Project {
     ...project,
     client: project.client ?? '',
     clientContact: project.clientContact ?? '',
+    path: project.path ?? '',
+    additionalPaths: uniqueProjectPaths(Array.isArray(project.additionalPaths) ? project.additionalPaths : [], project.path ?? ''),
     calendarTitle: project.calendarTitle ?? milestoneTitleFrom(project.nextMilestone ?? project.stage),
     creatorAccountId: project.creatorAccountId,
     status: healthStatus,
@@ -9390,6 +10107,7 @@ function projectMatchesSearch(project: Project, query: string) {
     project.workStatus,
     project.nextMilestone,
     project.path,
+    ...(project.additionalPaths ?? []),
   ]
     .join(' ')
     .toLowerCase()
@@ -9400,7 +10118,19 @@ function taskMatchesSearch(task: Task, project: Project | undefined, query: stri
   const cleanQuery = query.trim().toLowerCase()
   if (!cleanQuery) return true
 
-  return [task.title, task.project, task.assignee, task.due, task.status, task.note, project?.name, project?.client, project?.path]
+  return [
+    task.title,
+    task.project,
+    task.assignee,
+    task.due,
+    task.status,
+    task.note,
+    task.evidencePath,
+    project?.name,
+    project?.client,
+    project?.path,
+    ...(project?.additionalPaths ?? []),
+  ]
     .filter(Boolean)
     .join(' ')
     .toLowerCase()
@@ -9411,7 +10141,7 @@ function calendarItemMatchesSearch(item: CalendarItem, project: Project | undefi
   const cleanQuery = query.trim().toLowerCase()
   if (!cleanQuery) return true
 
-  return [item.project, item.title, item.type, item.owner, item.time, project?.name, project?.client, project?.path]
+  return [item.project, item.title, item.type, item.owner, item.time, project?.name, project?.client, project?.path, ...(project?.additionalPaths ?? [])]
     .filter(Boolean)
     .join(' ')
     .toLowerCase()
@@ -9450,7 +10180,12 @@ function normalizeProjectStage(stage: string) {
 }
 
 function isPrimaryProjectCalendarItem(item: CalendarItem, previousProject: Project) {
-  const previousDueDate = new Date(previousProject.due)
+  const previousDueKey = previousProject.due.match(/^\d{4}-\d{2}-\d{2}/)?.[0] ?? ''
+  const itemDateKey = item.date?.match(/^\d{4}-\d{2}-\d{2}/)?.[0] ?? ''
+  const previousDueDate = new Date(`${previousDueKey}T00:00:00`)
+  if (!previousDueKey || Number.isNaN(previousDueDate.getTime())) return false
+  if (itemDateKey && itemDateKey !== previousDueKey) return false
+
   const previousDueText = formatMonthDay(previousDueDate)
   const previousMilestoneTitle = milestoneTitleFrom(previousProject.nextMilestone)
   const primaryTitles = new Set([
@@ -9459,10 +10194,15 @@ function isPrimaryProjectCalendarItem(item: CalendarItem, previousProject: Proje
     '需求对接',
     '计划交付',
   ])
+  const hasPrimaryIdentity =
+    item.type === previousProject.stage ||
+    item.type === '立项节点' ||
+    primaryTitles.has(item.title) ||
+    (!itemDateKey && item.time === previousDueText)
 
   return (
-    item.day === previousDueDate.getDate() &&
-    (item.type === previousProject.stage || item.type === '立项节点' || primaryTitles.has(item.title) || item.time === previousDueText)
+    (itemDateKey === previousDueKey || item.day === previousDueDate.getDate()) &&
+    hasPrimaryIdentity
   )
 }
 
@@ -9561,6 +10301,8 @@ function normalizeCustomerGroups(groups: CustomerGroups | undefined): CustomerGr
 }
 
 function normalizeWorkflowOptions(options: Partial<WorkflowOptions> | undefined): WorkflowOptions {
+  const primaryCustomerLabel = options?.customerFieldLabels?.primary?.trim()
+  const secondaryCustomerLabel = options?.customerFieldLabels?.secondary?.trim()
   return {
     taskWorkTypes: normalizeWorkflowOptionList('taskWorkTypes', options?.taskWorkTypes ?? []),
     nodeStatuses: normalizeWorkflowOptionList('nodeStatuses', options?.nodeStatuses ?? []),
@@ -9568,6 +10310,10 @@ function normalizeWorkflowOptions(options: Partial<WorkflowOptions> | undefined)
     staffTags: normalizeWorkflowOptionList('staffTags', options?.staffTags ?? []),
     projectTypes: normalizeWorkflowOptionList('projectTypes', options?.projectTypes ?? []),
     customerGroups: normalizeCustomerGroups(options?.customerGroups),
+    customerFieldLabels: {
+      primary: primaryCustomerLabel || defaultWorkflowOptions.customerFieldLabels.primary,
+      secondary: secondaryCustomerLabel || defaultWorkflowOptions.customerFieldLabels.secondary,
+    },
   }
 }
 
@@ -9935,14 +10681,18 @@ function TaskRows({
   tasks,
   large = false,
   onUpdateTaskStatus,
+  emptyTitle = '暂无任务',
+  emptyNote = '项目经理分派后，相关人员会在这里看到自己的任务。',
 }: {
   tasks: Task[]
   large?: boolean
   onUpdateTaskStatus?: (taskId: string, status: TaskStatus) => void
+  emptyTitle?: string
+  emptyNote?: string
 }) {
   return (
     <div className={large ? 'taskRows large' : 'taskRows'}>
-      {tasks.length === 0 && <EmptyState title="暂无任务" note="项目经理分派后，相关人员会在这里看到自己的任务。" />}
+      {tasks.length === 0 && <EmptyState title={emptyTitle} note={emptyNote} />}
       {tasks.map((task) => (
         <article key={task.id} className="taskRow">
           <div className={`taskStatus ${task.status}`} />
@@ -10145,6 +10895,44 @@ function localDateKey(date: Date) {
   return `${year}-${month}-${day}`
 }
 
+function isTaskDueOnDate(task: Task, targetDate: Date) {
+  const due = task.due.trim()
+  const targetDateKey = localDateKey(targetDate)
+  const isoDate = due.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/)
+  if (isoDate) {
+    const [, year, month, day] = isoDate
+    return `${year}-${month.padStart(2, '0')}-${day.padStart(2, '0')}` === targetDateKey
+  }
+
+  const chineseDate = due.match(/^(?:(\d{4})年)?(\d{1,2})月(\d{1,2})日/)
+  if (chineseDate) {
+    const [, year, month, day] = chineseDate
+    return (
+      (!year || Number(year) === targetDate.getFullYear()) &&
+      Number(month) === targetDate.getMonth() + 1 &&
+      Number(day) === targetDate.getDate()
+    )
+  }
+
+  const parsedDate = new Date(due)
+  return !Number.isNaN(parsedDate.getTime()) && localDateKey(parsedDate) === targetDateKey
+}
+
+function isTaskDueToday(task: Task, today: Date) {
+  return isTaskDueOnDate(task, today)
+}
+
+function isTaskInTodayWork(task: Task, today: Date) {
+  if (task.status === '已完成') return false
+  return task.status === '制作中' || task.status === '修改中' || isTaskDueToday(task, today)
+}
+
+function todayTaskPriority(task: Task) {
+  if (task.status === '修改中') return 0
+  if (task.status === '制作中') return 1
+  return 2
+}
+
 function holidayForDate(items: HolidayItem[], date: Date) {
   return items.find((item) => item.date === localDateKey(date))
 }
@@ -10198,6 +10986,26 @@ function defaultDeliveryDate() {
 async function openProjectPath(folderPath: string) {
   if (!folderPath) return
   await window.desktopBridge?.openProjectFolder(folderPath)
+}
+
+function uniqueProjectPaths(paths: string[], primaryPath = '') {
+  return Array.from(
+    new Set(
+      paths
+        .map((folderPath) => folderPath.trim())
+        .filter((folderPath) => folderPath && folderPath !== primaryPath.trim()),
+    ),
+  )
+}
+
+function projectFolderPaths(project: Project) {
+  return Array.from(
+    new Set(
+      [project.path, ...(Array.isArray(project.additionalPaths) ? project.additionalPaths : [])]
+        .map((folderPath) => folderPath.trim())
+        .filter(Boolean),
+    ),
+  )
 }
 
 export default App

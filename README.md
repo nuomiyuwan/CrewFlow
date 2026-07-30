@@ -4,7 +4,7 @@ CrewFlow is a desktop command center for project intake, task assignment, delive
 
 It is built with Electron, React, and Vite, and supports both single-user local data and LAN team mode through a lightweight CrewFlow Server.
 
-Current stable version: **v1.3.2**. See [CHANGELOG.md](CHANGELOG.md) for release details.
+Current stable version: **v1.4.0**. See [CHANGELOG.md](CHANGELOG.md) for release details.
 
 中文使用说明：[CrewFlow 用户使用说明](docs/USER_GUIDE.zh-CN.md)
 
@@ -50,9 +50,9 @@ Change this account after first login.
 
 Download the latest desktop packages from the [GitHub Releases page](https://github.com/nuomiyuwan/CrewFlow/releases).
 
-- macOS Apple Silicon (M1, M2, M3, M4): v1.3.2 `macOS-arm64`
-- macOS Intel: v1.3.2 `macOS-x64`
-- Windows 64-bit: v1.3.2 `Windows-x64`
+- macOS Apple Silicon (M1, M2, M3, M4): v1.4.0 `macOS-arm64`
+- macOS Intel: v1.4.0 `macOS-x64`
+- Windows 64-bit: v1.4.0 `Windows-x64`
 
 Release assets are only promoted after they have been built and verified for that platform.
 

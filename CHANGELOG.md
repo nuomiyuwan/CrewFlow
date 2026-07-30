@@ -2,6 +2,33 @@
 
 All notable changes to CrewFlow are documented in this file.
 
+## 1.4.0 - 2026-07-30
+
+### Added
+
+- Added task-board date filters for all tasks, today, this week, or a specific date.
+- Added long-press calendar-plan dragging between visible dates, with permission checks and immediate project schedule reconciliation.
+- Added an overflow popover for calendar days containing more plans than can fit in the month grid.
+- Added multiple project-folder paths while preserving the existing primary project path.
+- Added an optional completed-evidence folder path for each project task.
+- Added current project names and workflow stages to each Team Load member card.
+- Added globally editable labels for the two customer classification fields, allowing industry-neutral names such as “大客户” or “合作单位”.
+
+### Improved
+
+- Refined dashboard “今日任务” to include work currently in production or revision as well as tasks due today.
+- Counted active projects without a finance record as pending settlement until they are explicitly marked settled.
+- Kept project, risk, overdue, next-milestone, and calendar state synchronized after plans are moved or edited.
+- Improved nested-list scrolling so scroll input returns to the page when an inner list has no remaining scroll range.
+- Added project-folder and task-evidence paths to global search.
+- Reworked the project task/evidence layout to separate task controls from completed-material paths.
+- Added clearer in-app manual update instructions and documented OpenRouter free-model setup.
+
+### Fixed
+
+- Prevented dense task evidence controls from overflowing or crowding the project task row.
+- Preserved existing project, task, calendar, finance, and team data when the new optional path and label settings are absent.
+
 ## 1.3.2 - 2026-07-28
 
 ### Added

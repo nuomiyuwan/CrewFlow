@@ -208,7 +208,14 @@ label {
 
 .navList {
   display: grid;
+  min-height: 0;
+  flex: 1 1 auto;
+  align-content: start;
   gap: 6px;
+  overflow-y: auto;
+  padding-right: 4px;
+  scrollbar-color: rgba(128, 233, 247, 0.34) transparent;
+  scrollbar-width: thin;
   -webkit-app-region: no-drag;
 }
 
@@ -775,7 +782,7 @@ h2 {
 .projectTableViewport {
   max-height: 382px;
   overflow-y: auto;
-  overscroll-behavior: contain;
+  overscroll-behavior-y: auto;
   scrollbar-gutter: stable;
   padding-right: 4px;
 }
@@ -1029,13 +1036,13 @@ button.pathBox {
 .assignmentItem {
   display: grid;
   grid-template-columns: 128px minmax(0, 1fr) 112px;
-  gap: 10px;
+  column-gap: 12px;
+  row-gap: 14px;
   align-items: center;
-  min-height: 48px;
   border: 1px solid rgba(180, 202, 216, 0.18);
   border-radius: 12px;
   background: rgba(9, 15, 25, 0.18);
-  padding: 0 12px;
+  padding: 14px;
 }
 
 .assignmentItem span,
@@ -2060,6 +2067,287 @@ h1 {
   background:
     linear-gradient(145deg, rgba(129, 237, 247, 0.16), rgba(255, 255, 255, 0.06)),
     rgba(18, 26, 39, 0.78);
+}
+
+.calendarEvent.canDrag {
+  cursor: grab;
+  touch-action: none;
+}
+
+.calendarOverflowButton {
+  width: fit-content;
+  min-height: 22px;
+  border: 0;
+  border-radius: 6px;
+  color: rgba(128, 233, 247, 0.76);
+  background: transparent;
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 2px 4px;
+  text-align: left;
+}
+
+.calendarOverflowButton:hover,
+.calendarOverflowButton[aria-expanded='true'] {
+  color: #b7f9fd;
+  background: rgba(129, 237, 247, 0.1);
+}
+
+.calendarEvent.dragging {
+  opacity: 0.3;
+  transform: scale(0.98);
+}
+
+.calendarDay {
+  transition:
+    border-color 0.14s ease,
+    background-color 0.14s ease,
+    box-shadow 0.14s ease,
+    transform 0.14s ease;
+}
+
+.calendarDay.dropTarget {
+  border-color: rgba(244, 221, 143, 0.86);
+  background:
+    linear-gradient(145deg, rgba(244, 221, 143, 0.2), rgba(129, 237, 247, 0.12)),
+    rgba(18, 26, 39, 0.9);
+  box-shadow:
+    0 0 0 2px rgba(244, 221, 143, 0.24),
+    0 18px 42px rgba(0, 0, 0, 0.24),
+    inset 0 1px 0 rgba(255, 255, 255, 0.16);
+  transform: translateY(-2px);
+}
+
+.calendarDragging,
+.calendarDragging * {
+  cursor: grabbing !important;
+}
+
+.calendarDragPreview {
+  position: fixed;
+  z-index: 90;
+  display: grid;
+  width: 216px;
+  gap: 3px;
+  border: 1px solid rgba(244, 221, 143, 0.58);
+  border-radius: 10px;
+  color: #f7fbff;
+  background:
+    linear-gradient(145deg, rgba(129, 237, 247, 0.2), rgba(244, 221, 143, 0.14)),
+    rgba(18, 26, 39, 0.96);
+  box-shadow:
+    0 22px 56px rgba(0, 0, 0, 0.42),
+    inset 0 1px 0 rgba(255, 255, 255, 0.16);
+  pointer-events: none;
+  padding: 9px 11px;
+}
+
+.calendarDragPreview span {
+  overflow: hidden;
+  color: rgba(128, 233, 247, 0.84);
+  font-size: 11px;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.calendarDragPreview strong {
+  overflow: hidden;
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.calendarDayPopover {
+  position: fixed;
+  z-index: 45;
+  display: flex;
+  width: 360px;
+  max-height: min(420px, calc(100vh - 32px));
+  flex-direction: column;
+  border: 1px solid rgba(128, 233, 247, 0.34);
+  border-radius: 12px;
+  color: #f7fbff;
+  background:
+    linear-gradient(145deg, rgba(129, 237, 247, 0.08), rgba(255, 255, 255, 0.025)),
+    rgba(14, 23, 36, 0.98);
+  box-shadow:
+    0 28px 72px rgba(0, 0, 0, 0.48),
+    inset 0 1px 0 rgba(255, 255, 255, 0.12);
+  transition:
+    opacity 0.12s ease,
+    transform 0.12s ease;
+}
+
+.calendarDayPopover.dragHidden {
+  opacity: 0;
+  pointer-events: none;
+  transform: scale(0.98);
+}
+
+.calendarDayPopover > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex: 0 0 auto;
+  border-bottom: 1px solid rgba(180, 202, 216, 0.16);
+  padding: 12px 12px 11px 14px;
+}
+
+.calendarDayPopover > header > div {
+  display: grid;
+  gap: 2px;
+}
+
+.calendarDayPopover > header span {
+  color: rgba(128, 233, 247, 0.82);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.calendarDayPopover > header strong {
+  font-size: 14px;
+}
+
+.calendarDayPopover > header button {
+  display: grid;
+  width: 32px;
+  height: 32px;
+  flex: 0 0 auto;
+  place-items: center;
+  border: 1px solid rgba(180, 202, 216, 0.18);
+  border-radius: 8px;
+  color: rgba(244, 248, 255, 0.76);
+  background: rgba(255, 255, 255, 0.05);
+  cursor: pointer;
+  padding: 0;
+}
+
+.calendarDayPopoverList {
+  display: grid;
+  min-height: 0;
+  align-content: start;
+  gap: 7px;
+  overflow-y: auto;
+  padding: 10px;
+  scrollbar-color: rgba(128, 233, 247, 0.34) transparent;
+  scrollbar-gutter: stable;
+  scrollbar-width: thin;
+}
+
+.calendarDayPopoverItem {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  min-height: 56px;
+  border: 1px solid rgba(180, 202, 216, 0.15);
+  border-radius: 9px;
+  color: #f7fbff;
+  background: rgba(255, 255, 255, 0.045);
+  cursor: pointer;
+  padding: 8px 10px;
+  text-align: left;
+}
+
+.calendarDayPopoverItem > div {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+
+.calendarDayPopoverItem span,
+.calendarDayPopoverItem strong,
+.calendarDayPopoverItem em {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.calendarDayPopoverItem span {
+  color: rgba(128, 233, 247, 0.78);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.calendarDayPopoverItem strong {
+  font-size: 13px;
+}
+
+.calendarDayPopoverItem em {
+  max-width: 92px;
+  color: rgba(210, 222, 235, 0.62);
+  font-size: 11px;
+  font-style: normal;
+}
+
+.calendarDayPopoverItem.active {
+  border-color: rgba(142, 238, 251, 0.42);
+  background: rgba(129, 237, 247, 0.1);
+}
+
+.calendarDayPopoverItem.canDrag {
+  cursor: grab;
+  touch-action: none;
+}
+
+.calendarDayPopoverItem.dragging {
+  opacity: 0.3;
+}
+
+.calendarMoveNotice {
+  position: fixed;
+  left: 50%;
+  bottom: 28px;
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  min-width: min(390px, calc(100vw - 48px));
+  border: 1px solid rgba(128, 233, 247, 0.34);
+  border-radius: 12px;
+  color: #f7fbff;
+  background: rgba(16, 25, 38, 0.96);
+  box-shadow:
+    0 24px 60px rgba(0, 0, 0, 0.42),
+    inset 0 1px 0 rgba(255, 255, 255, 0.12);
+  transform: translateX(-50%);
+  padding: 11px 12px 11px 15px;
+}
+
+.calendarMoveNotice > div {
+  display: grid;
+  min-width: 0;
+  flex: 1;
+  gap: 3px;
+}
+
+.calendarMoveNotice strong,
+.calendarMoveNotice span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.calendarMoveNotice strong {
+  font-size: 13px;
+}
+
+.calendarMoveNotice span {
+  color: rgba(210, 222, 235, 0.66);
+  font-size: 11px;
+}
+
+.calendarMoveNotice button {
+  min-height: 34px;
+  border: 1px solid rgba(128, 233, 247, 0.3);
+  border-radius: 8px;
+  color: #91f3fb;
+  background: rgba(129, 237, 247, 0.09);
+  cursor: pointer;
+  padding: 0 13px;
 }
 
 .progressBar {
@@ -3370,6 +3658,113 @@ h1 {
 
 .teamCardHeader span {
   line-height: 1.45;
+}
+
+.customerFieldLabel,
+.customerFieldLabelEditor {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 24px;
+}
+
+.customerFieldLabel > span {
+  color: #80e9f7;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.customerFieldLabel button,
+.customerFieldLabelEditor button {
+  display: inline-grid;
+  width: 26px;
+  min-height: 26px;
+  border: 1px solid rgba(128, 233, 247, 0.2);
+  border-radius: 7px;
+  color: #8cebf5;
+  background: rgba(129, 237, 247, 0.06);
+  cursor: pointer;
+  padding: 0;
+  place-items: center;
+}
+
+.customerFieldLabelEditor input {
+  width: min(220px, 100%);
+  min-width: 0;
+  min-height: 30px;
+  border: 1px solid rgba(128, 233, 247, 0.3);
+  border-radius: 8px;
+  outline: 0;
+  color: #f7fbff;
+  background: rgba(18, 26, 39, 0.86);
+  font-size: 12px;
+  font-weight: 700;
+  padding: 0 9px;
+}
+
+.customerFieldLabelEditor button:disabled {
+  cursor: not-allowed;
+  opacity: 0.42;
+}
+
+.teamLoadOverview {
+  display: grid;
+  grid-template-columns: 112px minmax(0, 1fr);
+  gap: 16px;
+  align-items: center;
+  min-width: 0;
+}
+
+.teamProjectProgress {
+  display: grid;
+  align-content: start;
+  gap: 8px;
+  min-width: 0;
+}
+
+.teamProjectProgressTitle {
+  color: #80e9f7 !important;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.teamProjectProgressList {
+  display: grid;
+  gap: 7px;
+  max-height: 112px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding-right: 4px;
+}
+
+.teamProjectProgressItem {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+  border-left: 2px solid rgba(128, 233, 247, 0.38);
+  padding-left: 9px;
+}
+
+.teamProjectProgressItem strong,
+.teamProjectProgressItem span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.teamProjectProgressItem strong {
+  font-size: 13px;
+}
+
+.teamProjectProgressItem span,
+.teamProjectProgressEmpty {
+  font-size: 11px;
+}
+
+@media (max-width: 720px) {
+  .teamLoadOverview {
+    grid-template-columns: 1fr;
+  }
 }
 
 .modalBackdrop {
@@ -5327,5 +5722,200 @@ h1 {
 
   .holidayList article button {
     grid-column: 1 / -1;
+  }
+}
+
+.customCustomer {
+  grid-template-columns: minmax(0, 1fr) repeat(2, auto);
+}
+
+.taskDateFilter {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.taskDateSegments {
+  display: inline-flex;
+  gap: 4px;
+  border: 1px solid rgba(180, 202, 216, 0.16);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.035);
+  padding: 4px;
+}
+
+.taskDateSegments button {
+  min-height: 32px;
+  border: 0;
+  border-radius: 7px;
+  color: rgba(230, 238, 247, 0.7);
+  background: transparent;
+  cursor: pointer;
+  padding: 0 12px;
+}
+
+.taskDateSegments button.active {
+  color: #07131c;
+  background: #8deef1;
+}
+
+.taskDatePicker {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 40px;
+  border: 1px solid rgba(180, 202, 216, 0.18);
+  border-radius: 10px;
+  color: rgba(128, 233, 247, 0.82);
+  background: rgba(255, 255, 255, 0.035);
+  padding: 0 10px;
+}
+
+.taskDatePicker.active {
+  border-color: rgba(142, 238, 251, 0.5);
+  background: rgba(129, 237, 247, 0.1);
+}
+
+.taskDatePicker input {
+  min-height: 30px;
+  border: 0;
+  outline: 0;
+  color: #f4f8ff;
+  background: transparent;
+  color-scheme: dark;
+}
+
+.taskDateFilter > span {
+  margin-left: auto;
+  color: rgba(210, 222, 235, 0.58);
+  font-size: 12px;
+}
+
+.projectPathEditor,
+.projectPathList {
+  display: grid;
+  gap: 8px;
+}
+
+.pathField.pathFieldWithActions {
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+}
+
+.pathField .pathIconButton {
+  display: inline-grid;
+  width: 34px;
+  min-height: 34px;
+  border: 1px solid rgba(128, 233, 247, 0.22);
+  border-radius: 9px;
+  padding: 0;
+  place-items: center;
+  text-align: center;
+}
+
+.dangerPathButton {
+  border-color: rgba(255, 112, 128, 0.28) !important;
+  color: #ff9da8 !important;
+  background: rgba(255, 92, 112, 0.08) !important;
+}
+
+.archiveActions {
+  flex-wrap: wrap;
+}
+
+.taskEvidenceField {
+  display: grid;
+  grid-column: 1 / -1;
+  gap: 8px;
+  min-width: 0;
+  border-top: 1px solid rgba(180, 202, 216, 0.12);
+  padding-top: 12px;
+}
+
+.taskEvidenceLabel {
+  color: rgba(210, 222, 235, 0.58) !important;
+  font-size: 11px !important;
+  font-weight: 700;
+}
+
+.taskEvidenceControls {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 8px;
+  min-width: 0;
+}
+
+.taskEvidencePath,
+.taskEvidenceAction {
+  min-width: 0;
+  min-height: 32px;
+  border: 1px solid rgba(128, 233, 247, 0.18);
+  border-radius: 9px;
+  color: rgba(226, 238, 246, 0.78);
+  background: rgba(129, 237, 247, 0.055);
+  cursor: pointer;
+}
+
+.taskEvidencePath {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 38px;
+  padding: 0 11px;
+  text-align: left;
+}
+
+.taskEvidencePath.empty {
+  justify-content: center;
+  border-style: dashed;
+  color: #8cebf5;
+}
+
+.taskEvidencePath span {
+  flex: 1;
+  overflow: hidden;
+  min-width: 0;
+  color: inherit;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.taskEvidencePath:disabled {
+  cursor: default;
+  opacity: 0.52;
+}
+
+.taskEvidenceAction {
+  display: inline-grid;
+  width: 34px;
+  padding: 0;
+  place-items: center;
+}
+
+@media (max-width: 720px) {
+  .customCustomer {
+    grid-template-columns: repeat(3, auto);
+  }
+
+  .customCustomer input {
+    grid-column: 1 / -1;
+  }
+
+  .taskDateFilter {
+    align-items: stretch;
+  }
+
+  .taskDateFilter > span {
+    width: 100%;
+    margin-left: 0;
+  }
+
+  .pathField.pathFieldWithActions {
+    grid-template-columns: auto minmax(0, 1fr) auto;
+  }
+
+  .pathField.pathFieldWithActions .pathIconButton {
+    grid-column: 3;
   }
 }
