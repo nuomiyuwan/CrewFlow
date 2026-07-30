@@ -13,6 +13,7 @@ All notable changes to CrewFlow are documented in this file.
 - Added an optional completed-evidence folder path for each project task.
 - Added current project names and workflow stages to each Team Load member card.
 - Added globally editable labels for the two customer classification fields, allowing industry-neutral names such as “大客户” or “合作单位”.
+- Added a built-in Chinese user guide with searchable sections, independent scrolling, a first-use entry, and a permanent sidebar entry.
 
 ### Improved
 
@@ -27,6 +28,8 @@ All notable changes to CrewFlow are documented in this file.
 ### Fixed
 
 - Prevented dense task evidence controls from overflowing or crowding the project task row.
+- Centered the project-folder add icon inside its button.
+- Replaced the assistant message area's bright system scrollbar with the app's compact dark scrollbar.
 - Preserved existing project, task, calendar, finance, and team data when the new optional path and label settings are absent.
 
 ## 1.3.2 - 2026-07-28

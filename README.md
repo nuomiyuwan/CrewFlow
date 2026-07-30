@@ -32,6 +32,7 @@ Current stable version: **v1.4.0**. See [CHANGELOG.md](CHANGELOG.md) for release
 - CrewFlow Assistant with local rules, OpenAI-compatible online models, and local Ollama models
 - Permission-aware natural-language form prefilling and chat-record extraction
 - Image understanding through compatible online multimodal models
+- Built-in searchable Chinese user guide available from first-use guidance and the sidebar
 - Single-user mode with local data storage
 - LAN team mode with a host computer running CrewFlow Server
 

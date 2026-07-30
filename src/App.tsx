@@ -1,4 +1,6 @@
 import {
+  lazy,
+  Suspense,
   useCallback,
   useEffect,
   useMemo,
@@ -10,6 +12,7 @@ import {
 import {
   AlertTriangle,
   ArrowLeft,
+  BookOpen,
   Bot,
   CalendarDays,
   CheckCircle2,
@@ -41,6 +44,7 @@ import {
   X,
 } from 'lucide-react'
 import './App.css'
+import userGuideMarkdown from '../docs/USER_GUIDE.zh-CN.md?raw'
 import {
   bundledChinaHolidayItems,
   chinaHolidayProjectUrl,
@@ -48,6 +52,8 @@ import {
   loadChinaHolidayItems,
   type ChinaHolidayLoadSource,
 } from './chinaHolidays'
+
+const ReactMarkdown = lazy(() => import('react-markdown'))
 
 type Role = 'controller' | 'admin' | 'manager' | 'member' | 'finance'
 type Section =
@@ -76,6 +82,12 @@ type WelcomeGuideContent = {
     items: string[]
   }>
   note?: string
+}
+
+type UserGuideSection = {
+  id: string
+  title: string
+  body: string
 }
 
 type UpdateRelease = {
@@ -633,6 +645,46 @@ const holidayItems: HolidayItem[] = []
 const loginAccounts: Account[] = [
   { id: 'zk', password: '123456', role: 'controller', userName: '', label: '总控', title: '' },
 ]
+
+function parseUserGuideSections(markdown: string): UserGuideSection[] {
+  const sections: UserGuideSection[] = []
+  let title = '说明与版本'
+  let body: string[] = []
+
+  function appendSection() {
+    const cleanBody = body
+      .filter((line, index) => !(index === 0 && line.startsWith('# ')))
+      .join('\n')
+      .trim()
+    if (cleanBody) {
+      sections.push({
+        id: `guide-${sections.length}`,
+        title,
+        body: cleanBody,
+      })
+    }
+  }
+
+  markdown
+    .replace(/\r\n/g, '\n')
+    .split('\n')
+    .forEach((line) => {
+      const heading = line.match(/^##\s+(.+)$/)
+      if (!heading) {
+        body.push(line)
+        return
+      }
+
+      appendSection()
+      title = heading[1].trim()
+      body = []
+    })
+
+  appendSection()
+  return sections
+}
+
+const userGuideSections = parseUserGuideSections(userGuideMarkdown)
 
 const welcomeGuides: Record<Role, WelcomeGuideContent> = {
   controller: {
@@ -1464,6 +1516,7 @@ function App() {
   const [loginPassword, setLoginPassword] = useState('')
   const [loginError, setLoginError] = useState('')
   const [showWelcomeGuide, setShowWelcomeGuide] = useState(false)
+  const [showUserGuide, setShowUserGuide] = useState(false)
   const [updateCheckStatus, setUpdateCheckStatus] = useState<UpdateCheckStatus>('idle')
   const [availableUpdate, setAvailableUpdate] = useState<UpdateRelease | null>(null)
   const [showUpdateDialog, setShowUpdateDialog] = useState(false)
@@ -3234,6 +3287,10 @@ function App() {
         </nav>
 
         <div className="sidebarFooter">
+          <button className="userGuideButton" type="button" onClick={() => setShowUserGuide(true)}>
+            <BookOpen size={15} />
+            <span>使用说明</span>
+          </button>
           <DataModeStatus
             dataMode={dataMode}
             teamConnectionStatus={teamConnectionStatus}
@@ -3558,7 +3615,18 @@ function App() {
           }}
         />
       )}
-      {currentAccount && showWelcomeGuide && <WelcomeGuideModal guide={welcomeGuides[currentAccount.role]} onClose={closeWelcomeGuide} onDismiss={dismissWelcomeGuide} />}
+      {currentAccount && showWelcomeGuide && (
+        <WelcomeGuideModal
+          guide={welcomeGuides[currentAccount.role]}
+          onClose={closeWelcomeGuide}
+          onDismiss={dismissWelcomeGuide}
+          onOpenUserGuide={() => {
+            setShowWelcomeGuide(false)
+            setShowUserGuide(true)
+          }}
+        />
+      )}
+      {showUserGuide && <UserGuideModal sections={userGuideSections} onClose={() => setShowUserGuide(false)} />}
     </div>
   )
 }
@@ -3719,7 +3787,17 @@ function WorkScheduleSettingsModal({
   )
 }
 
-function WelcomeGuideModal({ guide, onClose, onDismiss }: { guide: WelcomeGuideContent; onClose: () => void; onDismiss: () => void }) {
+function WelcomeGuideModal({
+  guide,
+  onClose,
+  onDismiss,
+  onOpenUserGuide,
+}: {
+  guide: WelcomeGuideContent
+  onClose: () => void
+  onDismiss: () => void
+  onOpenUserGuide: () => void
+}) {
   return (
     <div className="modalBackdrop" role="presentation" onMouseDown={onClose}>
       <section className="financeEntryModal welcomeGuideModal" role="dialog" aria-modal="true" aria-label="CrewFlow 使用提示" onMouseDown={(event) => event.stopPropagation()}>
@@ -3750,8 +3828,103 @@ function WelcomeGuideModal({ guide, onClose, onDismiss }: { guide: WelcomeGuideC
           <button type="button" onClick={onDismiss}>
             以后不再提示
           </button>
+          <button type="button" onClick={onOpenUserGuide}>
+            <BookOpen size={15} />
+            完整使用说明
+          </button>
           <button className="primaryButton" type="button" onClick={onClose}>
             知道了
+          </button>
+        </footer>
+      </section>
+    </div>
+  )
+}
+
+function UserGuideModal({ sections, onClose }: { sections: UserGuideSection[]; onClose: () => void }) {
+  const [query, setQuery] = useState('')
+  const [activeSectionId, setActiveSectionId] = useState(sections[0]?.id ?? '')
+  const articleRef = useRef<HTMLElement | null>(null)
+  const filteredSections = useMemo(() => {
+    const cleanQuery = query.trim().toLowerCase()
+    if (!cleanQuery) return sections
+    return sections.filter((section) => `${section.title}\n${section.body}`.toLowerCase().includes(cleanQuery))
+  }, [query, sections])
+  const activeSection =
+    filteredSections.find((section) => section.id === activeSectionId) ??
+    filteredSections[0] ??
+    sections.find((section) => section.id === activeSectionId) ??
+    sections[0]
+
+  useEffect(() => {
+    if (!activeSection || activeSection.id === activeSectionId) return
+    setActiveSectionId(activeSection.id)
+  }, [activeSection, activeSectionId])
+
+  function selectSection(sectionId: string) {
+    setActiveSectionId(sectionId)
+    articleRef.current?.scrollTo({ top: 0 })
+  }
+
+  return (
+    <div className="modalBackdrop userGuideBackdrop" role="presentation" onMouseDown={onClose}>
+      <section className="financeEntryModal userGuideModal" role="dialog" aria-modal="true" aria-label="CrewFlow 中文使用说明" onMouseDown={(event) => event.stopPropagation()}>
+        <header>
+          <div>
+            <span className="eyebrow">帮助中心</span>
+            <h2>CrewFlow 中文使用说明</h2>
+          </div>
+          <button type="button" onClick={onClose} title="关闭">
+            <X size={18} />
+          </button>
+        </header>
+
+        <div className="userGuideLayout">
+          <aside className="userGuideIndex">
+            <label className="userGuideSearch">
+              <Search size={16} />
+              <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索使用说明" />
+            </label>
+            <nav>
+              {filteredSections.map((section) => (
+                <button
+                  className={section.id === activeSection?.id ? 'active' : ''}
+                  type="button"
+                  key={section.id}
+                  onClick={() => selectSection(section.id)}
+                  title={section.title}
+                >
+                  {section.title}
+                </button>
+              ))}
+              {filteredSections.length === 0 && <span className="userGuideEmpty">没有匹配的说明内容</span>}
+            </nav>
+          </aside>
+
+          <article className="userGuideArticle" ref={articleRef}>
+            {activeSection ? (
+              <>
+                <h2>{activeSection.title}</h2>
+                <Suspense fallback={<p className="userGuideLoading">正在打开说明内容…</p>}>
+                  <ReactMarkdown
+                    components={{
+                      a: ({ node: _node, ...props }) => <a {...props} target="_blank" rel="noreferrer" />,
+                    }}
+                  >
+                    {activeSection.body}
+                  </ReactMarkdown>
+                </Suspense>
+              </>
+            ) : (
+              <p>说明内容暂不可用。</p>
+            )}
+          </article>
+        </div>
+
+        <footer>
+          <span className="userGuideVersion">离线内置说明 · CrewFlow v{appVersion}</span>
+          <button className="primaryButton" type="button" onClick={onClose}>
+            关闭
           </button>
         </footer>
       </section>
