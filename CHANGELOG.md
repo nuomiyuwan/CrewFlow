@@ -2,6 +2,24 @@
 
 All notable changes to CrewFlow are documented in this file.
 
+## 1.4.1 - 2026-07-31
+
+### Added
+
+- Expanded CrewFlow Assistant's permission-aware confirmation drafts to cover project health, workflow status, project manager, task status, weather city, work schedule, and page navigation.
+- Added built-in product guidance to the assistant context so it can answer common CrewFlow usage questions.
+
+### Improved
+
+- Kept assistant actions within the signed-in account's existing visibility and edit permissions, with explicit confirmation before saving and sensitive operations excluded.
+- Linked finance settlement labels to invoice and payment progress so an invoiced project with an outstanding balance is shown as pending collection.
+- Calculated project progress from the current workflow stage while preserving completed and archived projects at 100%.
+
+### Fixed
+
+- Allowed numeric reusable values such as years to be added when their parent category is entered at the same time.
+- Kept crowded calendar-day popovers fully visible, internally scrollable, and draggable without being clipped by the calendar container.
+
 ## 1.4.0 - 2026-07-30
 
 ### Added

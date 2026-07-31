@@ -139,7 +139,7 @@ test('assistant capability replies describe calendar prefill instead of denying 
     normalizeAssistantMessage(
       '抱歉，我无法直接写入项目数据。所有修改都需要你确认后落地，我没有写入权限。\n\n已经整理好四个节点。',
     ),
-    '我可以把明确的日历节点带入 CrewFlow 的确认窗口，由你检查后保存。所有修改都需要你确认后落地，\n\n已经整理好四个节点。',
+    '我可以把当前账号有权限的项目、任务、日历和本机设置带入 CrewFlow 确认窗口，由你检查后保存。所有修改都需要你确认后落地，\n\n已经整理好四个节点。',
   )
 })
 
@@ -184,10 +184,10 @@ test('assistant routing returns model-selected confirmation flows without phrase
     "candidates": [
       {
         "projectId": "P-1",
-        "projectName": "时差2.0",
+        "projectName": "示例项目",
         "date": "2026-08-30",
         "title": "后期包装制作",
-        "owner": "胡晓曼",
+        "owner": "李四",
         "source": "自然语言内容"
       }
     ],
@@ -226,15 +226,15 @@ test('routed operations drop unrelated or unmentioned model fields before openin
     "operation": {
       "type": "update_project",
       "projectId": "P-1",
-      "projectName": "时差2.0",
-      "manager": "陈英琦",
+      "projectName": "示例项目",
+      "manager": "张三",
       "stage": "等甲方反馈",
       "deliveryDate": "2026-07-28"
     }
   }`).operation
   const sanitizedUpdate = sanitizeRoutedOperation(
     updateOperation,
-    [{ role: 'user', content: '时差现在先等客户回话，状态带到等甲方反馈' }],
+    [{ role: 'user', content: '示例项目现在先等客户回话，状态带到等甲方反馈' }],
     {
       workflowOptions: {
         workflowStages: ['后期制作'],
@@ -243,8 +243,8 @@ test('routed operations drop unrelated or unmentioned model fields before openin
       projects: [
         {
           id: 'P-1',
-          name: '时差2.0',
-          manager: '陈英琦',
+          name: '示例项目',
+          manager: '张三',
           stage: '后期制作',
           workStatus: '进行中',
         },
@@ -260,16 +260,16 @@ test('routed operations drop unrelated or unmentioned model fields before openin
     "operation": {
       "type": "assign_task",
       "projectId": "P-1",
-      "projectName": "时差2.0",
+      "projectName": "示例项目",
       "workType": "包装",
-      "assignee": "胡晓曼",
+      "assignee": "李四",
       "calendarTitle": "包装",
       "deliveryDate": "2026-07-28"
     }
   }`).operation
   const sanitizedAssignment = sanitizeRoutedOperation(
     assignmentOperation,
-    [{ role: 'user', content: '时差的包装让胡晓曼来做' }],
+    [{ role: 'user', content: '示例项目的包装让李四来做' }],
     {},
   )
   assert.equal(sanitizedAssignment.deliveryDate, '')
@@ -311,4 +311,92 @@ test('operation fallback recognizes natural task assignment from visible options
   assert.equal(result.operation.workType, '设计')
   assert.equal(result.operation.assignee, '张三')
   assert.equal(result.operation.taskStatus, '未开始')
+})
+
+test('assistant operations parse project health, task status and local setting drafts', () => {
+  const projectResult = parseOperationExtraction(
+    '{"operation":{"type":"update_project","projectId":"P-1","healthStatus":"有风险","manager":"张三"}}',
+  )
+  assert.equal(projectResult.operation.healthStatus, 'risk')
+  assert.equal(projectResult.operation.manager, '张三')
+
+  const taskResult = parseOperationExtraction(
+    '{"operation":{"type":"update_task","taskId":"T-1","taskTitle":"示例项目 设计","taskStatus":"已完成"}}',
+  )
+  assert.equal(taskResult.operation.type, 'update_task')
+  assert.equal(taskResult.operation.taskId, 'T-1')
+  assert.equal(taskResult.operation.taskStatus, '已完成')
+
+  const scheduleResult = parseOperationExtraction(
+    '{"operation":{"type":"update_work_schedule","workStart":"09:30","workEnd":"18:30","weatherCity":"不应保留"}}',
+  )
+  const sanitizedSchedule = sanitizeRoutedOperation(
+    scheduleResult.operation,
+    [{ role: 'user', content: '上班改成9点半，下班18点半' }],
+    {},
+  )
+  assert.equal(sanitizedSchedule.workStart, '09:30')
+  assert.equal(sanitizedSchedule.workEnd, '18:30')
+  assert.equal(sanitizedSchedule.weatherCity, '')
+})
+
+test('assistant operation fallback recognizes weather, work schedule and task status changes', () => {
+  const weather = inferOperationFromConversation(
+    [{ role: 'user', content: '把天气城市改成上海' }],
+    {},
+  )
+  assert.equal(weather.operation.type, 'update_weather')
+  assert.equal(weather.operation.weatherCity, '上海')
+
+  const schedule = inferOperationFromConversation(
+    [{ role: 'user', content: '上下班时间调整一下，上班9点30分，下班18点30分' }],
+    {},
+  )
+  assert.equal(schedule.operation.type, 'update_work_schedule')
+  assert.equal(schedule.operation.workStart, '09:30')
+  assert.equal(schedule.operation.workEnd, '18:30')
+
+  const task = inferOperationFromConversation(
+    [{ role: 'user', content: '把示例项目的设计任务改成已完成' }],
+    {
+      tasks: [
+        {
+          id: 'T-1',
+          projectId: 'P-1',
+          project: '示例项目',
+          title: '示例项目 设计',
+          workType: '设计',
+        },
+      ],
+    },
+  )
+  assert.equal(task.operation.type, 'update_task')
+  assert.equal(task.operation.taskId, 'T-1')
+  assert.equal(task.operation.taskStatus, '已完成')
+})
+
+test('assistant operation sanitizer keeps only fields supported by each action', () => {
+  const weatherOperation = parseOperationExtraction(
+    '{"operation":{"type":"update_weather","weatherCity":"成都","manager":"张三","taskStatus":"已完成"}}',
+  ).operation
+  const sanitizedWeather = sanitizeRoutedOperation(
+    weatherOperation,
+    [{ role: 'user', content: '天气换成成都' }],
+    {},
+  )
+  assert.equal(sanitizedWeather.weatherCity, '成都')
+  assert.equal(sanitizedWeather.manager, '')
+  assert.equal(sanitizedWeather.taskStatus, '')
+
+  const taskOperation = parseOperationExtraction(
+    '{"operation":{"type":"update_task","taskId":"T-1","taskStatus":"修改中","healthStatus":"risk"}}',
+  ).operation
+  const sanitizedTask = sanitizeRoutedOperation(
+    taskOperation,
+    [{ role: 'user', content: '这条任务改成修改中' }],
+    {},
+  )
+  assert.equal(sanitizedTask.taskId, 'T-1')
+  assert.equal(sanitizedTask.taskStatus, '修改中')
+  assert.equal(sanitizedTask.healthStatus, '')
 })

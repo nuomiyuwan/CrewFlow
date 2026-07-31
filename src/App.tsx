@@ -9,6 +9,7 @@ import {
   type MouseEvent as ReactMouseEvent,
   type PointerEvent as ReactPointerEvent,
 } from 'react'
+import { createPortal } from 'react-dom'
 import {
   AlertTriangle,
   ArrowLeft,
@@ -215,7 +216,14 @@ type AssistantCalendarCandidate = {
   owner: string
   source: string
 }
-type AssistantOperationType = 'create_project' | 'update_project' | 'assign_task'
+type AssistantOperationType =
+  | 'create_project'
+  | 'update_project'
+  | 'assign_task'
+  | 'update_task'
+  | 'update_weather'
+  | 'update_work_schedule'
+  | 'navigate'
 type AssistantOperation = {
   type: AssistantOperationType
   projectId: string
@@ -238,6 +246,13 @@ type AssistantOperation = {
   assignee: string
   externalNote: string
   taskStatus: string
+  taskId: string
+  taskTitle: string
+  healthStatus: string
+  weatherCity: string
+  workStart: string
+  workEnd: string
+  targetSection: string
   source: string
 }
 type AssistantResponse =
@@ -385,6 +400,7 @@ type AssistantNewProjectDraft = Partial<NewProjectPayload>
 type AssistantProjectEditDraft = {
   stage?: string
   workStatus?: WorkStatus
+  healthStatus?: ProjectHealthStatus
   due?: string
   calendarTitle?: string
   manager?: string
@@ -396,6 +412,10 @@ type AssistantProjectEditDraft = {
     status: TaskStatus
     due?: string
   }
+}
+type AssistantTaskEditDraft = {
+  taskId: string
+  status: TaskStatus
 }
 
 type FinanceRecord = {
@@ -536,6 +556,12 @@ type CalendarDayPopoverState = {
   date: string
   left: number
   top: number
+}
+
+type CalendarPopoverDragSession = CalendarDayPopoverState & {
+  pointerId: number
+  startX: number
+  startY: number
 }
 
 const taskStatusOptions: TaskStatus[] = ['未开始', '制作中', '修改中', '已完成']
@@ -1500,6 +1526,9 @@ function App() {
   const [showNewProjectModal, setShowNewProjectModal] = useState(false)
   const [assistantNewProjectDraft, setAssistantNewProjectDraft] = useState<AssistantNewProjectDraft | null>(null)
   const [assistantProjectEditDraft, setAssistantProjectEditDraft] = useState<AssistantProjectEditDraft | null>(null)
+  const [assistantTaskEditDraft, setAssistantTaskEditDraft] = useState<AssistantTaskEditDraft | null>(null)
+  const [assistantWeatherQuery, setAssistantWeatherQuery] = useState('')
+  const [assistantWorkScheduleDraft, setAssistantWorkScheduleDraft] = useState<WorkSchedule | null>(null)
   const [showControllerAccountModal, setShowControllerAccountModal] = useState(false)
   const [showWorkflowOptionsModal, setShowWorkflowOptionsModal] = useState(false)
   const [setupDraft, setSetupDraft] = useState<ProjectSetupDraft | null>(null)
@@ -2162,6 +2191,12 @@ function App() {
   const canEditProjectTaskBoard = role === 'controller' || role === 'admin'
   const canEditArchivedProjects = role === 'controller' || role === 'admin'
   const activeStaffMembers = useMemo(() => appStaffMembers.filter(isAssignableStaff), [appStaffMembers])
+  const assistantStaffMembers = useMemo(() => {
+    if (role === 'controller' || role === 'admin') return activeStaffMembers
+    if (role === 'manager' || role === 'finance') return activeStaffMembers.filter(canManageProject)
+    if (role === 'member' && currentUser) return activeStaffMembers.filter((member) => member.name === currentUser)
+    return []
+  }, [activeStaffMembers, currentUser, role])
   const assistantProjects = useMemo(
     () => roleVisibleProjects.filter((project) => !isArchivedProject(project)),
     [roleVisibleProjects],
@@ -2188,6 +2223,32 @@ function App() {
       ),
     [assistantProjects, currentUser, role],
   )
+  const assistantEditableProjects = useMemo(
+    () =>
+      assistantProjects.filter(
+        (project) =>
+          role === 'controller' ||
+          role === 'admin' ||
+          (role === 'manager' && Boolean(currentUser) && project.manager === currentUser),
+      ),
+    [assistantProjects, currentUser, role],
+  )
+  const assistantEditableTasks = useMemo(() => {
+    if (role === 'controller' || role === 'admin') return assistantTasks
+    if (role === 'manager') {
+      const editableProjectIds = new Set(assistantEditableProjects.map((project) => project.id))
+      return assistantTasks.filter((task) => editableProjectIds.has(task.projectId))
+    }
+    if (role === 'member' && currentUser) return assistantTasks.filter((task) => task.assignee === currentUser)
+    return []
+  }, [assistantEditableProjects, assistantTasks, currentUser, role])
+  const assistantEditableTaskIds = useMemo(
+    () => new Set(assistantEditableTasks.map((task) => task.id)),
+    [assistantEditableTasks],
+  )
+  const assistantTaskToEdit = assistantTaskEditDraft
+    ? appTasks.find((task) => task.id === assistantTaskEditDraft.taskId) ?? null
+    : null
   const activeRemoteTeamHost = useMemo(() => {
     if (remoteTeamServiceHost) return remoteTeamServiceHost
     if (teamConnectionStatus !== 'connected' || isLocalTeamServerUrl(teamServerUrl, teamServiceInfo)) return ''
@@ -2991,15 +3052,70 @@ function App() {
       return true
     }
 
+    if (operation.type === 'update_weather') {
+      const weatherCity = operation.weatherCity.trim()
+      if (!weatherCity) return false
+      setAssistantWeatherQuery(weatherCity)
+      setShowWeatherSettings(true)
+      return true
+    }
+
+    if (operation.type === 'update_work_schedule') {
+      const start = isClockTime(operation.workStart)
+        ? operation.workStart
+        : workSchedule?.start ?? '09:00'
+      const end = isClockTime(operation.workEnd)
+        ? operation.workEnd
+        : workSchedule?.end ?? '18:00'
+      if (start === end || (!isClockTime(operation.workStart) && !isClockTime(operation.workEnd))) return false
+      setAssistantWorkScheduleDraft({ start, end })
+      setShowWorkScheduleSettings(true)
+      return true
+    }
+
+    if (operation.type === 'navigate') {
+      const target = activeNavItems.find(
+        (item) => item.id === operation.targetSection || item.label === operation.targetSection,
+      )
+      if (!target) return false
+      const targetProject =
+        assistantProjects.find((item) => item.id === operation.projectId) ??
+        assistantProjects.find((item) => item.name.trim() === operation.projectName.trim())
+      if (targetProject) setSelectedProjectId(targetProject.id)
+      setSearchQuery('')
+      setSection(target.id)
+      return true
+    }
+
+    if (operation.type === 'update_task') {
+      const taskById = assistantEditableTaskIds.has(operation.taskId)
+        ? appTasks.find((task) => task.id === operation.taskId)
+        : undefined
+      const matchingTasks = assistantEditableTasks.filter((task) => {
+        const projectMatches =
+          !operation.projectId && !operation.projectName
+            ? true
+            : task.projectId === operation.projectId || task.project.trim() === operation.projectName.trim()
+        const taskMatches =
+          (!operation.taskTitle && !operation.workType) ||
+          task.title.trim() === operation.taskTitle.trim() ||
+          task.workType === operation.workType
+        return projectMatches && taskMatches
+      })
+      const task = taskById ?? (matchingTasks.length === 1 ? matchingTasks[0] : null)
+      if (!task || !taskStatusOptions.includes(operation.taskStatus as TaskStatus)) return false
+      setAssistantTaskEditDraft({
+        taskId: task.id,
+        status: operation.taskStatus as TaskStatus,
+      })
+      return true
+    }
+
     const project =
       appProjects.find((item) => item.id === operation.projectId) ??
       appProjects.find((item) => item.name.trim() === operation.projectName.trim())
     if (!project || isArchivedProject(project)) return false
-    const canEditProject =
-      role === 'controller' ||
-      role === 'admin' ||
-      (role === 'manager' && Boolean(currentUser) && project.manager === currentUser)
-    if (!canEditProject) return false
+    if (!assistantEditableProjects.some((item) => item.id === project.id)) return false
     if (operation.type === 'assign_task' && !canEditProjectTaskBoard) return false
 
     const manager = activeStaffMembers.some((member) => member.name === operation.manager && canManageProject(member))
@@ -3015,6 +3131,9 @@ function App() {
     const assignmentAssignee = activeStaffMembers.some((member) => member.name === operation.assignee)
       ? operation.assignee
       : ''
+    const healthStatus = projectHealthOptions.find(
+      (item) => item.value === operation.healthStatus || item.label === operation.healthStatus,
+    )?.value
 
     setSearchQuery('')
     setFilterStatus('all')
@@ -3024,6 +3143,7 @@ function App() {
     setAssistantProjectEditDraft({
       stage,
       workStatus,
+      healthStatus,
       due: operation.deliveryDate || undefined,
       calendarTitle: operation.calendarTitle || undefined,
       manager,
@@ -3480,7 +3600,12 @@ function App() {
             : []
         }
         calendarProjects={assistantCalendarProjects}
-        staffMembers={activeStaffMembers}
+        staffMembers={assistantStaffMembers}
+        editableProjectIds={assistantEditableProjects.map((project) => project.id)}
+        editableTaskIds={assistantEditableTasks.map((task) => task.id)}
+        navigableSections={activeNavItems.map((item) => ({ id: item.id, label: item.label }))}
+        weatherLocation={weatherLocation}
+        workSchedule={workSchedule}
         canCreateProject={canCreateProject}
         workflowOptions={appWorkflowOptions}
         canEditProjectTaskBoard={canEditProjectTaskBoard}
@@ -3540,6 +3665,19 @@ function App() {
           onDelete={handleDeleteProject}
         />
       )}
+      {assistantTaskEditDraft && assistantTaskToEdit && (
+        <AssistantTaskStatusModal
+          task={assistantTaskToEdit}
+          status={assistantTaskEditDraft.status}
+          onClose={() => setAssistantTaskEditDraft(null)}
+          onSave={(status) => {
+            if (assistantEditableTaskIds.has(assistantTaskToEdit.id)) {
+              handleUpdateTaskStatus(assistantTaskToEdit.id, status)
+            }
+            setAssistantTaskEditDraft(null)
+          }}
+        />
+      )}
       {handoffProject && (
         <DepartedHandoffModal
           project={handoffProject.project}
@@ -3583,15 +3721,29 @@ function App() {
       {showWeatherSettings && (
         <WeatherSettingsModal
           currentLocation={weatherLocation}
-          onClose={() => setShowWeatherSettings(false)}
-          onSelect={selectWeatherLocation}
+          initialQuery={assistantWeatherQuery}
+          onClose={() => {
+            setShowWeatherSettings(false)
+            setAssistantWeatherQuery('')
+          }}
+          onSelect={(location) => {
+            selectWeatherLocation(location)
+            setAssistantWeatherQuery('')
+          }}
         />
       )}
       {showWorkScheduleSettings && (
         <WorkScheduleSettingsModal
           schedule={workSchedule}
-          onClose={() => setShowWorkScheduleSettings(false)}
-          onSave={updateWorkSchedule}
+          draft={assistantWorkScheduleDraft}
+          onClose={() => {
+            setShowWorkScheduleSettings(false)
+            setAssistantWorkScheduleDraft(null)
+          }}
+          onSave={(schedule) => {
+            updateWorkSchedule(schedule)
+            setAssistantWorkScheduleDraft(null)
+          }}
         />
       )}
       {showWorkflowOptionsModal && (
@@ -3631,24 +3783,87 @@ function App() {
   )
 }
 
+function AssistantTaskStatusModal({
+  task,
+  status,
+  onClose,
+  onSave,
+}: {
+  task: Task
+  status: TaskStatus
+  onClose: () => void
+  onSave: (status: TaskStatus) => void
+}) {
+  const [nextStatus, setNextStatus] = useState(status)
+
+  return (
+    <div className="modalBackdrop" role="presentation" onMouseDown={onClose}>
+      <section className="financeEntryModal assistantTaskStatusModal" role="dialog" aria-modal="true" aria-label="确认任务状态" onMouseDown={(event) => event.stopPropagation()}>
+        <header>
+          <div>
+            <span className="eyebrow">助理操作</span>
+            <h2>确认任务状态</h2>
+          </div>
+          <button type="button" onClick={onClose} title="关闭">
+            <X size={18} />
+          </button>
+        </header>
+
+        <div className="assistantTaskStatusBody">
+          <div>
+            <span>项目</span>
+            <strong>{task.project}</strong>
+          </div>
+          <div>
+            <span>任务</span>
+            <strong>{task.title}</strong>
+          </div>
+          <div>
+            <span>负责人</span>
+            <strong>{task.assignee}</strong>
+          </div>
+          <label>
+            <span>任务状态</span>
+            <select value={nextStatus} onChange={(event) => setNextStatus(event.target.value as TaskStatus)}>
+              {taskStatusOptions.map((item) => (
+                <option key={item} value={item}>
+                  {item}
+                </option>
+              ))}
+            </select>
+          </label>
+        </div>
+
+        <footer>
+          <span className="settingsFooterNote">保存后会按团队模式的同步规则更新。</span>
+          <div className="settingsFooterActions">
+            <button type="button" onClick={onClose}>取消</button>
+            <button className="settingsPrimaryButton" type="button" onClick={() => onSave(nextStatus)}>确认修改</button>
+          </div>
+        </footer>
+      </section>
+    </div>
+  )
+}
+
 function WeatherSettingsModal({
   currentLocation,
+  initialQuery = '',
   onClose,
   onSelect,
 }: {
   currentLocation: WeatherLocation | null
+  initialQuery?: string
   onClose: () => void
   onSelect: (location: WeatherLocation) => void
 }) {
-  const [query, setQuery] = useState(currentLocation?.name ?? '')
+  const [query, setQuery] = useState(initialQuery || currentLocation?.name || '')
   const [results, setResults] = useState<WeatherLocation[]>([])
   const [status, setStatus] = useState<'idle' | 'searching' | 'done' | 'error'>('idle')
   const [error, setError] = useState('')
 
-  async function handleSearch() {
-    const cleanQuery = query.trim()
-    if (!cleanQuery || status === 'searching') return
-
+  const runSearch = useCallback(async (cleanQuery: string) => {
+    if (!cleanQuery) return
     setStatus('searching')
     setError('')
     try {
@@ -3660,6 +3875,18 @@ function WeatherSettingsModal({
       setStatus('error')
       setError('城市搜索失败，请检查网络后重试。')
     }
+  }, [])
+
+  useEffect(() => {
+    const cleanQuery = initialQuery.trim()
+    if (!cleanQuery) return
+    void runSearch(cleanQuery)
+  }, [initialQuery, runSearch])
+
+  async function handleSearch() {
+    const cleanQuery = query.trim()
+    if (!cleanQuery || status === 'searching') return
+    await runSearch(cleanQuery)
   }
 
   return (
@@ -3668,7 +3895,7 @@ function WeatherSettingsModal({
         <header>
           <div>
             <span className="eyebrow">天气</span>
-            <h2>设置所在城市</h2>
+            <h2>{initialQuery ? '确认助理选择城市' : '设置所在城市'}</h2>
           </div>
           <button type="button" onClick={onClose} title="关闭">
             <X size={18} />
@@ -3730,15 +3957,17 @@ function WeatherSettingsModal({
 
 function WorkScheduleSettingsModal({
   schedule,
+  draft,
   onClose,
   onSave,
 }: {
   schedule: WorkSchedule | null
+  draft: WorkSchedule | null
   onClose: () => void
   onSave: (schedule: WorkSchedule) => void
 }) {
-  const [start, setStart] = useState(schedule?.start ?? '09:00')
-  const [end, setEnd] = useState(schedule?.end ?? '18:00')
+  const [start, setStart] = useState(draft?.start ?? schedule?.start ?? '09:00')
+  const [end, setEnd] = useState(draft?.end ?? schedule?.end ?? '18:00')
   const nextSchedule = { start, end }
   const isValid = isClockTime(start) && isClockTime(end) && start !== end
   const crossesMidnight = isValid && clockTimeToMinutes(end) < clockTimeToMinutes(start)
@@ -3749,7 +3978,7 @@ function WorkScheduleSettingsModal({
         <header>
           <div>
             <span className="eyebrow">当前时间</span>
-            <h2>设置上下班时间</h2>
+            <h2>{draft ? '确认助理设置时间' : '设置上下班时间'}</h2>
           </div>
           <button type="button" onClick={onClose} title="关闭">
             <X size={18} />
@@ -5029,7 +5258,7 @@ function Projects({
   const departedStaff = staffMembers.filter((member) => member.status === '离职')
   const assignableStaff = useMemo(() => staffMembers.filter(isAssignableStaff), [staffMembers])
   const selectedDepartedNames = selectedProject ? departedPeopleForProject(selectedProject, allTasks, allCalendarItems, departedStaff) : []
-  const selectedProjectProgress = selectedProject ? progressForProject(selectedProject, selectedProjectTasks) : 0
+  const selectedProjectProgress = selectedProject ? progressForProject(selectedProject, workflowOptions.workflowStages) : 0
   const canDeleteSelectedProject = selectedProject ? canDeleteProject(selectedProject) : false
 
   async function selectTaskEvidenceFolder(task: Task) {
@@ -5458,10 +5687,12 @@ function NewProjectModal({
     setType(cleanName)
   }
 
-  function addCustomCustomer(customerName: string) {
+  function addCustomCustomer(customerName: string, provinceName = province) {
+    const cleanProvince = provinceName.trim()
     const cleanName = customerName.trim()
-    if (!cleanName || !province) return
-    onAddCustomer(province, cleanName)
+    if (!cleanProvince || !cleanName) return
+    onAddCustomer(cleanProvince, cleanName)
+    setProvince(cleanProvince)
     setClient(cleanName)
   }
 
@@ -5770,7 +6001,7 @@ function CustomerPicker({
   onProvinceSelect: (province: string) => void
   onClientSelect: (client: string) => void
   onAddCustomProvince: (provinceName: string) => void
-  onAddCustomCustomer: (customerName: string) => void
+  onAddCustomCustomer: (customerName: string, provinceName?: string) => void
   onUpdateLabel: (field: keyof CustomerFieldLabels, value: string) => void
   onDeleteCustomer: (customerName: string, replacementName?: string) => string | null
 }) {
@@ -5779,9 +6010,14 @@ function CustomerPicker({
   const [replacementCustomer, setReplacementCustomer] = useState('')
 
   function addCustomer() {
+    const cleanProvince = province || customProvinceName.trim()
     const cleanName = client.trim()
-    if (!province || !cleanName) return
-    onAddCustomCustomer(cleanName)
+    if (!cleanProvince || !cleanName) return
+    if (!province) {
+      onAddCustomProvince(cleanProvince)
+      setCustomProvinceName('')
+    }
+    onAddCustomCustomer(cleanName, cleanProvince)
     onClientSelect(cleanName)
   }
 
@@ -5861,9 +6097,13 @@ function CustomerPicker({
         <input
           value={client}
           onChange={(event) => onClientSelect(event.target.value)}
-          placeholder={province ? `添加自定义${labels.secondary}` : `先选择${labels.primary}`}
+          placeholder={province || customProvinceName.trim() ? `添加自定义${labels.secondary}` : `先选择或填写${labels.primary}`}
         />
-        <button type="button" onClick={addCustomer} disabled={!province || !client.trim() || customers.includes(client.trim())}>
+        <button
+          type="button"
+          onClick={addCustomer}
+          disabled={(!province && !customProvinceName.trim()) || !client.trim() || customers.includes(client.trim())}
+        >
           添加{labels.secondary}
         </button>
         {canDelete && (
@@ -5953,7 +6193,9 @@ function ProjectEditModal({
     draft?.calendarTitle ?? project.calendarTitle ?? milestoneTitleFrom(project.nextMilestone),
   )
   const [workStatus, setWorkStatus] = useState<WorkStatus>(draft?.workStatus ?? project.workStatus)
-  const [projectStatus, setProjectStatus] = useState<ProjectHealthStatus>(() => projectHealthStatus(project))
+  const [projectStatus, setProjectStatus] = useState<ProjectHealthStatus>(
+    () => draft?.healthStatus ?? projectHealthStatus(project),
+  )
   const [due, setDue] = useState(draft?.due ?? project.due)
   const [taskDrafts, setTaskDrafts] = useState<Task[]>(() => {
     const normalizedTasks = normalizeTaskAssigneesForStaff(projectTasks, assignableStaff)
@@ -6622,7 +6864,9 @@ function CalendarView({
   const [dragTargetDate, setDragTargetDate] = useState<string | null>(null)
   const [moveNotice, setMoveNotice] = useState<CalendarMoveNotice | null>(null)
   const [dayPopover, setDayPopover] = useState<CalendarDayPopoverState | null>(null)
+  const openDayPopoverDate = dayPopover?.date
   const dragSessionRef = useRef<CalendarDragSession | null>(null)
+  const dayPopoverDragRef = useRef<CalendarPopoverDragSession | null>(null)
   const dragHoldTimerRef = useRef<number | null>(null)
   const suppressCalendarClickRef = useRef(false)
   const effectiveSelectedProjectId = calendarProjects.some((project) => project.id === selectedProjectId)
@@ -6666,7 +6910,7 @@ function CalendarView({
   }, [moveNotice])
 
   useEffect(() => {
-    if (!dayPopover) return
+    if (!openDayPopoverDate) return
 
     const closeOnOutsidePointer = (event: PointerEvent) => {
       const target = event.target
@@ -6683,11 +6927,44 @@ function CalendarView({
     window.addEventListener('keydown', closeOnEscape)
     window.addEventListener('resize', closeOnResize)
     return () => {
+      dayPopoverDragRef.current = null
       window.removeEventListener('pointerdown', closeOnOutsidePointer, true)
       window.removeEventListener('keydown', closeOnEscape)
       window.removeEventListener('resize', closeOnResize)
     }
-  }, [dayPopover])
+  }, [openDayPopoverDate])
+
+  useEffect(() => {
+    const movePopover = (event: PointerEvent) => {
+      const session = dayPopoverDragRef.current
+      if (!session || session.pointerId !== event.pointerId) return
+
+      event.preventDefault()
+      const popover = document.querySelector<HTMLElement>('.calendarDayPopover')
+      const popoverWidth = popover?.offsetWidth ?? Math.min(360, window.innerWidth - 32)
+      const popoverHeight = popover?.offsetHeight ?? 184
+      const maxLeft = Math.max(8, window.innerWidth - popoverWidth - 8)
+      const maxTop = Math.max(8, window.innerHeight - popoverHeight - 8)
+      const left = Math.min(maxLeft, Math.max(8, session.left + event.clientX - session.startX))
+      const top = Math.min(maxTop, Math.max(8, session.top + event.clientY - session.startY))
+
+      setDayPopover((current) => (current?.date === session.date ? { ...current, left, top } : current))
+    }
+
+    const finishPopoverDrag = (event: PointerEvent) => {
+      const session = dayPopoverDragRef.current
+      if (session?.pointerId === event.pointerId) dayPopoverDragRef.current = null
+    }
+
+    window.addEventListener('pointermove', movePopover, true)
+    window.addEventListener('pointerup', finishPopoverDrag, true)
+    window.addEventListener('pointercancel', finishPopoverDrag, true)
+    return () => {
+      window.removeEventListener('pointermove', movePopover, true)
+      window.removeEventListener('pointerup', finishPopoverDrag, true)
+      window.removeEventListener('pointercancel', finishPopoverDrag, true)
+    }
+  }, [])
 
   useEffect(
     () => () => {
@@ -6823,7 +7100,7 @@ function CalendarView({
     if (!cell) return
 
     const cellBounds = cell.getBoundingClientRect()
-    const popoverWidth = 360
+    const popoverWidth = Math.min(360, window.innerWidth - 32)
     const popoverHeight = Math.min(420, Math.max(184, 74 + itemCount * 62))
     const left = Math.min(Math.max(16, cellBounds.left), window.innerWidth - popoverWidth - 16)
     const belowTop = cellBounds.bottom + 8
@@ -6833,6 +7110,20 @@ function CalendarView({
         : Math.max(16, cellBounds.top - popoverHeight - 8)
 
     setDayPopover({ date, left, top })
+  }
+
+  function handleCalendarPopoverPointerDown(event: ReactPointerEvent<HTMLElement>) {
+    if (!dayPopover) return
+    const target = event.target
+    if (target instanceof Element && target.closest('button')) return
+
+    dayPopoverDragRef.current = {
+      ...dayPopover,
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+    }
+    event.preventDefault()
   }
 
   return (
@@ -6963,14 +7254,16 @@ function CalendarView({
             )
           })}
         </div>
-        {dayPopover && dayPopoverItems.length > 0 && (
+        {dayPopover && dayPopoverItems.length > 0 && createPortal(
           <div
             className={draggingPlan ? 'calendarDayPopover dragHidden' : 'calendarDayPopover'}
             role="dialog"
             aria-label={`${formatMonthDay(new Date(`${dayPopover.date}T00:00:00`))}全部安排`}
             style={{ left: dayPopover.left, top: dayPopover.top }}
           >
-            <header>
+            <header
+              onPointerDown={handleCalendarPopoverPointerDown}
+            >
               <div>
                 <span>{formatMonthDay(new Date(`${dayPopover.date}T00:00:00`))}</span>
                 <strong>{dayPopoverItems.length} 个安排</strong>
@@ -7021,7 +7314,8 @@ function CalendarView({
                 )
               })}
             </div>
-          </div>
+          </div>,
+          document.body,
         )}
       </section>
 
@@ -8146,7 +8440,7 @@ function FinanceView({
   const totalContract = visibleRecords.reduce((sum, record) => sum + record.contractAmount, 0)
   const totalReceived = visibleRecords.reduce((sum, record) => sum + record.receivedAmount, 0)
   const totalUnreceived = totalContract - totalReceived
-  const overdueCount = visibleRecords.filter((record) => record.settlementStatus === '逾期').length
+  const overdueCount = visibleRecords.filter((record) => financeSettlementStatus(record) === '逾期').length
   const pendingInvoiceCount = visibleRecords.filter((record) => record.contractAmount > 0 && record.invoiceStatus !== '已开票').length
   const selectedRecord =
     visibleRecords.find((record) => record.projectId === selectedFinanceProjectId) ?? visibleRecords[0] ?? null
@@ -8277,7 +8571,9 @@ function FinanceView({
   function updateSelectedFinanceRecord(patch: Partial<FinanceRecord>) {
     if (!selectedRecord) return
     setRecords((current) =>
-      current.map((record) => (record.projectId === selectedRecord.projectId ? { ...record, ...patch } : record)),
+      current.map((record) =>
+        record.projectId === selectedRecord.projectId ? syncFinanceSettlementStatus({ ...record, ...patch }) : record,
+      ),
     )
   }
 
@@ -8304,7 +8600,8 @@ function FinanceView({
             const project = projects.find((item) => item.id === record.projectId)
             const unpaid = record.contractAmount - record.receivedAmount
             const receivedRatio = record.contractAmount > 0 ? Math.round((record.receivedAmount / record.contractAmount) * 100) : 0
-            const settlementText = record.contractAmount > 0 ? record.settlementStatus : '待录入'
+            const settlementStatus = financeSettlementStatus(record)
+            const settlementText = record.contractAmount > 0 ? settlementStatus : '待录入'
 
             return (
               <button
@@ -8331,7 +8628,7 @@ function FinanceView({
                   <span>未收</span>
                   <strong>{formatMoney(unpaid)}</strong>
                 </div>
-                <span className={`financeStatus ${record.contractAmount > 0 ? financeTone(record.settlementStatus) : 'wait'}`}>{settlementText}</span>
+                <span className={`financeStatus ${record.contractAmount > 0 ? financeTone(settlementStatus) : 'wait'}`}>{settlementText}</span>
                 <div className="miniProgress" title={`已收 ${receivedRatio}%`}>
                   <span style={{ width: `${receivedRatio}%` }} />
                 </div>
@@ -8787,6 +9084,11 @@ function CrewFlowAssistant({
   financeRecords,
   calendarProjects,
   staffMembers,
+  editableProjectIds,
+  editableTaskIds,
+  navigableSections,
+  weatherLocation,
+  workSchedule,
   workflowOptions,
   canCreateProject,
   canEditProjectTaskBoard,
@@ -8802,6 +9104,11 @@ function CrewFlowAssistant({
   financeRecords: FinanceRecord[]
   calendarProjects: Project[]
   staffMembers: StaffMember[]
+  editableProjectIds: string[]
+  editableTaskIds: string[]
+  navigableSections: Array<{ id: Section; label: string }>
+  weatherLocation: WeatherLocation | null
+  workSchedule: WorkSchedule | null
   workflowOptions: WorkflowOptions
   canCreateProject: boolean
   canEditProjectTaskBoard: boolean
@@ -9023,7 +9330,16 @@ function CrewFlowAssistant({
             staffMembers,
           ),
           workflowOptions,
+          usageGuide: userGuideMarkdown,
           editableCalendarProjectIds: calendarProjects.map((project) => project.id),
+          editableProjectIds,
+          editableTaskIds,
+          navigableSections,
+          localSettings: {
+            weatherCity: weatherLocation?.name ?? '',
+            workStart: workSchedule?.start ?? '',
+            workEnd: workSchedule?.end ?? '',
+          },
           pendingCalendarCandidates: candidates.map((candidate) => ({
             projectId: candidate.projectId,
             date: candidate.date,
@@ -9033,8 +9349,12 @@ function CrewFlowAssistant({
           })),
           capabilities: {
             canCreateProject,
-            canEditProject: role === 'controller' || role === 'admin' || role === 'manager',
+            canEditProject: editableProjectIds.length > 0,
             canAssignTask: canEditProjectTaskBoard,
+            canUpdateTask: editableTaskIds.length > 0,
+            canUpdateWeather: true,
+            canUpdateWorkSchedule: true,
+            canNavigate: navigableSections.length > 0,
           },
         },
         task: 'assistant_route',
@@ -9075,7 +9395,7 @@ function CrewFlowAssistant({
             ...current,
             {
               from: 'assistant',
-              text: opened ? response.message : '当前账号无法打开这项操作，或目标项目已经归档。',
+              text: opened ? response.message : '当前账号无法准备这项操作、目标不存在，或需要补充更明确的信息。',
             },
           ])
           if (opened) setOpen(false)
@@ -9680,12 +10000,15 @@ function assistantContext(
       due: project.due,
       progress: project.progress,
       status: projectDisplayStatus(project),
+      healthStatus: projectHealthStatus(project),
     }))
     context.tasks = tasks.slice(0, 600).map((task) => ({
       id: task.id,
       projectId: task.projectId,
       project: task.project,
       title: task.title,
+      workType: task.workType,
+      assignmentMode: task.assignmentMode,
       assignee: task.assignee,
       due: task.due,
       status: task.status,
@@ -9879,7 +10202,7 @@ function assistantReply(
   const activeTasks = tasks.filter((task) => task.status === '制作中' || task.status === '未开始')
   const financeRisks = financeRecords.filter((record) => record.settlementStatus === '逾期' || record.invoiceStatus !== '已开票')
   const lowerPrompt = prompt.toLowerCase()
-  const canAnswerLocally = /新建项目|创建项目|立项|录入项目|款|开票|财务|交付|日程|撞期|任务|项目|风险|反馈|优先|今天|安排|进度|状态|延期|归档|负责人|项目经理|拍摄|素材|收款|合同/.test(prompt)
+  const canAnswerLocally = /新建项目|创建项目|立项|录入项目|款|开票|财务|交付|日程|撞期|任务|项目|风险|反馈|优先|今天|安排|进度|状态|延期|归档|负责人|项目经理|拍摄|素材|收款|合同|怎么用|如何使用|使用说明|单人模式|团队模式|数据保存|权限|账号管理|人员管理|选项管理|软件更新/.test(prompt)
 
   if (/智障|傻|乱答|不对|驴唇不对马嘴/.test(prompt)) {
     return [
@@ -9894,6 +10217,14 @@ function assistantReply(
       '这个问题我现在还不能准确回答。',
       '你可以这样问我：今天优先处理什么、哪些项目需要关注、我有哪些任务、哪些款项要跟进，或者让我新建项目。',
       '切换到在线 AI 或本地模型后，还可以粘贴聊天记录并提取交付日历候选。',
+    ].join('\n')
+  }
+
+  if (/怎么用|如何使用|使用说明|单人模式|团队模式|数据保存|权限|账号管理|人员管理|选项管理|软件更新/.test(prompt)) {
+    return [
+      'CrewFlow 的常用顺序是：选择单人或团队模式，登录后配置人员与账号，再新建项目、设置任务和交付节点，最后在任务面板、交付日历、团队负载和财务页面持续更新。',
+      '单人模式的数据只保存在当前电脑；团队模式由一台常驻电脑开启 CrewFlow Server，其他电脑填写服务地址连接。',
+      '左侧底部可以随时打开“使用说明”，里面有安装、角色权限、数据备份、团队部署和更新方法。',
     ].join('\n')
   }
 
@@ -10001,9 +10332,25 @@ function financeTone(status: FinanceRecord['settlementStatus']) {
   return 'ok'
 }
 
+function financeSettlementStatus(record: FinanceRecord): FinanceRecord['settlementStatus'] {
+  const unpaidAmount = Math.max(0, record.contractAmount - record.receivedAmount)
+  if (record.settlementStatus === '逾期' && unpaidAmount > 0) return '逾期'
+  if (record.contractAmount <= 0) return record.settlementStatus
+  if (record.invoiceStatus !== '已开票') return '待开票'
+  if (unpaidAmount > 0) return '待收款'
+  return '正常'
+}
+
+function syncFinanceSettlementStatus(record: FinanceRecord): FinanceRecord {
+  return {
+    ...record,
+    settlementStatus: financeSettlementStatus(record),
+  }
+}
+
 function archiveFinanceState(record: FinanceRecord) {
   if (record.contractAmount <= 0) return { label: '财务待录入', tone: 'wait' }
-  if (record.settlementStatus === '逾期') return { label: '财务逾期', tone: 'danger' }
+  if (financeSettlementStatus(record) === '逾期') return { label: '财务逾期', tone: 'danger' }
 
   const clientSettled = record.clientSettlementStatus === '已结算' || record.receivedAmount >= record.contractAmount
   const outsourceSettled = record.payableAmount <= 0 || record.outsourcedSettlementStatus === '已结算'
@@ -10060,11 +10407,11 @@ function ensureFinanceRecordsForProjects(records: FinanceRecord[], projects: Pro
 }
 
 function normalizeFinanceRecord(record: FinanceRecord): FinanceRecord {
-  return {
+  return syncFinanceSettlementStatus({
     ...createBlankFinanceRecord(record.projectId),
     ...record,
     comparisonStatus: record.comparisonStatus ?? '待制作',
-  }
+  })
 }
 
 function resetProjectDataIfNeeded() {
@@ -10227,12 +10574,12 @@ function projectDisplayStatus(project: Project, today = new Date()): ProjectStat
   return 'normal'
 }
 
-function progressForProject(project: Project, projectTasks: Task[]) {
+function progressForProject(project: Project, workflowStages: string[]) {
   if (project.workStatus === '已完成' || isArchivedProject(project)) return 100
-  if (projectTasks.length === 0) return project.progress
+  const currentStageIndex = workflowStages.indexOf(project.stage)
+  if (currentStageIndex < 0 || workflowStages.length === 0) return Math.min(100, Math.max(0, project.progress))
 
-  const completedTasks = projectTasks.filter((task) => task.status === '已完成').length
-  return Math.round((completedTasks / projectTasks.length) * 100)
+  return Math.round(((currentStageIndex + 1) / workflowStages.length) * 100)
 }
 
 function projectPriorityScore(project: Project) {
@@ -10768,22 +11115,22 @@ function updateFinanceRecord(record: FinanceRecord, action: FinanceAction, entry
 
   if (action === 'payment') {
     const receivedAmount = record.receivedAmount + amount
-    return {
+    return syncFinanceSettlementStatus({
       ...record,
       receivedAmount,
       clientSettlementStatus: receivedAmount >= record.contractAmount ? '已结算' : '部分结算',
       settlementStatus: receivedAmount >= record.contractAmount ? '正常' : '待收款',
-    }
+    })
   }
 
   if (action === 'invoice') {
     const invoiceAmount = record.invoiceAmount + amount
-    return {
+    return syncFinanceSettlementStatus({
       ...record,
       invoiceAmount,
       invoiceStatus: invoiceAmount >= record.contractAmount ? '已开票' : '部分开票',
       settlementStatus: invoiceAmount >= record.contractAmount ? record.settlementStatus : '待开票',
-    }
+    })
   }
 
   return {
@@ -10796,21 +11143,21 @@ function reverseFinanceRecord(record: FinanceRecord, action: FinanceAction, entr
 
   if (action === 'payment') {
     const receivedAmount = Math.max(0, record.receivedAmount - amount)
-    return {
+    return syncFinanceSettlementStatus({
       ...record,
       receivedAmount,
       clientSettlementStatus: receivedAmount <= 0 ? '未结算' : receivedAmount >= record.contractAmount ? '已结算' : '部分结算',
       settlementStatus: receivedAmount >= record.contractAmount ? '正常' : '待收款',
-    }
+    })
   }
 
   if (action === 'invoice') {
     const invoiceAmount = Math.max(0, record.invoiceAmount - amount)
-    return {
+    return syncFinanceSettlementStatus({
       ...record,
       invoiceAmount,
       invoiceStatus: invoiceAmount <= 0 ? '未开票' : invoiceAmount >= record.contractAmount ? '已开票' : '部分开票',
-    }
+    })
   }
 
   return record

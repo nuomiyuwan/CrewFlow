@@ -2187,9 +2187,9 @@ h1 {
 
 .calendarDayPopover {
   position: fixed;
-  z-index: 45;
+  z-index: 100;
   display: flex;
-  width: 360px;
+  width: min(360px, calc(100vw - 32px));
   max-height: min(420px, calc(100vh - 32px));
   flex-direction: column;
   border: 1px solid rgba(128, 233, 247, 0.34);
@@ -2219,7 +2219,14 @@ h1 {
   gap: 12px;
   flex: 0 0 auto;
   border-bottom: 1px solid rgba(180, 202, 216, 0.16);
+  cursor: grab;
   padding: 12px 12px 11px 14px;
+  touch-action: none;
+  -webkit-app-region: no-drag;
+}
+
+.calendarDayPopover > header:active {
+  cursor: grabbing;
 }
 
 .calendarDayPopover > header > div {
@@ -4944,17 +4951,57 @@ h1 {
 }
 
 .weatherSettingsModal,
-.workScheduleSettingsModal {
+.workScheduleSettingsModal,
+.assistantTaskStatusModal {
   width: min(560px, calc(100vw - 48px));
   max-height: calc(100vh - 48px);
 }
 
 .weatherSettingsBody,
-.workScheduleSettingsBody {
+.workScheduleSettingsBody,
+.assistantTaskStatusBody {
   display: grid;
   gap: 14px;
   min-height: 0;
   padding: 18px 20px 20px;
+}
+
+.assistantTaskStatusBody > div,
+.assistantTaskStatusBody > label {
+  display: grid;
+  grid-template-columns: 110px minmax(0, 1fr);
+  align-items: center;
+  gap: 12px;
+  min-height: 48px;
+  border: 1px solid rgba(180, 202, 216, 0.16);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.04);
+  padding: 10px 13px;
+}
+
+.assistantTaskStatusBody span {
+  color: rgba(128, 233, 247, 0.88);
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.assistantTaskStatusBody strong {
+  min-width: 0;
+  overflow: hidden;
+  color: #f7fbff;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.assistantTaskStatusBody select {
+  min-width: 0;
+  min-height: 38px;
+  border: 1px solid rgba(180, 202, 216, 0.18);
+  border-radius: 10px;
+  outline: 0;
+  color: #f4f8ff;
+  background: rgba(18, 26, 39, 0.78);
+  padding: 0 10px;
 }
 
 .weatherCurrentLocation,
@@ -5990,9 +6037,16 @@ h1 {
   }
 
   .weatherSettingsModal footer,
-  .workScheduleSettingsModal footer {
+  .workScheduleSettingsModal footer,
+  .assistantTaskStatusModal footer {
     align-items: flex-start;
     flex-direction: column;
+  }
+
+  .assistantTaskStatusBody > div,
+  .assistantTaskStatusBody > label {
+    grid-template-columns: 1fr;
+    gap: 5px;
   }
 
   .holidayEditor {
