@@ -2,6 +2,24 @@
 
 All notable changes to CrewFlow are documented in this file.
 
+## 1.4.2 - 2026-08-03
+
+### Added
+
+- Added reusable online-model profiles for CrewFlow Assistant. A tested configuration can now be saved and switched from the model selector without re-entering its API endpoint, model name, or key.
+- Added a completion state to Delivery Calendar plans. Managers can mark each plan complete or restore it to pending directly from the selected project's schedule.
+
+### Improved
+
+- Kept completed calendar plans visible as history while excluding them from upcoming-delivery counts and risk calculations.
+- Added completion state to assistant calendar context, so online and local models can distinguish completed plans from pending work.
+
+### Fixed
+
+- Recalculated project health immediately when a calendar plan is completed, restored, moved, edited, or deleted.
+- Only mark a project at risk when a non-final delivery plan is overdue and still pending. Only mark it overdue when its final delivery plan is overdue and still pending.
+- Reset a plan to pending when its date, title, or project is changed, preventing a completed historical plan from being treated as a completed new plan.
+
 ## 1.4.1 - 2026-07-31
 
 ### Added

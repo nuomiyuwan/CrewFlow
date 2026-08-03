@@ -1433,6 +1433,15 @@ button.pathBox {
   background: rgba(129, 237, 247, 0.12);
 }
 
+.calendarEvent.completed {
+  border-color: rgba(104, 220, 159, 0.28);
+  background: rgba(104, 220, 159, 0.08);
+}
+
+.calendarEvent.completed strong {
+  color: rgba(205, 239, 220, 0.68);
+}
+
 .calendarEvents em {
   color: rgba(210, 222, 235, 0.58);
   font-size: 11px;
@@ -1623,6 +1632,23 @@ button.pathBox {
   background: rgba(129, 237, 247, 0.08);
   cursor: pointer;
   padding: 0 10px;
+}
+
+.scheduleItem.completed {
+  border-color: rgba(104, 220, 159, 0.24);
+  background:
+    linear-gradient(145deg, rgba(104, 220, 159, 0.08), rgba(255, 255, 255, 0.035)),
+    rgba(18, 26, 39, 0.66);
+}
+
+.scheduleItem.completed > div:nth-child(2) strong {
+  color: rgba(205, 239, 220, 0.72);
+}
+
+.scheduleActions button.completedAction {
+  border-color: rgba(104, 220, 159, 0.3);
+  color: #a9ecc8;
+  background: rgba(104, 220, 159, 0.1);
 }
 
 .emptySchedule {
@@ -2319,6 +2345,15 @@ h1 {
 .calendarDayPopoverItem.active {
   border-color: rgba(142, 238, 251, 0.42);
   background: rgba(129, 237, 247, 0.1);
+}
+
+.calendarDayPopoverItem.completed {
+  border-color: rgba(104, 220, 159, 0.24);
+  background: rgba(104, 220, 159, 0.07);
+}
+
+.calendarDayPopoverItem.completed strong {
+  color: rgba(205, 239, 220, 0.72);
 }
 
 .calendarDayPopoverItem.canDrag {
@@ -3111,6 +3146,35 @@ h1 {
 .assistantCandidate input:focus,
 .assistantCandidate select:focus {
   border-color: rgba(128, 233, 247, 0.58);
+}
+
+.assistantOnlineProfileRow {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 38px;
+  align-items: end;
+  gap: 8px;
+}
+
+.assistantProfileDelete {
+  display: grid;
+  width: 38px;
+  height: 38px;
+  place-items: center;
+  border: 1px solid rgba(225, 106, 126, 0.22);
+  border-radius: 8px;
+  color: rgba(244, 180, 191, 0.82);
+  background: rgba(166, 54, 74, 0.08);
+  cursor: pointer;
+}
+
+.assistantProfileDelete:disabled {
+  cursor: not-allowed;
+  opacity: 0.35;
+}
+
+.assistantProfileDelete:not(:disabled):hover {
+  border-color: rgba(225, 106, 126, 0.48);
+  background: rgba(166, 54, 74, 0.15);
 }
 
 .assistantLocalModelRow {

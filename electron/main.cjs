@@ -24,15 +24,48 @@ function assistantSettingsPath() {
   return path.join(app.getPath('userData'), 'assistant-settings.json')
 }
 
+function cleanAssistantProfileText(value, maxLength) {
+  return typeof value === 'string' ? value.trim().slice(0, maxLength) : ''
+}
+
+function normalizeStoredAssistantProfile(value) {
+  if (!value || typeof value !== 'object') return null
+  const id = cleanAssistantProfileText(value.id, 120)
+  const onlineBaseUrl = cleanAssistantProfileText(value.onlineBaseUrl, 500)
+  const onlineModel = cleanAssistantProfileText(value.onlineModel, 160)
+  if (!id || !onlineBaseUrl || !onlineModel) return null
+  return {
+    id,
+    onlineBaseUrl,
+    onlineModel,
+    encryptedApiKey: cleanAssistantProfileText(value.encryptedApiKey, 12000),
+    updatedAt: cleanAssistantProfileText(value.updatedAt, 40),
+  }
+}
+
+function normalizeStoredAssistantProfiles(value) {
+  if (!Array.isArray(value)) return []
+  const seenIds = new Set()
+  return value
+    .map(normalizeStoredAssistantProfile)
+    .filter((profile) => {
+      if (!profile || seenIds.has(profile.id)) return false
+      seenIds.add(profile.id)
+      return true
+    })
+    .slice(0, 20)
+}
+
 async function readAssistantSettingsFile() {
   try {
     const data = JSON.parse(await fs.promises.readFile(assistantSettingsPath(), 'utf8'))
     return {
       ...normalizeAssistantSettings(data),
       encryptedApiKey: typeof data.encryptedApiKey === 'string' ? data.encryptedApiKey : '',
+      onlineProfiles: normalizeStoredAssistantProfiles(data.onlineProfiles),
     }
   } catch {
-    return { ...DEFAULT_ASSISTANT_SETTINGS, encryptedApiKey: '' }
+    return { ...DEFAULT_ASSISTANT_SETTINGS, encryptedApiKey: '', onlineProfiles: [] }
   }
 }
 
@@ -45,19 +78,57 @@ function decryptAssistantApiKey(encryptedApiKey) {
   }
 }
 
+function assistantApiKeyForSavedSettings(saved) {
+  if (saved.activeOnlineProfileId) {
+    const profile = saved.onlineProfiles.find((item) => item.id === saved.activeOnlineProfileId)
+    if (profile) return decryptAssistantApiKey(profile.encryptedApiKey)
+  }
+  return decryptAssistantApiKey(saved.encryptedApiKey)
+}
+
+function publicAssistantOnlineProfile(profile) {
+  return {
+    id: profile.id,
+    onlineBaseUrl: profile.onlineBaseUrl,
+    onlineModel: profile.onlineModel,
+    hasApiKey: Boolean(decryptAssistantApiKey(profile.encryptedApiKey)),
+  }
+}
+
 async function loadAssistantSettings() {
   const saved = await readAssistantSettingsFile()
-  const { encryptedApiKey, ...settings } = saved
+  const settings = normalizeAssistantSettings(saved)
   return {
     ...settings,
-    hasApiKey: Boolean(decryptAssistantApiKey(encryptedApiKey)),
+    onlineProfiles: saved.onlineProfiles.map(publicAssistantOnlineProfile),
+    hasApiKey: Boolean(assistantApiKeyForSavedSettings(saved)),
     secureStorageAvailable: safeStorage.isEncryptionAvailable(),
   }
 }
 
+async function writeAssistantSettingsFile(settings, encryptedApiKey, onlineProfiles) {
+  const filePath = assistantSettingsPath()
+  const tempPath = `${filePath}.tmp`
+  await fs.promises.mkdir(path.dirname(filePath), { recursive: true })
+  await fs.promises.writeFile(
+    tempPath,
+    JSON.stringify({ ...settings, encryptedApiKey, onlineProfiles }, null, 2),
+    'utf8',
+  )
+  await fs.promises.rename(tempPath, filePath)
+}
+
 async function saveAssistantSettings(payload = {}) {
   const current = await readAssistantSettingsFile()
-  let encryptedApiKey = current.encryptedApiKey
+  let settings = normalizeAssistantSettings(payload.settings)
+  let onlineProfiles = [...current.onlineProfiles]
+  let selectedProfileIndex = onlineProfiles.findIndex((item) => item.id === settings.activeOnlineProfileId)
+  let encryptedApiKey =
+    selectedProfileIndex >= 0
+      ? onlineProfiles[selectedProfileIndex].encryptedApiKey
+      : onlineProfiles.length === 0
+        ? current.encryptedApiKey
+        : ''
   const apiKey = typeof payload.apiKey === 'string' ? payload.apiKey.trim() : ''
 
   if (payload.clearApiKey === true) {
@@ -69,12 +140,42 @@ async function saveAssistantSettings(payload = {}) {
     encryptedApiKey = safeStorage.encryptString(apiKey).toString('base64')
   }
 
-  const settings = normalizeAssistantSettings(payload.settings)
-  const filePath = assistantSettingsPath()
-  const tempPath = `${filePath}.tmp`
-  await fs.promises.mkdir(path.dirname(filePath), { recursive: true })
-  await fs.promises.writeFile(tempPath, JSON.stringify({ ...settings, encryptedApiKey }, null, 2), 'utf8')
-  await fs.promises.rename(tempPath, filePath)
+  if (selectedProfileIndex >= 0 && (payload.clearApiKey === true || apiKey)) {
+    onlineProfiles[selectedProfileIndex] = {
+      ...onlineProfiles[selectedProfileIndex],
+      encryptedApiKey,
+      updatedAt: new Date().toISOString(),
+    }
+  }
+
+  if (payload.saveOnlineProfile === true) {
+    if (settings.mode !== 'online' || !settings.onlineBaseUrl || !settings.onlineModel) {
+      throw new Error('请先填写在线模型地址和模型名称')
+    }
+    if (!encryptedApiKey) throw new Error('请先填写并测试 API Key')
+
+    if (selectedProfileIndex < 0) {
+      selectedProfileIndex = onlineProfiles.findIndex(
+        (item) => item.onlineBaseUrl === settings.onlineBaseUrl && item.onlineModel === settings.onlineModel,
+      )
+    }
+    const profileId =
+      selectedProfileIndex >= 0
+        ? onlineProfiles[selectedProfileIndex].id
+        : `online-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+    const profile = {
+      id: profileId,
+      onlineBaseUrl: settings.onlineBaseUrl,
+      onlineModel: settings.onlineModel,
+      encryptedApiKey,
+      updatedAt: new Date().toISOString(),
+    }
+    if (selectedProfileIndex >= 0) onlineProfiles[selectedProfileIndex] = profile
+    else onlineProfiles = [profile, ...onlineProfiles].slice(0, 20)
+    settings = { ...settings, activeOnlineProfileId: profileId }
+  }
+
+  await writeAssistantSettingsFile(settings, encryptedApiKey, onlineProfiles)
   return loadAssistantSettings()
 }
 
@@ -82,7 +183,27 @@ async function assistantApiKeyForPayload(payload = {}) {
   const temporaryKey = typeof payload.apiKey === 'string' ? payload.apiKey.trim() : ''
   if (temporaryKey) return temporaryKey
   const saved = await readAssistantSettingsFile()
-  return decryptAssistantApiKey(saved.encryptedApiKey)
+  const requestedProfileId = normalizeAssistantSettings(payload.settings).activeOnlineProfileId
+  if (requestedProfileId) {
+    const profile = saved.onlineProfiles.find((item) => item.id === requestedProfileId)
+    return profile ? decryptAssistantApiKey(profile.encryptedApiKey) : ''
+  }
+  if (saved.onlineProfiles.length > 0) return ''
+  return assistantApiKeyForSavedSettings(saved)
+}
+
+async function deleteAssistantOnlineProfile(profileId) {
+  const cleanProfileId = cleanAssistantProfileText(profileId, 120)
+  const current = await readAssistantSettingsFile()
+  const onlineProfiles = current.onlineProfiles.filter((item) => item.id !== cleanProfileId)
+  let settings = normalizeAssistantSettings(current)
+  let encryptedApiKey = current.encryptedApiKey
+  if (settings.activeOnlineProfileId === cleanProfileId) {
+    settings = { ...settings, activeOnlineProfileId: '' }
+    encryptedApiKey = ''
+  }
+  await writeAssistantSettingsFile(settings, encryptedApiKey, onlineProfiles)
+  return loadAssistantSettings()
 }
 
 async function readAppData() {
@@ -310,6 +431,10 @@ if (isTeamServerMode) {
       return saveAssistantSettings(payload)
     })
 
+    ipcMain.handle('assistant-profile:delete', async (_event, profileId) => {
+      return deleteAssistantOnlineProfile(profileId)
+    })
+
     ipcMain.handle('assistant-provider:test', async (_event, payload = {}) => {
       const settings = normalizeAssistantSettings(payload.settings)
       return testAssistantProvider({
@@ -323,7 +448,7 @@ if (isTeamServerMode) {
       const settings = normalizeAssistantSettings(saved)
       return requestAssistant({
         settings,
-        apiKey: decryptAssistantApiKey(saved.encryptedApiKey),
+        apiKey: assistantApiKeyForSavedSettings(saved),
         messages: Array.isArray(payload.messages) ? payload.messages : [],
         context: payload.context && typeof payload.context === 'object' ? payload.context : {},
         task:

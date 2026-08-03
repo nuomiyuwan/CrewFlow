@@ -22,6 +22,7 @@ test('assistant settings default to local rules and keep context private by defa
     mode: 'rules',
     onlineBaseUrl: '',
     onlineModel: '',
+    activeOnlineProfileId: '',
     localBaseUrl: 'http://127.0.0.1:11434',
     localModel: '',
     localThinking: false,
@@ -30,6 +31,7 @@ test('assistant settings default to local rules and keep context private by defa
     fallbackToRules: true,
   })
   assert.equal(normalizeAssistantSettings({ localThinking: true }).localThinking, true)
+  assert.equal(normalizeAssistantSettings({ activeOnlineProfileId: ' profile-1 ' }).activeOnlineProfileId, 'profile-1')
 })
 
 test('assistant provider URLs are normalized safely', () => {

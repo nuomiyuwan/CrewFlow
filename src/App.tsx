@@ -184,10 +184,18 @@ type TeamServiceInfo = {
 }
 
 type AssistantMode = 'rules' | 'online' | 'local'
+type AssistantOnlineProfile = {
+  id: string
+  onlineBaseUrl: string
+  onlineModel: string
+  hasApiKey: boolean
+}
 type AssistantSettings = {
   mode: AssistantMode
   onlineBaseUrl: string
   onlineModel: string
+  activeOnlineProfileId: string
+  onlineProfiles: AssistantOnlineProfile[]
   localBaseUrl: string
   localModel: string
   localThinking: boolean
@@ -197,11 +205,12 @@ type AssistantSettings = {
   hasApiKey: boolean
   secureStorageAvailable: boolean
 }
-type AssistantSettingsDraft = Omit<AssistantSettings, 'hasApiKey' | 'secureStorageAvailable'>
+type AssistantSettingsDraft = Omit<AssistantSettings, 'hasApiKey' | 'secureStorageAvailable' | 'onlineProfiles'>
 type AssistantSettingsPayload = {
   settings: AssistantSettingsDraft
   apiKey?: string
   clearApiKey?: boolean
+  saveOnlineProfile?: boolean
 }
 type AssistantProviderTestResult = {
   ok: boolean
@@ -298,6 +307,7 @@ type DesktopBridge = {
   copyText: (value: string) => Promise<boolean>
   loadAssistantSettings: () => Promise<AssistantSettings>
   saveAssistantSettings: (payload: AssistantSettingsPayload) => Promise<AssistantSettings>
+  deleteAssistantOnlineProfile: (profileId: string) => Promise<AssistantSettings>
   testAssistantProvider: (payload: AssistantSettingsPayload) => Promise<AssistantProviderTestResult>
   requestAssistant: (payload: AssistantRequestPayload) => Promise<AssistantResponse>
 }
@@ -346,6 +356,8 @@ type Task = {
 type CalendarItem = {
   id?: string
   date?: string
+  isFinalDelivery?: boolean
+  completed?: boolean
   projectId: string
   day: number
   time: string
@@ -2149,8 +2161,8 @@ function App() {
     return matchedIds
   }, [roleVisibleCalendarItems, roleVisibleProjects, roleVisibleTasks, searchQuery])
   const filteredProjects = useMemo(
-    () => filterProjects(roleVisibleProjects, searchQuery, filterStatus, filterType, searchMatchedProjectIds, now),
-    [filterStatus, filterType, now, roleVisibleProjects, searchMatchedProjectIds, searchQuery],
+    () => filterProjects(roleVisibleProjects, searchQuery, filterStatus, filterType, searchMatchedProjectIds, now, roleVisibleCalendarItems),
+    [filterStatus, filterType, now, roleVisibleCalendarItems, roleVisibleProjects, searchMatchedProjectIds, searchQuery],
   )
   const activeProjects = useMemo(() => filteredProjects.filter((project) => !isArchivedProject(project)), [filteredProjects])
   const archivedProjects = useMemo(() => filteredProjects.filter(isArchivedProject), [filteredProjects])
@@ -2179,7 +2191,7 @@ function App() {
 
   const selectedProject = activeProjects.find((project) => project.id === selectedProjectId) ?? activeProjects[0] ?? null
   const currentAccountTitle = accountDisplayTitle(currentAccount, appStaffMembers)
-  const riskCount = activeProjects.filter((project) => isProjectAtRisk(project, now)).length
+  const riskCount = activeProjects.filter((project) => isProjectAtRisk(project, now, roleVisibleCalendarItems)).length
   const waitingCount = activeProjects.filter(isWaitingProject).length
   const pendingSettlementCount = activeProjects.filter((project) => {
     const record = appFinanceRecords.find((item) => item.projectId === project.id)
@@ -2686,6 +2698,8 @@ function App() {
     const newCalendarItem: CalendarItem = {
       id: `C-${Date.now().toString().slice(-8)}`,
       date: payload.deliveryDate,
+      isFinalDelivery: true,
+      completed: false,
       projectId,
       day: dueDate.getDate(),
       time: formatMonthDay(dueDate),
@@ -2771,6 +2785,8 @@ function App() {
       {
         id: `C-${Date.now().toString().slice(-8)}`,
         date: deliveryDate,
+        isFinalDelivery: true,
+        completed: false,
         projectId,
         day: dueDate.getDate(),
         time: formatMonthDay(dueDate),
@@ -2832,6 +2848,12 @@ function App() {
         if (item.projectId !== updatedProject.id) return item
 
         const isPrimaryPlan = previousProject ? isPrimaryProjectCalendarItem(item, previousProject) : false
+        const primaryPlanChanged = Boolean(
+          isPrimaryPlan &&
+            previousProject &&
+            (previousProject.due !== updatedProject.due ||
+              (previousProject.calendarTitle?.trim() || previousProject.stage) !== milestoneTitle),
+        )
 
         return {
           ...item,
@@ -2842,6 +2864,7 @@ function App() {
           title: isPrimaryPlan ? milestoneTitle : item.title,
           type: isPrimaryPlan ? updatedProject.stage : item.type,
           owner: item.owner === previousProject?.manager || isPrimaryPlan ? updatedProject.manager : item.owner,
+          completed: primaryPlanChanged ? false : item.completed,
         }
       }),
     )
@@ -2926,6 +2949,8 @@ function App() {
       {
         id: plan.id ?? `C-${Date.now().toString().slice(-8)}`,
         date: plan.date,
+        isFinalDelivery: false,
+        completed: false,
         projectId: plan.projectId,
         day: date.getDate(),
         time: formatMonthDay(date),
@@ -2948,12 +2973,18 @@ function App() {
     const updatesPrimaryTimeline =
       currentItem.projectId === plan.projectId &&
       appProjects.some((item) => item.id === currentItem.projectId && isPrimaryProjectCalendarItem(currentItem, item))
+    const planChanged =
+      currentItem.projectId !== plan.projectId ||
+      dateForCalendarItem(now, currentItem) !== plan.date ||
+      currentItem.title.trim() !== plan.title.trim()
     setAppCalendarItems((current) =>
       current.map((item) =>
         calendarItemKey(item) === itemKey
           ? {
               id: item.id ?? plan.id ?? `C-${Date.now().toString().slice(-8)}`,
               date: plan.date,
+              isFinalDelivery: currentItem.projectId === plan.projectId ? currentItem.isFinalDelivery : false,
+              completed: planChanged ? false : currentItem.completed,
               projectId: plan.projectId,
               day: date.getDate(),
               time: formatMonthDay(date),
@@ -2992,6 +3023,7 @@ function App() {
               date: normalizedTargetDate,
               day: date.getDate(),
               time: formatMonthDay(date),
+              completed: false,
             }
           : item,
       ),
@@ -3001,15 +3033,56 @@ function App() {
     return stableItemId
   }
 
+  function handleToggleCalendarPlanCompleted(itemKey: string) {
+    const currentItem = appCalendarItems.find((item) => calendarItemKey(item) === itemKey)
+    if (!currentItem || !canEditCalendarProject(currentItem.projectId)) return
+
+    setAppCalendarItems((current) =>
+      current.map((item) =>
+        calendarItemKey(item) === itemKey
+          ? {
+              ...item,
+              completed: item.completed !== true,
+            }
+          : item,
+      ),
+    )
+  }
+
   function handleDeleteCalendarPlan(itemKey: string) {
     const currentItem = appCalendarItems.find((item) => calendarItemKey(item) === itemKey)
     if (!currentItem || !canEditCalendarProject(currentItem.projectId)) return
-    const projectPlanCount = appCalendarItems.filter((item) => item.projectId === currentItem.projectId).length
-    if (projectPlanCount <= 1) {
+    const project = appProjects.find((item) => item.id === currentItem.projectId)
+    const projectPlans = appCalendarItems.filter((item) => item.projectId === currentItem.projectId)
+    if (!project) return
+    if (projectPlans.length <= 1) {
       window.alert('每个项目至少需要保留一个交付节点；可以编辑日期和名称，但不能删除最后一条。')
       return
     }
-    setAppCalendarItems((current) => current.filter((item) => calendarItemKey(item) !== itemKey))
+
+    const deletesFinalDelivery = isPrimaryProjectCalendarItem(currentItem, project)
+    const remainingPlans = projectPlans.filter((item) => calendarItemKey(item) !== itemKey)
+    const replacement = deletesFinalDelivery
+      ? [...remainingPlans]
+          .map((item) => ({ item, date: dateForCalendarItem(now, item) }))
+          .filter((entry) => /^\d{4}-\d{2}-\d{2}/.test(entry.date))
+          .sort((left, right) => left.date.localeCompare(right.date))
+          .at(-1)
+      : undefined
+
+    setAppCalendarItems((current) =>
+      current
+        .filter((item) => calendarItemKey(item) !== itemKey)
+        .map((item) =>
+          deletesFinalDelivery && item.projectId === project.id
+            ? {
+                ...item,
+                isFinalDelivery: replacement ? calendarItemKey(item) === calendarItemKey(replacement.item) : false,
+              }
+            : item,
+        ),
+    )
+    if (replacement) syncPrimaryProjectDate(project, replacement.date, replacement.item.title)
   }
 
   function handleReviewAssistantCalendarPlans(plans: ProjectPlanPayload[]) {
@@ -3545,12 +3618,13 @@ function App() {
             onAddPlan={handleAddCalendarPlan}
             onUpdatePlan={handleUpdateCalendarPlan}
             onMovePlan={handleMoveCalendarPlan}
+            onTogglePlanCompleted={handleToggleCalendarPlanCompleted}
             onDeletePlan={handleDeleteCalendarPlan}
             assistantDraft={assistantCalendarDrafts[0] ?? null}
             onAssistantDraftHandled={() => setAssistantCalendarDrafts((current) => current.slice(1))}
           />
         )}
-        {section === 'team' && <TeamLoad projects={appProjects} tasks={appTasks} staffMembers={appStaffMembers} />}
+        {section === 'team' && <TeamLoad projects={appProjects} tasks={appTasks} calendarItems={appCalendarItems} staffMembers={appStaffMembers} />}
         {section === 'people' && (
           <PeopleManagement
             projects={appProjects}
@@ -5119,14 +5193,16 @@ function Dashboard({
   setSection: (section: Section) => void
   setSelectedProjectId: (id: string) => void
 }) {
-  const deliveryCount = calendarItems.filter((item) => isCalendarItemInCurrentWeek(now, item)).length
+  const deliveryCount = calendarItems.filter((item) => item.completed !== true && isCalendarItemInCurrentWeek(now, item)).length
   const todayTasks = visibleTasks
     .filter((task) => isTaskInTodayWork(task, now))
     .sort((left, right) => todayTaskPriority(left) - todayTaskPriority(right))
-  const priorityProjects = [...visibleProjects].sort((left, right) => projectPriorityScore(right) - projectPriorityScore(left))
+  const priorityProjects = [...visibleProjects].sort(
+    (left, right) => projectPriorityScore(right, calendarItems) - projectPriorityScore(left, calendarItems),
+  )
   const todayKey = localDateKey(now)
   const upcomingCalendarItems = [...calendarItems]
-    .filter((item) => dateForCalendarItem(now, item) >= todayKey)
+    .filter((item) => item.completed !== true && dateForCalendarItem(now, item) >= todayKey)
     .sort((left, right) => dateForCalendarItem(now, left).localeCompare(dateForCalendarItem(now, right)))
     .slice(0, 5)
   const weatherContent = weatherCardContent(weatherLocation, weatherSnapshot, weatherStatus, weatherError)
@@ -5155,14 +5231,16 @@ function Dashboard({
                 setSection(canAccessProjects ? 'projects' : 'tasks')
               }}
             >
-              <div className={`statusDot ${statusTone[projectDisplayStatus(project)]}`} />
+              <div className={`statusDot ${statusTone[projectDisplayStatus(project, now, calendarItems)]}`} />
               <div>
                 <strong>{project.name}</strong>
                 <span>
                   {project.stage} · {project.nextMilestone}
                 </span>
               </div>
-              <span className={`pill ${statusTone[projectDisplayStatus(project)]}`}>{statusLabel[projectDisplayStatus(project)]}</span>
+              <span className={`pill ${statusTone[projectDisplayStatus(project, now, calendarItems)]}`}>
+                {statusLabel[projectDisplayStatus(project, now, calendarItems)]}
+              </span>
               <ChevronRight size={18} />
             </button>
           ))}
@@ -5298,7 +5376,9 @@ function Projects({
                 <span>{project.manager}</span>
                 <span>{project.workStatus} / {project.stage}</span>
                 <span>{project.due}</span>
-                <span className={`pill ${statusTone[projectDisplayStatus(project)]}`}>{statusLabel[projectDisplayStatus(project)]}</span>
+                <span className={`pill ${statusTone[projectDisplayStatus(project, new Date(), allCalendarItems)]}`}>
+                  {statusLabel[projectDisplayStatus(project, new Date(), allCalendarItems)]}
+                </span>
               </button>
             )
           })}
@@ -5313,7 +5393,9 @@ function Projects({
             <p>{selectedProject.id}</p>
           </div>
           <div className="panelActions">
-            <span className={`pill ${statusTone[projectDisplayStatus(selectedProject)]}`}>{statusLabel[projectDisplayStatus(selectedProject)]}</span>
+            <span className={`pill ${statusTone[projectDisplayStatus(selectedProject, new Date(), allCalendarItems)]}`}>
+              {statusLabel[projectDisplayStatus(selectedProject, new Date(), allCalendarItems)]}
+            </span>
             {(!isArchivedProject(selectedProject) || canEditArchivedProjects) && (
               <button type="button" onClick={() => onEditProject(selectedProject)}>
                 编辑项目
@@ -5377,7 +5459,7 @@ function Projects({
             <InfoLine label="项目经理" value={selectedProject.manager} />
             <InfoLine label="当前节点状态" value={selectedProject.workStatus} />
             <InfoLine label="流程节点" value={selectedProject.stage} />
-            <InfoLine label="下一节点" value={selectedProject.nextMilestone} />
+            <InfoLine label="最终交付" value={selectedProject.nextMilestone} />
             <InfoLine label="当前执行" value={currentExecutorForProject(selectedProject.id, allTasks, allProjects)} />
           </div>
 
@@ -6314,7 +6396,7 @@ function ProjectEditModal({
           <div>
             <span className="eyebrow">项目维护</span>
             <h2>{draft ? '确认助理修改' : '编辑项目'}</h2>
-            <p>用于修正项目名称、客户、项目经理、流程节点、下一节点日期和 NAS 路径。</p>
+            <p>用于修正项目名称、客户、项目经理、流程节点、最终交付和 NAS 路径。</p>
           </div>
           <button type="button" onClick={onClose} title="关闭">
             <X size={18} />
@@ -6389,11 +6471,11 @@ function ProjectEditModal({
               </select>
             </label>
             <label className="textField">
-              <span>下一节点日期</span>
+              <span>最终交付日期</span>
               <input type="date" value={due} onChange={(event) => setDue(event.target.value)} />
             </label>
             <label className="textField setupGridWide">
-              <span>交付日历显示</span>
+              <span>最终交付日历显示</span>
               <input value={calendarTitle} onChange={(event) => setCalendarTitle(event.target.value)} placeholder="例如：需求对接、脚本初稿、成片交付" />
             </label>
           </div>
@@ -6613,7 +6695,7 @@ function ProjectSetupModal({
           <div>
             <span className="eyebrow">立项后设置</span>
             <h2>设置交付和任务</h2>
-            <p>项目已创建，继续确认流程节点、下一节点日期，并把所选工种分派给内部人员或外包。</p>
+            <p>项目已创建，继续确认流程节点和最终交付，并把所选工种分派给内部人员或外包。</p>
           </div>
           <button type="button" onClick={onClose} title="稍后设置">
             <X size={18} />
@@ -6647,11 +6729,11 @@ function ProjectSetupModal({
               </select>
             </label>
             <label className="textField">
-              <span>下一节点日期</span>
+              <span>最终交付日期</span>
               <input type="date" value={deliveryDate} onChange={(event) => setDeliveryDate(event.target.value)} />
             </label>
             <label className="textField">
-              <span>交付日历显示</span>
+              <span>最终交付日历显示</span>
               <input value={calendarTitle} onChange={(event) => setCalendarTitle(event.target.value)} placeholder="例如：需求对接、脚本初稿、成片交付" />
             </label>
           </div>
@@ -6830,6 +6912,7 @@ function CalendarView({
   onAddPlan,
   onUpdatePlan,
   onMovePlan,
+  onTogglePlanCompleted,
   onDeletePlan,
   assistantDraft,
   onAssistantDraftHandled,
@@ -6849,6 +6932,7 @@ function CalendarView({
   onAddPlan: (plan: ProjectPlanPayload) => void
   onUpdatePlan: (itemKey: string, plan: ProjectPlanPayload) => void
   onMovePlan: (itemKey: string, targetDate: string) => string | null
+  onTogglePlanCompleted: (itemKey: string) => void
   onDeletePlan: (itemKey: string) => void
   assistantDraft: ProjectPlanPayload | null
   onAssistantDraftHandled: () => void
@@ -7217,6 +7301,7 @@ function CalendarView({
                         aria-grabbed={isDraggingItem}
                         className={[
                           item.projectId === effectiveSelectedProjectId ? 'calendarEvent active' : 'calendarEvent',
+                          item.completed ? 'completed' : '',
                           canDragItem ? 'canDrag' : '',
                           isDraggingItem ? 'dragging' : '',
                         ]
@@ -7235,7 +7320,7 @@ function CalendarView({
                         onPointerCancel={canDragItem ? handleCalendarEventPointerCancel : undefined}
                       >
                         <span>{item.project}</span>
-                        <strong>{item.title}</strong>
+                        <strong>{item.completed ? `已完成 · ${item.title}` : item.title}</strong>
                       </button>
                     )
                   })}
@@ -7287,6 +7372,7 @@ function CalendarView({
                     className={[
                       'calendarDayPopoverItem',
                       item.projectId === effectiveSelectedProjectId ? 'active' : '',
+                      item.completed ? 'completed' : '',
                       canDragItem ? 'canDrag' : '',
                       isDraggingItem ? 'dragging' : '',
                     ]
@@ -7307,7 +7393,7 @@ function CalendarView({
                   >
                     <div>
                       <span>{item.project}</span>
-                      <strong>{item.title}</strong>
+                      <strong>{item.completed ? `已完成 · ${item.title}` : item.title}</strong>
                     </div>
                     <em>{item.owner}</em>
                   </button>
@@ -7340,7 +7426,9 @@ function CalendarView({
                   {project.type} · {project.manager}
                 </span>
               </div>
-              <span className={`pill ${statusTone[projectDisplayStatus(project)]}`}>{statusLabel[projectDisplayStatus(project)]}</span>
+              <span className={`pill ${statusTone[projectDisplayStatus(project, now, calendarItems)]}`}>
+                {statusLabel[projectDisplayStatus(project, now, calendarItems)]}
+              </span>
             </button>
           ))}
           {calendarProjects.length === 0 && <EmptyState title="暂无项目排期" note="在上方日历日期上右键，可以给已有项目添加计划。" />}
@@ -7354,7 +7442,9 @@ function CalendarView({
             <p>当前选定项目的具体时间安排</p>
           </div>
           {selectedProject && (
-            <span className={`pill ${statusTone[projectDisplayStatus(selectedProject)]}`}>{statusLabel[projectDisplayStatus(selectedProject)]}</span>
+            <span className={`pill ${statusTone[projectDisplayStatus(selectedProject, now, calendarItems)]}`}>
+              {statusLabel[projectDisplayStatus(selectedProject, now, calendarItems)]}
+            </span>
           )}
         </div>
         <div className="projectSchedule" tabIndex={0} aria-label="当前项目节点列表">
@@ -7362,7 +7452,7 @@ function CalendarView({
             const itemKey = calendarItemKey(item)
 
             return (
-            <article key={itemKey} className="scheduleItem">
+            <article key={itemKey} className={item.completed ? 'scheduleItem completed' : 'scheduleItem'}>
               <div className="scheduleTime">
                 <strong>{item.time}</strong>
                 <span>{item.type}</span>
@@ -7373,8 +7463,15 @@ function CalendarView({
                   负责人：{item.owner} · 项目：{item.project}
                 </span>
               </div>
-              {canManagePlans && (
+              {canEditPlan(item.projectId) && (
                 <div className="scheduleActions">
+                  <button
+                    className={item.completed ? 'completedAction' : ''}
+                    type="button"
+                    onClick={() => onTogglePlanCompleted(itemKey)}
+                  >
+                    {item.completed ? '恢复' : '完成'}
+                  </button>
                   <button
                     type="button"
                     onClick={() =>
@@ -8327,7 +8424,17 @@ function PeopleRow({
   )
 }
 
-function TeamLoad({ projects, tasks, staffMembers }: { projects: Project[]; tasks: Task[]; staffMembers: StaffMember[] }) {
+function TeamLoad({
+  projects,
+  tasks,
+  calendarItems,
+  staffMembers,
+}: {
+  projects: Project[]
+  tasks: Task[]
+  calendarItems: CalendarItem[]
+  staffMembers: StaffMember[]
+}) {
   const activeProjects = projects.filter((project) => !isArchivedProject(project))
   const activeProjectIds = new Set(activeProjects.map((project) => project.id))
   const teamLoad = staffMembers.filter((member) => member.accountRole !== 'controller' && member.status === '在职').map((person) => {
@@ -8336,7 +8443,9 @@ function TeamLoad({ projects, tasks, staffMembers }: { projects: Project[]; task
     const ownedProjects = activeProjects.filter((project) => project.owner === person.name)
     const relatedProjectIds = new Set([...personTasks.map((task) => task.projectId), ...managedProjects.map((project) => project.id), ...ownedProjects.map((project) => project.id)])
     const relatedProjects = activeProjects.filter((project) => relatedProjectIds.has(project.id))
-    const risk = activeProjects.filter((project) => relatedProjectIds.has(project.id) && isProjectAtRisk(project)).length
+    const risk = activeProjects.filter(
+      (project) => relatedProjectIds.has(project.id) && isProjectAtRisk(project, new Date(), calendarItems),
+    ).length
     const revisionTasks = personTasks.filter((task) => task.status === '修改中').length
     const load = Math.min(100, personTasks.length * 12 + managedProjects.length * 10 + ownedProjects.length * 8 + revisionTasks * 6)
 
@@ -9037,6 +9146,8 @@ const defaultAssistantSettings: AssistantSettings = {
   mode: 'rules',
   onlineBaseUrl: '',
   onlineModel: '',
+  activeOnlineProfileId: '',
+  onlineProfiles: [],
   localBaseUrl: 'http://127.0.0.1:11434',
   localModel: '',
   localThinking: false,
@@ -9123,6 +9234,7 @@ function CrewFlowAssistant({
   const [settings, setSettings] = useState<AssistantSettings>(defaultAssistantSettings)
   const [settingsDraft, setSettingsDraft] = useState<AssistantSettingsDraft>(() => assistantSettingsDraft(defaultAssistantSettings))
   const [apiKey, setApiKey] = useState('')
+  const [onlineTestPassed, setOnlineTestPassed] = useState(false)
   const [settingsMessage, setSettingsMessage] = useState('')
   const [settingsBusy, setSettingsBusy] = useState(false)
   const [localModels, setLocalModels] = useState<string[]>([])
@@ -9142,6 +9254,10 @@ function CrewFlowAssistant({
   ])
   const suggestions = assistantSuggestions(role, section, projects, tasks, calendarItems, financeRecords)
   const modeLabel = assistantModeLabel(settings.mode)
+  const onlineProfiles = settings.onlineProfiles ?? []
+  const selectedOnlineProfile = onlineProfiles.find((profile) => profile.id === settingsDraft.activeOnlineProfileId)
+  const hasSavedOnlineApiKey =
+    selectedOnlineProfile?.hasApiKey ?? (onlineProfiles.length === 0 ? settings.hasApiKey : false)
 
   useEffect(() => {
     window.desktopBridge
@@ -9421,6 +9537,7 @@ function CrewFlowAssistant({
 
   async function saveSettings(clearApiKey = false) {
     if (!window.desktopBridge?.saveAssistantSettings) return
+    const saveOnlineProfile = settingsDraft.mode === 'online' && onlineTestPassed && !clearApiKey
     setSettingsBusy(true)
     setSettingsMessage('')
     try {
@@ -9428,11 +9545,15 @@ function CrewFlowAssistant({
         settings: settingsDraft,
         apiKey,
         clearApiKey,
+        saveOnlineProfile,
       })
       setSettings(saved)
       setSettingsDraft(assistantSettingsDraft(saved))
       setApiKey('')
-      setSettingsMessage(clearApiKey ? 'API Key 已清除' : '设置已保存')
+      setOnlineTestPassed(false)
+      setSettingsMessage(
+        clearApiKey ? 'API Key 已清除' : saveOnlineProfile ? '设置已保存，并加入常用在线模型' : '设置已保存',
+      )
     } catch (error) {
       setSettingsMessage(assistantErrorMessage(error))
     } finally {
@@ -9449,11 +9570,52 @@ function CrewFlowAssistant({
         settings: settingsDraft,
         apiKey,
       })
-      setSettingsMessage(result.message)
+      if (settingsDraft.mode === 'online') {
+        setOnlineTestPassed(result.ok)
+        setSettingsMessage(result.ok ? `${result.message}。保存设置后可从常用模型快速切换` : result.message)
+      } else {
+        setOnlineTestPassed(false)
+        setSettingsMessage(result.message)
+      }
       if (settingsDraft.mode === 'local') setLocalModels(result.models ?? [])
       if (settingsDraft.mode === 'local' && !settingsDraft.localModel && result.models?.[0]) {
         setSettingsDraft((current) => ({ ...current, localModel: result.models?.[0] ?? '' }))
       }
+    } catch (error) {
+      setOnlineTestPassed(false)
+      setSettingsMessage(assistantErrorMessage(error))
+    } finally {
+      setSettingsBusy(false)
+    }
+  }
+
+  function selectOnlineProfile(profileId: string) {
+    const profile = onlineProfiles.find((item) => item.id === profileId)
+    setApiKey('')
+    setOnlineTestPassed(false)
+    setSettingsMessage('')
+    setSettingsDraft((current) => ({
+      ...current,
+      activeOnlineProfileId: profile?.id ?? '',
+      onlineBaseUrl: profile?.onlineBaseUrl ?? '',
+      onlineModel: profile?.onlineModel ?? '',
+    }))
+  }
+
+  async function deleteOnlineProfile() {
+    const profile = selectedOnlineProfile
+    if (!profile || !window.desktopBridge?.deleteAssistantOnlineProfile) return
+    if (!window.confirm(`删除常用模型“${assistantOnlineProfileLabel(profile)}”吗？`)) return
+
+    setSettingsBusy(true)
+    setSettingsMessage('')
+    try {
+      const saved = await window.desktopBridge.deleteAssistantOnlineProfile(profile.id)
+      setSettings(saved)
+      setSettingsDraft(assistantSettingsDraft(saved))
+      setApiKey('')
+      setOnlineTestPassed(false)
+      setSettingsMessage('常用模型已删除')
     } catch (error) {
       setSettingsMessage(assistantErrorMessage(error))
     } finally {
@@ -9556,7 +9718,11 @@ function CrewFlowAssistant({
                 key={mode}
                 className={settingsDraft.mode === mode ? 'active' : ''}
                 type="button"
-                onClick={() => setSettingsDraft((current) => ({ ...current, mode }))}
+                onClick={() => {
+                  setSettingsDraft((current) => ({ ...current, mode }))
+                  setOnlineTestPassed(false)
+                  setSettingsMessage('')
+                }}
               >
                 <Icon size={16} />
                 <span>{label}</span>
@@ -9576,11 +9742,46 @@ function CrewFlowAssistant({
 
           {settingsDraft.mode === 'online' && (
             <div className="assistantSettingsFields">
+              <div className="assistantOnlineProfileRow">
+                <label>
+                  <span>常用在线模型</span>
+                  <select
+                    value={settingsDraft.activeOnlineProfileId}
+                    disabled={onlineProfiles.length === 0}
+                    onChange={(event) => selectOnlineProfile(event.target.value)}
+                  >
+                    <option value="">
+                      {onlineProfiles.length === 0 ? '测试成功并保存后显示在这里' : '手动填写新模型'}
+                    </option>
+                    {onlineProfiles.map((profile) => (
+                      <option key={profile.id} value={profile.id}>
+                        {assistantOnlineProfileLabel(profile)}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <button
+                  className="assistantProfileDelete"
+                  type="button"
+                  disabled={!selectedOnlineProfile || settingsBusy}
+                  onClick={() => void deleteOnlineProfile()}
+                  title="删除当前常用模型"
+                >
+                  <Trash2 size={16} />
+                </button>
+              </div>
               <label>
                 <span>API 地址</span>
                 <input
                   value={settingsDraft.onlineBaseUrl}
-                  onChange={(event) => setSettingsDraft((current) => ({ ...current, onlineBaseUrl: event.target.value }))}
+                  onChange={(event) => {
+                    setSettingsDraft((current) => ({
+                      ...current,
+                      onlineBaseUrl: event.target.value,
+                      activeOnlineProfileId: '',
+                    }))
+                    setOnlineTestPassed(false)
+                  }}
                   placeholder="例如：https://api.openai.com/v1"
                 />
               </label>
@@ -9588,7 +9789,14 @@ function CrewFlowAssistant({
                 <span>模型名称</span>
                 <input
                   value={settingsDraft.onlineModel}
-                  onChange={(event) => setSettingsDraft((current) => ({ ...current, onlineModel: event.target.value }))}
+                  onChange={(event) => {
+                    setSettingsDraft((current) => ({
+                      ...current,
+                      onlineModel: event.target.value,
+                      activeOnlineProfileId: '',
+                    }))
+                    setOnlineTestPassed(false)
+                  }}
                   placeholder="填写服务商提供的模型名称"
                 />
               </label>
@@ -9597,13 +9805,16 @@ function CrewFlowAssistant({
                 <input
                   type="password"
                   value={apiKey}
-                  onChange={(event) => setApiKey(event.target.value)}
-                  placeholder={settings.hasApiKey ? '已安全保存，留空表示不修改' : '输入 API Key'}
+                  onChange={(event) => {
+                    setApiKey(event.target.value)
+                    setOnlineTestPassed(false)
+                  }}
+                  placeholder={hasSavedOnlineApiKey ? '已安全保存，留空表示继续使用' : '输入 API Key'}
                   autoComplete="off"
                 />
               </label>
               <p className="assistantPrivacyNote">
-                API Key 只保存在当前电脑的系统安全存储中，不写入团队数据库。
+                连接测试成功后保存，会加入常用模型。每套 API Key 只加密保存在当前电脑，不写入团队数据库。
               </p>
             </div>
           )}
@@ -9725,7 +9936,7 @@ function CrewFlowAssistant({
                 测试连接
               </button>
             )}
-            {settingsDraft.mode === 'online' && settings.hasApiKey && (
+            {settingsDraft.mode === 'online' && hasSavedOnlineApiKey && (
               <button type="button" disabled={settingsBusy} onClick={() => void saveSettings(true)}>
                 清除密钥
               </button>
@@ -9951,12 +10162,22 @@ function assistantSettingsDraft(settings: AssistantSettings): AssistantSettingsD
     mode: settings.mode,
     onlineBaseUrl: settings.onlineBaseUrl,
     onlineModel: settings.onlineModel,
+    activeOnlineProfileId: settings.activeOnlineProfileId,
     localBaseUrl: settings.localBaseUrl,
     localModel: settings.localModel,
     localThinking: settings.localThinking,
     includeProjectContext: settings.includeProjectContext,
     includeFinanceContext: settings.includeFinanceContext,
     fallbackToRules: settings.fallbackToRules,
+  }
+}
+
+function assistantOnlineProfileLabel(profile: AssistantOnlineProfile) {
+  try {
+    const host = new URL(profile.onlineBaseUrl).host
+    return host ? `${profile.onlineModel} · ${host}` : profile.onlineModel
+  } catch {
+    return profile.onlineModel
   }
 }
 
@@ -9997,9 +10218,10 @@ function assistantContext(
       stage: project.stage,
       workStatus: project.workStatus,
       nextMilestone: project.nextMilestone,
+      finalDelivery: project.nextMilestone,
       due: project.due,
       progress: project.progress,
-      status: projectDisplayStatus(project),
+      status: projectDisplayStatus(project, new Date(), calendarItems),
       healthStatus: projectHealthStatus(project),
     }))
     context.tasks = tasks.slice(0, 600).map((task) => ({
@@ -10019,6 +10241,8 @@ function assistantContext(
       date: dateForCalendarItem(new Date(), item),
       title: item.title,
       owner: item.owner,
+      isFinalDelivery: item.isFinalDelivery === true,
+      completed: item.completed === true,
     }))
     context.staff = staffMembers.slice(0, 150).map((member) => ({ name: member.name, tags: member.tags }))
   }
@@ -10116,12 +10340,12 @@ function assistantSuggestions(
   financeRecords: FinanceRecord[],
 ): AssistantSuggestion[] {
   const now = new Date()
-  const riskCount = projects.filter((project) => isProjectAtRisk(project, now)).length
+  const riskCount = projects.filter((project) => isProjectAtRisk(project, now, calendarItems)).length
   const waitingCount = projects.filter(isWaitingProject).length
   const openTasks = tasks.filter((task) => task.status !== '已完成')
   const activeTaskCount = openTasks.filter((task) => task.status === '制作中').length
   const revisionTaskCount = openTasks.filter((task) => task.status === '修改中').length
-  const weekCalendarCount = calendarItems.filter((item) => isCalendarItemInCurrentWeek(now, item)).length
+  const weekCalendarCount = calendarItems.filter((item) => item.completed !== true && isCalendarItemInCurrentWeek(now, item)).length
   const pendingCollectionCount = financeRecords.filter(
     (record) => record.contractAmount > 0 && record.receivedAmount < record.contractAmount,
   ).length
@@ -10196,7 +10420,7 @@ function assistantReply(
   financeRecords: FinanceRecord[],
   canCreateProject: boolean,
 ) {
-  const riskProjects = projects.filter((project) => isProjectAtRisk(project))
+  const riskProjects = projects.filter((project) => isProjectAtRisk(project, new Date(), calendarItems))
   const waitingProjects = projects.filter(isWaitingProject)
   const revisionTasks = tasks.filter((task) => task.status === '修改中')
   const activeTasks = tasks.filter((task) => task.status === '制作中' || task.status === '未开始')
@@ -10473,6 +10697,8 @@ function projectDeliveryCalendarItem(project: Project): CalendarItem | null {
   return {
     id: `C-delivery-${project.id}`,
     date: project.due,
+    isFinalDelivery: true,
+    completed: false,
     projectId: project.id,
     day: dueDate.getDate(),
     time: formatMonthDay(dueDate),
@@ -10484,42 +10710,72 @@ function projectDeliveryCalendarItem(project: Project): CalendarItem | null {
 }
 
 function ensureProjectCalendarItems(projects: Project[], calendarItems: CalendarItem[]) {
-  const projectIdsWithPlans = new Set(calendarItems.map((item) => item.projectId))
-  const missingDeliveryItems = projects
-    .filter((project) => !projectIdsWithPlans.has(project.id))
-    .map(projectDeliveryCalendarItem)
-    .filter((item): item is CalendarItem => Boolean(item))
+  let changed = false
+  const normalizedItems = [...calendarItems]
+  const missingDeliveryItems: CalendarItem[] = []
 
-  return missingDeliveryItems.length > 0 ? [...missingDeliveryItems, ...calendarItems] : calendarItems
+  projects.forEach((project) => {
+    const projectItemIndexes = normalizedItems
+      .map((item, index) => (item.projectId === project.id ? index : -1))
+      .filter((index) => index >= 0)
+    if (projectItemIndexes.some((index) => normalizedItems[index].isFinalDelivery === true)) return
+
+    const legacyPrimaryIndex = projectItemIndexes.find((index) =>
+      isPrimaryProjectCalendarItem(normalizedItems[index], project),
+    )
+    if (legacyPrimaryIndex !== undefined) {
+      normalizedItems[legacyPrimaryIndex] = {
+        ...normalizedItems[legacyPrimaryIndex],
+        isFinalDelivery: true,
+      }
+      changed = true
+      return
+    }
+
+    if (projectItemIndexes.length > 0) {
+      const latestItemIndex = projectItemIndexes
+        .map((index) => ({ index, date: dateForCalendarItem(new Date(), normalizedItems[index]) }))
+        .filter((entry) => /^\d{4}-\d{2}-\d{2}/.test(entry.date))
+        .sort((left, right) => left.date.localeCompare(right.date))
+        .at(-1)?.index
+      if (latestItemIndex !== undefined) {
+        normalizedItems[latestItemIndex] = {
+          ...normalizedItems[latestItemIndex],
+          isFinalDelivery: true,
+        }
+        changed = true
+        return
+      }
+    }
+
+    const deliveryItem = projectDeliveryCalendarItem(project)
+    if (deliveryItem) {
+      missingDeliveryItems.push(deliveryItem)
+      changed = true
+    }
+  })
+
+  return changed ? [...missingDeliveryItems, ...normalizedItems] : calendarItems
 }
 
 function reconcileProjectTimelines(projects: Project[], calendarItems: CalendarItem[], today = new Date()) {
-  const todayKey = localDateKey(today)
   let changed = false
   const nextProjects = projects.map((project) => {
     if (isArchivedProject(project)) return project
 
-    const projectPlans = calendarItems
-      .filter((item) => item.projectId === project.id)
-      .map((item) => ({
-        item,
-        date: dateForCalendarItem(today, item).match(/^\d{4}-\d{2}-\d{2}/)?.[0] ?? '',
-      }))
-      .filter((entry) => entry.date)
-      .sort((left, right) => left.date.localeCompare(right.date))
-    if (projectPlans.length === 0) return project
+    const finalDeliveryItem =
+      calendarItems.find((item) => item.projectId === project.id && item.isFinalDelivery === true) ??
+      calendarItems.find((item) => item.projectId === project.id && isPrimaryProjectCalendarItem(item, project))
+    if (!finalDeliveryItem) return project
 
-    const currentDue = project.due.match(/^\d{4}-\d{2}-\d{2}/)?.[0] ?? ''
-    if (projectPlans.some((entry) => entry.date === currentDue)) return project
+    const finalDeliveryDate = dateForCalendarItem(today, finalDeliveryItem).match(/^\d{4}-\d{2}-\d{2}/)?.[0] ?? ''
+    if (!finalDeliveryDate) return project
 
-    const replacement = projectPlans.find((entry) => entry.date >= todayKey) ?? projectPlans.at(-1)
-    if (!replacement) return project
-
-    const milestoneTitle = replacement.item.title.trim() || replacement.item.type.trim() || project.stage
-    const milestoneDate = new Date(`${replacement.date}T00:00:00`)
+    const milestoneTitle = finalDeliveryItem.title.trim() || finalDeliveryItem.type.trim() || project.stage
+    const milestoneDate = new Date(`${finalDeliveryDate}T00:00:00`)
     const nextMilestone = `${formatMonthDay(milestoneDate)} ${milestoneTitle}`
     if (
-      project.due === replacement.date &&
+      project.due === finalDeliveryDate &&
       project.nextMilestone === nextMilestone &&
       project.calendarTitle === milestoneTitle
     ) {
@@ -10529,7 +10785,7 @@ function reconcileProjectTimelines(projects: Project[], calendarItems: CalendarI
     changed = true
     return {
       ...project,
-      due: replacement.date,
+      due: finalDeliveryDate,
       nextMilestone,
       calendarTitle: milestoneTitle,
     }
@@ -10550,15 +10806,30 @@ function isRiskProject(project: Project) {
   return project.status === 'risk'
 }
 
-function isLateProject(project: Project, today = new Date()) {
+function hasOverdueProjectNode(project: Project, calendarItems: CalendarItem[], today = new Date()) {
   if (isArchivedProject(project)) return false
+  const todayKey = localDateKey(today)
+
+  return calendarItems.some((item) => {
+    if (item.projectId !== project.id || item.completed === true || isPrimaryProjectCalendarItem(item, project)) return false
+    const itemDate = dateForCalendarItem(today, item).match(/^\d{4}-\d{2}-\d{2}/)?.[0] ?? ''
+    return Boolean(itemDate && itemDate < todayKey)
+  })
+}
+
+function isLateProject(project: Project, today = new Date(), calendarItems: CalendarItem[] = []) {
+  if (isArchivedProject(project)) return false
+  const finalDeliveryItem = calendarItems.find(
+    (item) => item.projectId === project.id && isPrimaryProjectCalendarItem(item, project),
+  )
+  if (finalDeliveryItem?.completed === true) return false
 
   const dueDateKey = project.due.match(/^\d{4}-\d{2}-\d{2}/)?.[0]
   return Boolean(dueDateKey && dueDateKey < localDateKey(today))
 }
 
-function isProjectAtRisk(project: Project, today = new Date()) {
-  return isRiskProject(project) || isLateProject(project, today)
+function isProjectAtRisk(project: Project, today = new Date(), calendarItems: CalendarItem[] = []) {
+  return isRiskProject(project) || isLateProject(project, today, calendarItems) || hasOverdueProjectNode(project, calendarItems, today)
 }
 
 function projectHealthStatus(project: Project): ProjectHealthStatus {
@@ -10567,9 +10838,9 @@ function projectHealthStatus(project: Project): ProjectHealthStatus {
   return 'normal'
 }
 
-function projectDisplayStatus(project: Project, today = new Date()): ProjectStatus {
-  if (isLateProject(project, today)) return 'late'
-  if (isRiskProject(project)) return 'risk'
+function projectDisplayStatus(project: Project, today = new Date(), calendarItems: CalendarItem[] = []): ProjectStatus {
+  if (isLateProject(project, today, calendarItems)) return 'late'
+  if (isRiskProject(project) || hasOverdueProjectNode(project, calendarItems, today)) return 'risk'
   if (isWaitingProject(project)) return 'waiting'
   return 'normal'
 }
@@ -10582,9 +10853,9 @@ function progressForProject(project: Project, workflowStages: string[]) {
   return Math.round(((currentStageIndex + 1) / workflowStages.length) * 100)
 }
 
-function projectPriorityScore(project: Project) {
-  if (isLateProject(project)) return 40
-  if (isRiskProject(project)) return 30
+function projectPriorityScore(project: Project, calendarItems: CalendarItem[] = []) {
+  if (isLateProject(project, new Date(), calendarItems)) return 40
+  if (isRiskProject(project) || hasOverdueProjectNode(project, calendarItems)) return 30
   if (isWaitingProject(project)) return 20
   if (project.workStatus === '进行中') return 10
   return 0
@@ -10597,14 +10868,15 @@ function filterProjects(
   type: string,
   searchMatchedProjectIds: Set<string> | null,
   today: Date,
+  calendarItems: CalendarItem[],
 ) {
   return projectList.filter((project) => {
     if (type !== '全部类型' && project.type !== type) return false
     if (status === 'archived' && !isArchivedProject(project)) return false
     if (status !== 'archived' && status !== 'all' && isArchivedProject(project)) return false
-    if (status === 'normal' && projectDisplayStatus(project, today) !== 'normal') return false
-    if (status === 'risk' && !isProjectAtRisk(project, today)) return false
-    if (status === 'late' && !isLateProject(project, today)) return false
+    if (status === 'normal' && projectDisplayStatus(project, today, calendarItems) !== 'normal') return false
+    if (status === 'risk' && !isProjectAtRisk(project, today, calendarItems)) return false
+    if (status === 'late' && !isLateProject(project, today, calendarItems)) return false
     if (status === 'waiting' && !isWaitingProject(project)) return false
 
     if (!query.trim()) return true
@@ -10700,6 +10972,10 @@ function normalizeProjectStage(stage: string) {
 }
 
 function isPrimaryProjectCalendarItem(item: CalendarItem, previousProject: Project) {
+  if (item.projectId !== previousProject.id) return false
+  if (item.isFinalDelivery === true) return true
+  if (item.isFinalDelivery === false) return false
+
   const previousDueKey = previousProject.due.match(/^\d{4}-\d{2}-\d{2}/)?.[0] ?? ''
   const itemDateKey = item.date?.match(/^\d{4}-\d{2}-\d{2}/)?.[0] ?? ''
   const previousDueDate = new Date(`${previousDueKey}T00:00:00`)
@@ -10707,18 +10983,12 @@ function isPrimaryProjectCalendarItem(item: CalendarItem, previousProject: Proje
   if (itemDateKey && itemDateKey !== previousDueKey) return false
 
   const previousDueText = formatMonthDay(previousDueDate)
-  const previousMilestoneTitle = milestoneTitleFrom(previousProject.nextMilestone)
-  const primaryTitles = new Set([
-    previousProject.stage,
-    previousMilestoneTitle,
-    '需求对接',
-    '计划交付',
-  ])
+  const previousMilestoneTitle = previousProject.calendarTitle?.trim() || milestoneTitleFrom(previousProject.nextMilestone)
   const hasPrimaryIdentity =
-    item.type === previousProject.stage ||
-    item.type === '立项节点' ||
-    primaryTitles.has(item.title) ||
-    (!itemDateKey && item.time === previousDueText)
+    item.id === `C-delivery-${previousProject.id}` ||
+    (Boolean(previousMilestoneTitle) && item.title.trim() === previousMilestoneTitle) ||
+    (!previousMilestoneTitle && (item.type === previousProject.stage || item.type === '立项节点')) ||
+    (!itemDateKey && item.time === previousDueText && item.title.trim() === previousMilestoneTitle)
 
   return (
     (itemDateKey === previousDueKey || item.day === previousDueDate.getDate()) &&

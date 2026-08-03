@@ -16,6 +16,7 @@ contextBridge.exposeInMainWorld('desktopBridge', {
   copyText: (value) => ipcRenderer.invoke('clipboard:write-text', value),
   loadAssistantSettings: () => ipcRenderer.invoke('assistant-settings:load'),
   saveAssistantSettings: (payload) => ipcRenderer.invoke('assistant-settings:save', payload),
+  deleteAssistantOnlineProfile: (profileId) => ipcRenderer.invoke('assistant-profile:delete', profileId),
   testAssistantProvider: (payload) => ipcRenderer.invoke('assistant-provider:test', payload),
   requestAssistant: (payload) => ipcRenderer.invoke('assistant:request', payload),
 })
