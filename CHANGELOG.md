@@ -2,6 +2,25 @@
 
 All notable changes to CrewFlow are documented in this file.
 
+## 1.4.3 - 2026-08-08
+
+### Added
+
+- Added universal macOS DMG and Windows NSIS Setup packaging for installer-based distribution.
+- Added in-app update downloads with visible progress. Windows can install and restart from CrewFlow; macOS opens the downloaded DMG for manual replacement.
+- Added team-service runtime metadata so an installed update can repair a background service that still points to an older portable app path.
+
+### Improved
+
+- Kept the team service available while an update downloads and stopped it only when Windows begins installation.
+- Automatically restored or repaired the local team service after an update or first migration from the portable ZIP build.
+- Updated the Chinese user guide with installer migration, unsigned-package warnings, and team-host update behavior.
+
+### Security
+
+- Restricted in-app macOS downloads to CrewFlow assets on the official GitHub Release path and verified GitHub SHA-256 digests when available.
+- Updated the production `js-yaml` dependency to a version without the known resource-consumption advisory.
+
 ## 1.4.2 - 2026-08-03
 
 ### Added

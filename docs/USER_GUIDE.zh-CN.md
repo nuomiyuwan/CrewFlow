@@ -1,6 +1,6 @@
 # CrewFlow 用户使用说明
 
-适用版本：CrewFlow v1.4.2 及后续兼容版本。
+适用版本：CrewFlow v1.4.3 及后续兼容版本。
 
 CrewFlow 是一套桌面项目协作工具，用来管理项目录入、任务分派、流程节点、交付日历、人员账号、团队负载、项目归档和财务结算。它最初面向视频制作团队设计，但项目类型、任务工种、流程节点、状态和人员标签都可以自定义，因此也适合设计、广告、活动、工程、咨询、培训、软件交付、定制生产等行业。
 
@@ -29,15 +29,16 @@ CrewFlow 把日常工作拆成五层：
 
 ### 下载与安装
 
-从 [GitHub Releases](https://github.com/nuomiyuwan/CrewFlow/releases) 下载与电脑匹配的压缩包：
+从 [GitHub Releases](https://github.com/nuomiyuwan/CrewFlow/releases) 下载与电脑匹配的安装包：
 
-- Apple 芯片 Mac（M1、M2、M3、M4 等）：选择 `macOS-arm64`。
-- Intel 芯片 Mac：选择 `macOS-x64`。
-- 64 位 Windows：选择 `Windows-x64`。
+- Mac（Apple 芯片和 Intel 芯片）：选择 `macOS-universal.dmg`。
+- 64 位 Windows：选择 `Windows-x64-Setup.exe`。
 
-macOS 用户解压后，将 `CrewFlow.app` 放入“应用程序”文件夹。当前公开包没有 Apple 开发者签名，首次打开时如果被系统拦截，可在 Finder 中右键应用并选择“打开”，或到“系统设置 → 隐私与安全性”确认打开。
+macOS 用户打开 DMG 后，将 `CrewFlow.app` 拖入“应用程序”文件夹。当前公开包没有 Apple 开发者签名，首次打开时如果被系统拦截，可在 Finder 中右键应用并选择“打开”，或到“系统设置 → 隐私与安全性”确认打开。
 
-Windows 用户应先完整解压 ZIP，再从解压后的文件夹运行 `CrewFlow.exe`，不要直接在压缩包预览窗口中运行。如果 SmartScreen 提醒来源未知，请确认文件来自 CrewFlow 官方 GitHub Release 后再选择继续。
+Windows 用户运行 Setup 安装程序，程序会安装到当前用户的固定目录并创建快捷方式。如果 SmartScreen 提醒来源未知，请确认文件来自 CrewFlow 官方 GitHub Release 后再选择继续。
+
+从旧版 ZIP 迁移到安装版时，第一次运行 Setup 不会自动删除旧文件夹；安装版会继续读取系统用户数据目录中的原有数据。确认新版正常后，可以手动删除旧版程序文件夹。
 
 ### 单人模式
 
@@ -526,19 +527,18 @@ Windows：
 
 ## 17. 软件更新
 
-CrewFlow 会检查 GitHub Latest Release。发现新版本时，左上角版本号附近会出现更新提示，点击后进入下载页面。
+CrewFlow 会检查 GitHub Latest Release。发现新版本时，左上角版本号附近会出现更新提示；点击版本号可以查看更新内容、下载进度和安装方法。
 
-团队更新建议按以下顺序：
+团队更新建议先更新常驻主机，再更新其他员工电脑。更新前仍建议备份团队数据。
 
-1. 备份团队主机数据。
-2. 先更新常驻主机上的 CrewFlow。
-3. 重新启动或修复团队服务，确认状态正常。
-4. 再更新其他员工电脑。
-5. 测试登录、项目读取和保存。
+- Windows：点击“下载更新”，完成后点击“安装并重启”。如果当前电脑是团队主机，CrewFlow 会在正式安装前停止团队服务，新版启动后自动修复服务路径并恢复运行。
+- macOS：点击“下载更新”并打开 DMG，退出 CrewFlow 后把新版拖入“应用程序”覆盖旧版。重新打开后，团队主机会自动修复并恢复后台服务。
+- 下载过程不会停止团队服务，只有开始安装时才会短暂停服。
+- 单人数据、团队数据库和助理 API Key 都保存在应用程序之外，正常覆盖安装不会删除数据。
 
 新旧客户端可以短期混用，但涉及数据结构或团队同步调整的版本不应长期混用。发布说明如果要求升级主机，应优先执行。
 
-macOS 更新时，用新版 `CrewFlow.app` 替换旧版即可。Windows 解压新版后，从新版目录运行 `CrewFlow.exe`。不要把新版文件零散覆盖到旧目录。
+当前公开安装包未进行商业代码签名，macOS 可能显示来源确认，Windows 可能显示 SmartScreen 提醒。请只从 CrewFlow 官方 GitHub Release 下载安装包并核对版本名称。
 
 ## 18. 常见问题
 

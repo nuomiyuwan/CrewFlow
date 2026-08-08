@@ -1,9 +1,10 @@
 {
   "name": "crewflow",
   "private": true,
-  "version": "1.4.2",
+  "version": "1.4.3",
   "description": "CrewFlow project management desktop app",
   "author": "nuomiyuwan",
+  "repository": "https://github.com/nuomiyuwan/CrewFlow.git",
   "type": "module",
   "main": "electron/main.cjs",
   "scripts": {
@@ -20,11 +21,13 @@
     "build": "tsc -b && vite build",
     "lint": "oxlint",
     "preview": "vite preview",
-    "package:mac": "npm run package:mac:arm64",
-    "package:mac:arm64": "npm run build && electron-builder --mac --arm64 --dir",
-    "package:mac:x64": "npm run build && electron-builder --mac --x64 --dir",
-    "package:mac:universal": "npm run build && electron-builder --mac --universal --dir",
-    "package:win": "npm run build && electron-builder --win --x64 --dir",
+    "package:mac": "npm run package:mac:universal",
+    "package:mac:arm64": "npm run build && electron-builder --mac dmg --arm64 --publish never",
+    "package:mac:x64": "npm run build && electron-builder --mac dmg --x64 --publish never",
+    "package:mac:universal": "npm run build && electron-builder --mac dmg --universal --publish never",
+    "package:win": "npm run build && electron-builder --win nsis --x64 --publish never",
+    "package:dir:mac": "npm run build && electron-builder --mac --arm64 --dir",
+    "package:dir:win": "npm run build && electron-builder --win --x64 --dir",
     "package:all": "npm run package:mac && npm run package:win"
   },
   "build": {
@@ -42,11 +45,52 @@
     "directories": {
       "output": "release"
     },
+    "publish": {
+      "provider": "github",
+      "owner": "nuomiyuwan",
+      "repo": "CrewFlow"
+    },
     "mac": {
-      "icon": "build/icon.icns"
+      "icon": "build/icon.icns",
+      "artifactName": "CrewFlow-v${version}-macOS-${arch}.${ext}",
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "universal"
+          ]
+        }
+      ]
+    },
+    "dmg": {
+      "title": "CrewFlow ${version}",
+      "writeUpdateInfo": false
+    },
+    "win": {
+      "icon": "build/Icon.iconset/icon_256x256.png",
+      "artifactName": "CrewFlow-v${version}-Windows-${arch}-Setup.${ext}",
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowElevation": true,
+      "allowToChangeInstallationDirectory": false,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "CrewFlow",
+      "deleteAppDataOnUninstall": false
     }
   },
   "dependencies": {
+    "electron-updater": "^6.8.9",
     "lucide-react": "^1.21.0",
     "react": "^19.2.7",
     "react-dom": "^19.2.7",

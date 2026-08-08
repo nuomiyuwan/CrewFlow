@@ -4,7 +4,7 @@ CrewFlow is a desktop command center for project intake, task assignment, delive
 
 It is built with Electron, React, and Vite, and supports both single-user local data and LAN team mode through a lightweight CrewFlow Server.
 
-Current stable version: **v1.4.2**. See [CHANGELOG.md](CHANGELOG.md) for release details.
+Current stable version: **v1.4.3**. See [CHANGELOG.md](CHANGELOG.md) for release details.
 
 中文使用说明：[CrewFlow 用户使用说明](docs/USER_GUIDE.zh-CN.md)
 
@@ -51,13 +51,12 @@ Change this account after first login.
 
 Download the latest desktop packages from the [GitHub Releases page](https://github.com/nuomiyuwan/CrewFlow/releases).
 
-- macOS Apple Silicon (M1, M2, M3, M4): v1.4.2 `macOS-arm64`
-- macOS Intel: v1.4.2 `macOS-x64`
-- Windows 64-bit: v1.4.2 `Windows-x64`
+- macOS Apple Silicon and Intel: `CrewFlow-v<version>-macOS-universal.dmg`
+- Windows 64-bit: `CrewFlow-v<version>-Windows-x64-Setup.exe`
 
 Release assets are only promoted after they have been built and verified for that platform.
 
-On macOS, replace the previous `CrewFlow.app` with the new version. The app data is stored outside the app bundle, so normal updates do not remove local or team-service data.
+On macOS, open the DMG and drag `CrewFlow.app` into Applications. On Windows, run the Setup installer. App data is stored outside the installation directory, so normal updates do not remove local or team-service data.
 
 ## Data Modes
 
@@ -139,7 +138,7 @@ Build a universal Mac version:
 npm run package:mac:universal
 ```
 
-Build the Windows unpacked app:
+Build the Windows NSIS installer:
 
 ```bash
 npm run package:win
@@ -153,9 +152,8 @@ npm run package:all
 
 Output paths:
 
-- `release/mac-arm64/CrewFlow.app`
-- `release/mac/CrewFlow.app` (Intel)
-- `release/mac-universal/CrewFlow.app`
+- `release/CrewFlow-v<version>-macOS-universal.dmg`
+- `release/CrewFlow-v<version>-Windows-x64-Setup.exe`
 - `release/win-unpacked/CrewFlow.exe`
 
 ## License

@@ -1,4 +1,6 @@
 const { app, BrowserWindow, clipboard, dialog, ipcMain, safeStorage, shell } = require('electron')
+const { autoUpdater } = require('electron-updater')
+const { createHash } = require('crypto')
 const fs = require('fs')
 const path = require('path')
 const { pathToFileURL } = require('url')
@@ -12,6 +14,20 @@ const {
 const isDev = !app.isPackaged
 const isTeamServerMode = process.argv.includes('--team-server')
 let saveQueue = Promise.resolve()
+let mainWindow = null
+let windowsUpdaterConfigured = false
+let windowsUpdateDownloaded = false
+let downloadedMacUpdatePath = ''
+let appUpdateState = {
+  status: 'idle',
+  percent: 0,
+  transferred: 0,
+  total: 0,
+  version: '',
+  fileName: '',
+  message: '',
+  canAutoInstall: process.platform === 'win32',
+}
 
 app.setName('CrewFlow')
 app.setPath('userData', path.join(app.getPath('appData'), 'CrewFlow'))
@@ -22,6 +38,191 @@ function appDataPath() {
 
 function assistantSettingsPath() {
   return path.join(app.getPath('userData'), 'assistant-settings.json')
+}
+
+function updateRecoveryMarkerPath() {
+  return path.join(app.getPath('userData'), 'update-team-service-recovery.json')
+}
+
+function publishAppUpdateState(patch = {}) {
+  appUpdateState = { ...appUpdateState, ...patch }
+  BrowserWindow.getAllWindows().forEach((window) => {
+    if (!window.isDestroyed()) window.webContents.send('app-update:state-changed', appUpdateState)
+  })
+  return appUpdateState
+}
+
+function cleanUpdateFileName(value) {
+  return path.basename(typeof value === 'string' ? value : '').replace(/[^a-zA-Z0-9._-]/g, '-')
+}
+
+function validateCrewFlowReleaseAsset(payload = {}) {
+  const fileName = cleanUpdateFileName(payload.name)
+  const assetUrl = new URL(typeof payload.url === 'string' ? payload.url : '')
+  const isCrewFlowRelease =
+    assetUrl.protocol === 'https:' &&
+    assetUrl.hostname === 'github.com' &&
+    assetUrl.pathname.toLowerCase().startsWith('/nuomiyuwan/crewflow/releases/download/')
+
+  if (!isCrewFlowRelease || !fileName.toLowerCase().endsWith('.dmg')) {
+    throw new Error('更新文件地址无效')
+  }
+
+  return {
+    fileName,
+    url: assetUrl.toString(),
+    version: typeof payload.version === 'string' ? payload.version.trim() : '',
+    digest: typeof payload.digest === 'string' ? payload.digest.trim().toLowerCase() : '',
+  }
+}
+
+async function downloadMacUpdate(payload = {}) {
+  let asset = null
+  let temporaryPath = ''
+  let fileHandle = null
+
+  try {
+    asset = validateCrewFlowReleaseAsset(payload)
+    const updatesDirectory = path.join(app.getPath('userData'), 'updates')
+    const targetPath = path.join(updatesDirectory, asset.fileName)
+    temporaryPath = `${targetPath}.${process.pid}.download`
+
+    publishAppUpdateState({
+      status: 'downloading',
+      percent: 0,
+      transferred: 0,
+      total: 0,
+      version: asset.version,
+      fileName: asset.fileName,
+      message: '正在下载 macOS 安装包',
+      canAutoInstall: false,
+    })
+
+    await fs.promises.mkdir(updatesDirectory, { recursive: true })
+    const response = await fetch(asset.url, { redirect: 'follow' })
+    if (!response.ok || !response.body) throw new Error(`更新下载失败：${response.status}`)
+
+    const total = Number(response.headers.get('content-length')) || 0
+    const hash = createHash('sha256')
+    let transferred = 0
+    fileHandle = await fs.promises.open(temporaryPath, 'w')
+
+    for await (const value of response.body) {
+      const chunk = Buffer.from(value)
+      await fileHandle.write(chunk)
+      hash.update(chunk)
+      transferred += chunk.length
+      publishAppUpdateState({
+        status: 'downloading',
+        percent: total > 0 ? Math.min(100, Math.round((transferred / total) * 100)) : 0,
+        transferred,
+        total,
+      })
+    }
+
+    await fileHandle.close()
+    fileHandle = null
+
+    const expectedDigest = asset.digest.startsWith('sha256:') ? asset.digest.slice('sha256:'.length) : ''
+    const actualDigest = hash.digest('hex')
+    if (expectedDigest && expectedDigest !== actualDigest) throw new Error('更新文件校验失败，请重新下载')
+
+    await fs.promises.rm(targetPath, { force: true })
+    await fs.promises.rename(temporaryPath, targetPath)
+    downloadedMacUpdatePath = targetPath
+    return publishAppUpdateState({
+      status: 'downloaded',
+      percent: 100,
+      transferred,
+      total: total || transferred,
+      message: '安装包已下载，可以打开更新',
+      canAutoInstall: false,
+    })
+  } catch (error) {
+    if (fileHandle) await fileHandle.close().catch(() => {})
+    if (temporaryPath) await fs.promises.rm(temporaryPath, { force: true }).catch(() => {})
+    return publishAppUpdateState({
+      status: 'error',
+      message: error instanceof Error ? error.message : '更新下载失败',
+      canAutoInstall: false,
+    })
+  }
+}
+
+function configureWindowsUpdater() {
+  if (windowsUpdaterConfigured || isDev || process.platform !== 'win32') return
+  windowsUpdaterConfigured = true
+  autoUpdater.autoDownload = false
+  autoUpdater.autoInstallOnAppQuit = false
+  autoUpdater.allowPrerelease = false
+
+  autoUpdater.on('checking-for-update', () => {
+    publishAppUpdateState({ status: 'checking', message: '正在检查 Windows 更新', canAutoInstall: true })
+  })
+  autoUpdater.on('update-available', (info) => {
+    publishAppUpdateState({
+      status: 'available',
+      version: typeof info?.version === 'string' ? info.version : '',
+      message: '发现可安装的新版本',
+      canAutoInstall: true,
+    })
+  })
+  autoUpdater.on('update-not-available', () => {
+    publishAppUpdateState({ status: 'up-to-date', message: '当前已经是最新版本', canAutoInstall: true })
+  })
+  autoUpdater.on('download-progress', (progress) => {
+    publishAppUpdateState({
+      status: 'downloading',
+      percent: Math.max(0, Math.min(100, Math.round(progress.percent || 0))),
+      transferred: progress.transferred || 0,
+      total: progress.total || 0,
+      message: '正在下载 Windows 更新',
+      canAutoInstall: true,
+    })
+  })
+  autoUpdater.on('update-downloaded', (info) => {
+    windowsUpdateDownloaded = true
+    publishAppUpdateState({
+      status: 'downloaded',
+      percent: 100,
+      version: typeof info?.version === 'string' ? info.version : appUpdateState.version,
+      message: '更新已下载，可以安装并重启',
+      canAutoInstall: true,
+    })
+  })
+  autoUpdater.on('error', (error) => {
+    publishAppUpdateState({
+      status: 'error',
+      message: error instanceof Error ? error.message : 'Windows 更新失败',
+      canAutoInstall: true,
+    })
+  })
+}
+
+async function downloadApplicationUpdate(payload = {}) {
+  if (!app.isPackaged) {
+    return publishAppUpdateState({ status: 'error', message: '开发模式不能安装正式更新' })
+  }
+
+  if (process.platform === 'darwin') return downloadMacUpdate(payload)
+  if (process.platform !== 'win32') {
+    return publishAppUpdateState({ status: 'error', message: '当前系统暂不支持应用内更新' })
+  }
+
+  try {
+    configureWindowsUpdater()
+    windowsUpdateDownloaded = false
+    const result = await autoUpdater.checkForUpdates()
+    if (!result?.updateInfo || appUpdateState.status === 'up-to-date') return appUpdateState
+    await autoUpdater.downloadUpdate()
+    return appUpdateState
+  } catch (error) {
+    return publishAppUpdateState({
+      status: 'error',
+      message: error instanceof Error ? error.message : 'Windows 更新失败',
+      canAutoInstall: true,
+    })
+  }
 }
 
 function cleanAssistantProfileText(value, maxLength) {
@@ -254,7 +455,8 @@ async function fetchLocalTeamHealth() {
       signal: controller.signal,
     })
     if (!response.ok) return null
-    return response.json()
+    const health = await response.json()
+    return health?.ok === true && health?.name === 'CrewFlow Server' ? health : null
   } catch {
     return null
   } finally {
@@ -264,8 +466,11 @@ async function fetchLocalTeamHealth() {
 
 async function getTeamServiceInfo(message = '') {
   const { defaultServerDataDir } = await import(serverModuleUrl('crewflow-server.mjs'))
-  const { localTeamServerCandidates, readOrCreateAccessKey, serviceAccessKeyPath } = await import(serverModuleUrl('service-manager.mjs'))
+  const { localTeamServerCandidates, readOrCreateAccessKey, readServiceRuntimeMetadata, serviceAccessKeyPath } = await import(
+    serverModuleUrl('service-manager.mjs')
+  )
   const accessKey = await readOrCreateAccessKey()
+  const serviceRuntime = await readServiceRuntimeMetadata()
   const urlCandidates = localTeamServerCandidates()
   const urls = urlCandidates.map((candidate) => candidate.url)
   const health = await fetchLocalTeamHealth()
@@ -298,6 +503,7 @@ async function getTeamServiceInfo(message = '') {
     migrationError: health?.migrationError,
     accessKeyFile,
     accessKeyDirectory: path.dirname(accessKeyFile),
+    serviceRuntime,
     updatedAt: health?.updatedAt,
     message: health?.migrationError
       ? `SQLite 迁移未完成，已继续使用原 JSON 数据：${health.migrationError}`
@@ -313,13 +519,117 @@ async function manageTeamService(action) {
   const { manageCrewFlowService, readOrCreateAccessKey } = await import(serverModuleUrl('service-manager.mjs'))
   await manageCrewFlowService(action, {
     appExecutablePath: app.isPackaged ? process.execPath : undefined,
+    appVersion: app.getVersion(),
     accessKey: await readOrCreateAccessKey(),
   })
   return getTeamServiceInfo(action === 'stop' || action === 'uninstall' ? '团队服务已停止' : '团队服务已开启')
 }
 
+async function writeTeamServiceRecoveryMarker(version = '') {
+  const markerPath = updateRecoveryMarkerPath()
+  await fs.promises.mkdir(path.dirname(markerPath), { recursive: true })
+  await fs.promises.writeFile(
+    markerPath,
+    `${JSON.stringify({ restartTeamService: true, version, createdAt: new Date().toISOString() }, null, 2)}\n`,
+    'utf8',
+  )
+}
+
+async function readTeamServiceRecoveryMarker() {
+  try {
+    const value = JSON.parse(await fs.promises.readFile(updateRecoveryMarkerPath(), 'utf8'))
+    return value?.restartTeamService === true ? value : null
+  } catch {
+    return null
+  }
+}
+
+async function waitForLocalTeamService(expectedRunning, timeoutMs = 8000) {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    const running = Boolean(await fetchLocalTeamHealth())
+    if (running === expectedRunning) return true
+    await new Promise((resolve) => setTimeout(resolve, 250))
+  }
+  return false
+}
+
+function sameExecutablePath(first, second) {
+  if (!first || !second) return false
+  const firstPath = path.resolve(first)
+  const secondPath = path.resolve(second)
+  return process.platform === 'win32' ? firstPath.toLowerCase() === secondPath.toLowerCase() : firstPath === secondPath
+}
+
+async function prepareLocalTeamServiceForUpdate() {
+  const health = await fetchLocalTeamHealth()
+  if (!health?.ok) return false
+
+  await writeTeamServiceRecoveryMarker(appUpdateState.version)
+  await manageTeamService('stop')
+  const stopped = await waitForLocalTeamService(false)
+  if (!stopped) throw new Error('团队服务未能安全停止，请稍后重试')
+  return true
+}
+
+async function restoreOrRepairLocalTeamService() {
+  if (!app.isPackaged || (process.platform !== 'darwin' && process.platform !== 'win32')) return
+
+  const marker = await readTeamServiceRecoveryMarker()
+  const health = await fetchLocalTeamHealth()
+  const { readServiceRuntimeMetadata } = await import(serverModuleUrl('service-manager.mjs'))
+  const runtime = await readServiceRuntimeMetadata()
+  const runtimeNeedsRepair =
+    Boolean(health?.ok) &&
+    (!sameExecutablePath(runtime?.executable, process.execPath) || (runtime?.appVersion && runtime.appVersion !== app.getVersion()))
+
+  if (!marker && !runtimeNeedsRepair) return
+
+  try {
+    await manageTeamService('install')
+    const restored = await waitForLocalTeamService(true)
+    if (!restored) throw new Error('团队服务启动超时')
+    await fs.promises.rm(updateRecoveryMarkerPath(), { force: true })
+  } catch (error) {
+    console.error('CrewFlow team service recovery failed:', error)
+  }
+}
+
+async function installApplicationUpdate() {
+  if (!app.isPackaged) return publishAppUpdateState({ status: 'error', message: '开发模式不能安装正式更新' })
+
+  if (process.platform === 'darwin') {
+    if (!downloadedMacUpdatePath) return publishAppUpdateState({ status: 'error', message: '请先下载安装包' })
+    if (await fetchLocalTeamHealth()) await writeTeamServiceRecoveryMarker(appUpdateState.version)
+    const openError = await shell.openPath(downloadedMacUpdatePath)
+    if (openError) return publishAppUpdateState({ status: 'error', message: openError, canAutoInstall: false })
+    return publishAppUpdateState({
+      status: 'opened',
+      message: '安装包已打开，请退出 CrewFlow 后拖动覆盖旧版',
+      canAutoInstall: false,
+    })
+  }
+
+  if (process.platform !== 'win32' || !windowsUpdateDownloaded) {
+    return publishAppUpdateState({ status: 'error', message: '请先下载完整更新' })
+  }
+
+  try {
+    publishAppUpdateState({ status: 'installing', message: '正在准备安装更新', canAutoInstall: true })
+    await prepareLocalTeamServiceForUpdate()
+    setTimeout(() => autoUpdater.quitAndInstall(false, true), 150)
+    return appUpdateState
+  } catch (error) {
+    return publishAppUpdateState({
+      status: 'error',
+      message: error instanceof Error ? error.message : '更新安装准备失败',
+      canAutoInstall: true,
+    })
+  }
+}
+
 async function createWindow() {
-  const mainWindow = new BrowserWindow({
+  mainWindow = new BrowserWindow({
     width: 1440,
     height: 930,
     minWidth: 1180,
@@ -344,6 +654,10 @@ async function createWindow() {
     shell.openExternal(url)
     return { action: 'deny' }
   })
+
+  mainWindow.on('closed', () => {
+    mainWindow = null
+  })
 }
 
 if (isTeamServerMode) {
@@ -353,6 +667,8 @@ if (isTeamServerMode) {
   })
 } else {
   app.whenReady().then(() => {
+    configureWindowsUpdater()
+
     ipcMain.handle('project-folder:select', async () => {
       const result = await dialog.showOpenDialog({
         title: '选择项目文件夹',
@@ -417,6 +733,16 @@ if (isTeamServerMode) {
       return manageTeamService('stop')
     })
 
+    ipcMain.handle('app-update:state', async () => appUpdateState)
+
+    ipcMain.handle('app-update:download', async (_event, payload = {}) => {
+      return downloadApplicationUpdate(payload)
+    })
+
+    ipcMain.handle('app-update:install', async () => {
+      return installApplicationUpdate()
+    })
+
     ipcMain.handle('clipboard:write-text', async (_event, value) => {
       if (typeof value !== 'string') return false
       clipboard.writeText(value)
@@ -463,6 +789,9 @@ if (isTeamServerMode) {
     })
 
     createWindow()
+    restoreOrRepairLocalTeamService().catch((error) => {
+      console.error('CrewFlow team service startup repair failed:', error)
+    })
 
     app.on('activate', () => {
       if (BrowserWindow.getAllWindows().length === 0) {

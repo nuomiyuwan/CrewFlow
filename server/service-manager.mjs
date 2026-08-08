@@ -33,6 +33,44 @@ export function serviceAccessKeyPath(options = {}) {
   return path.join(defaultServiceDataDir(options), 'access-key.txt')
 }
 
+export function serviceRuntimeMetadataPath(options = {}) {
+  return path.join(defaultServiceDataDir(options), 'service-runtime.json')
+}
+
+export async function readServiceRuntimeMetadata(options = {}) {
+  try {
+    const value = JSON.parse(await readFile(serviceRuntimeMetadataPath(options), 'utf8'))
+    if (!value || typeof value !== 'object') return null
+    return {
+      executable: typeof value.executable === 'string' ? value.executable : '',
+      appVersion: typeof value.appVersion === 'string' ? value.appVersion : '',
+      platform: typeof value.platform === 'string' ? value.platform : '',
+      installedAt: typeof value.installedAt === 'string' ? value.installedAt : '',
+    }
+  } catch {
+    return null
+  }
+}
+
+export async function writeServiceRuntimeMetadata(runtime, options = {}) {
+  const metadataPath = serviceRuntimeMetadataPath(options)
+  await mkdir(path.dirname(metadataPath), { recursive: true })
+  await writeFile(
+    metadataPath,
+    `${JSON.stringify(
+      {
+        executable: runtime.executable,
+        appVersion: typeof options.appVersion === 'string' ? options.appVersion : '',
+        platform: options.platform ?? process.platform,
+        installedAt: new Date().toISOString(),
+      },
+      null,
+      2,
+    )}\n`,
+    'utf8',
+  )
+}
+
 export async function readOrCreateAccessKey(options = {}) {
   const providedKey = normalizeAccessKey(options.accessKey)
   if (providedKey) return providedKey
@@ -265,6 +303,7 @@ ${Object.entries(runtime.env)
   run('launchctl', ['bootout', `gui/${process.getuid()}`, plistPath], { allowFailure: true, stdio: 'ignore' })
   run('launchctl', ['bootstrap', `gui/${process.getuid()}`, plistPath])
   run('launchctl', ['enable', `gui/${process.getuid()}/${serviceLabel}`], { allowFailure: true })
+  await writeServiceRuntimeMetadata(runtime, options)
   console.log(`CrewFlow Server installed: ${plistPath}`)
 }
 
@@ -307,6 +346,7 @@ async function windowsInstall(options = {}) {
   )
   run('schtasks', ['/Create', '/TN', taskName, '/TR', `"${cmdPath}"`, '/SC', 'ONLOGON', '/RL', 'HIGHEST', '/F'])
   run('schtasks', ['/Run', '/TN', taskName], { allowFailure: true })
+  await writeServiceRuntimeMetadata(runtime, options)
   console.log(`CrewFlow Server task installed: ${taskName}`)
 }
 

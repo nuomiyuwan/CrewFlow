@@ -98,10 +98,32 @@ type UpdateRelease = {
   assets: Array<{
     name: string
     url: string
+    digest?: string
   }>
 }
 
 type UpdateCheckStatus = 'idle' | 'checking' | 'available' | 'up-to-date' | 'error'
+type AppUpdateInstallStatus =
+  | 'idle'
+  | 'checking'
+  | 'available'
+  | 'up-to-date'
+  | 'downloading'
+  | 'downloaded'
+  | 'installing'
+  | 'opened'
+  | 'error'
+
+type AppUpdateInstallState = {
+  status: AppUpdateInstallStatus
+  percent: number
+  transferred: number
+  total: number
+  version: string
+  fileName: string
+  message: string
+  canAutoInstall: boolean
+}
 
 type WeatherLocation = {
   id: number
@@ -304,6 +326,10 @@ type DesktopBridge = {
   installTeamService: () => Promise<TeamServiceInfo>
   restartTeamService: () => Promise<TeamServiceInfo>
   stopTeamService: () => Promise<TeamServiceInfo>
+  getAppUpdateState: () => Promise<AppUpdateInstallState>
+  downloadAppUpdate: (payload: { version: string; name: string; url: string; digest?: string }) => Promise<AppUpdateInstallState>
+  installAppUpdate: () => Promise<AppUpdateInstallState>
+  onAppUpdateState: (listener: (state: AppUpdateInstallState) => void) => () => void
   copyText: (value: string) => Promise<boolean>
   loadAssistantSettings: () => Promise<AssistantSettings>
   saveAssistantSettings: (payload: AssistantSettingsPayload) => Promise<AssistantSettings>
@@ -660,6 +686,16 @@ const appVersion = import.meta.env.VITE_APP_VERSION || '0.0.0'
 const crewFlowLatestReleaseUrl = 'https://api.github.com/repos/nuomiyuwan/CrewFlow/releases/latest'
 const updateCheckCacheKey = 'crewflow-update-check-cache'
 const updateCheckIntervalMs = 6 * 60 * 60 * 1000
+const defaultAppUpdateInstallState: AppUpdateInstallState = {
+  status: 'idle',
+  percent: 0,
+  transferred: 0,
+  total: 0,
+  version: '',
+  fileName: '',
+  message: '',
+  canAutoInstall: false,
+}
 const weatherLocationStorageKey = 'crewflow-local-weather-location-v1'
 const weatherCacheStorageKey = 'crewflow-local-weather-cache-v1'
 const weatherRefreshIntervalMs = 30 * 60 * 1000
@@ -1172,7 +1208,7 @@ async function fetchLatestCrewFlowRelease() {
     tag_name?: string
     html_url?: string
     body?: string
-    assets?: Array<{ name?: string; browser_download_url?: string }>
+    assets?: Array<{ name?: string; browser_download_url?: string; digest?: string }>
   }
   const version = release.tag_name?.replace(/^v/i, '').trim() ?? ''
   if (!version || !release.html_url) throw new Error('版本检查失败：未找到正式版')
@@ -1183,7 +1219,11 @@ async function fetchLatestCrewFlowRelease() {
     notes: release.body?.trim() ?? '',
     assets: (release.assets ?? [])
       .filter((asset) => asset.name && asset.browser_download_url)
-      .map((asset) => ({ name: asset.name as string, url: asset.browser_download_url as string })),
+      .map((asset) => ({
+        name: asset.name as string,
+        url: asset.browser_download_url as string,
+        digest: typeof asset.digest === 'string' ? asset.digest : undefined,
+      })),
   } satisfies UpdateRelease
 }
 
@@ -1561,6 +1601,7 @@ function App() {
   const [updateCheckStatus, setUpdateCheckStatus] = useState<UpdateCheckStatus>('idle')
   const [availableUpdate, setAvailableUpdate] = useState<UpdateRelease | null>(null)
   const [showUpdateDialog, setShowUpdateDialog] = useState(false)
+  const [appUpdateInstallState, setAppUpdateInstallState] = useState<AppUpdateInstallState>(defaultAppUpdateInstallState)
   const [weatherLocation, setWeatherLocation] = useState<WeatherLocation | null>(() => loadStoredWeatherLocation())
   const [weatherSnapshot, setWeatherSnapshot] = useState<WeatherSnapshot | null>(() => {
     const location = loadStoredWeatherLocation()
@@ -1846,6 +1887,24 @@ function App() {
 
   useEffect(() => {
     clearLegacyLocalStorage()
+  }, [])
+
+  useEffect(() => {
+    const bridge = window.desktopBridge
+    if (!bridge?.getAppUpdateState || !bridge.onAppUpdateState) return
+
+    let active = true
+    void bridge.getAppUpdateState().then((state) => {
+      if (active) setAppUpdateInstallState(state)
+    })
+    const unsubscribe = bridge.onAppUpdateState((state) => {
+      if (active) setAppUpdateInstallState(state)
+    })
+
+    return () => {
+      active = false
+      unsubscribe()
+    }
   }, [])
 
   useEffect(() => {
@@ -3833,12 +3892,22 @@ function App() {
           version={appVersion}
           release={availableUpdate}
           status={updateCheckStatus}
+          installState={appUpdateInstallState}
           onClose={() => setShowUpdateDialog(false)}
           onRetry={() => void checkForUpdates(true)}
-          onDownload={(url) => {
-            setShowUpdateDialog(false)
-            window.open(url, '_blank', 'noopener,noreferrer')
+          onDownload={(asset, releaseUrl) => {
+            if (!asset || !window.desktopBridge?.downloadAppUpdate) {
+              window.open(releaseUrl, '_blank', 'noopener,noreferrer')
+              return
+            }
+            void window.desktopBridge.downloadAppUpdate({
+              version: availableUpdate?.version ?? '',
+              name: asset.name,
+              url: asset.url,
+              digest: asset.digest,
+            })
           }}
+          onInstall={() => void window.desktopBridge?.installAppUpdate?.()}
         />
       )}
       {currentAccount && showWelcomeGuide && (
@@ -4323,13 +4392,13 @@ function updateRuntimeGuide() {
   if (platform === 'win32') {
     return {
       platformLabel: 'Windows 64 位',
-      packageLabel: 'Windows-x64 ZIP',
-      assetPattern: /Windows-x64.*\.zip$/i,
+      packageLabel: 'Windows-x64 Setup.exe',
+      assetPattern: /Windows-x64-Setup\.exe$/i,
       steps: [
-        '退出正在运行的旧版 CrewFlow。',
-        '下载 Windows-x64 ZIP，并完整解压到一个新文件夹。',
-        '从新文件夹运行 CrewFlow.exe，确认账号、项目数据和团队连接正常。',
-        '确认新版正常后，再删除旧版程序文件夹。',
+        '点击“下载更新”，等待安装程序下载完成。',
+        '点击“安装并重启”，CrewFlow 会在原安装位置完成替换。',
+        '首次从压缩包版迁移时，安装程序会创建固定安装目录和快捷方式。',
+        '新版确认正常后，可以删除以前的压缩包程序文件夹。',
       ],
     }
   }
@@ -4338,28 +4407,32 @@ function updateRuntimeGuide() {
     const isIntel = arch === 'x64'
     return {
       platformLabel: isIntel ? 'Intel 芯片 Mac' : arch === 'arm64' ? 'Apple 芯片 Mac' : 'macOS',
-      packageLabel: isIntel ? 'macOS-x64 ZIP' : arch === 'arm64' ? 'macOS-arm64 ZIP' : '与芯片匹配的 macOS ZIP',
-      assetPattern: isIntel ? /macOS-x64.*\.zip$/i : arch === 'arm64' ? /macOS-arm64.*\.zip$/i : null,
+      packageLabel: 'macOS 通用版 DMG',
+      assetPattern: /macOS-(?:universal|arm64|x64)\.dmg$/i,
       steps: [
-        '退出正在运行的旧版 CrewFlow。',
-        `下载并解压${isIntel ? ' macOS-x64' : arch === 'arm64' ? ' macOS-arm64' : '与电脑芯片匹配的 macOS'} ZIP。`,
-        '用新版 CrewFlow.app 替换旧版应用，再重新打开。',
-        '确认账号、项目数据和团队连接正常。',
+        '点击“下载更新”，等待 DMG 安装包下载完成。',
+        '点击“打开安装包”，然后退出正在运行的 CrewFlow。',
+        '把新版 CrewFlow 拖入“应用程序”，确认覆盖旧版。',
+        '重新打开 CrewFlow；团队主机会自动修复并恢复后台服务。',
       ],
     }
   }
 
   return {
     platformLabel: '当前电脑',
-    packageLabel: '与系统匹配的 ZIP',
+    packageLabel: '与系统匹配的安装包',
     assetPattern: null,
     steps: [
-      '退出正在运行的旧版 CrewFlow。',
-      '从 GitHub Release 下载与当前系统匹配的 ZIP，并完整解压。',
-      '从新目录打开 CrewFlow，确认数据和团队连接正常。',
-      '确认新版正常后，再删除旧版程序文件。',
+      '从 GitHub Release 下载与当前系统匹配的安装包。',
+      '退出正在运行的 CrewFlow 后完成覆盖安装。',
+      '重新打开 CrewFlow，确认数据和团队连接正常。',
     ],
   }
+}
+
+function formatUpdateBytes(value: number) {
+  if (!Number.isFinite(value) || value <= 0) return '0 MB'
+  return `${(value / 1024 / 1024).toFixed(value >= 100 * 1024 * 1024 ? 0 : 1)} MB`
 }
 
 function releaseNotesForDisplay(notes: string) {
@@ -4391,16 +4464,20 @@ function VersionUpdateModal({
   version,
   release,
   status,
+  installState,
   onClose,
   onRetry,
   onDownload,
+  onInstall,
 }: {
   version: string
   release: UpdateRelease | null
   status: UpdateCheckStatus
+  installState: AppUpdateInstallState
   onClose: () => void
   onRetry: () => void
-  onDownload: (url: string) => void
+  onDownload: (asset: UpdateRelease['assets'][number] | undefined, releaseUrl: string) => void
+  onInstall: () => void
 }) {
   const guide = updateRuntimeGuide()
   const matchingAsset = guide.assetPattern
@@ -4408,6 +4485,17 @@ function VersionUpdateModal({
     : undefined
   const releaseNotes = releaseNotesForDisplay(release?.notes ?? '')
   const hasUpdate = status === 'available' && Boolean(release)
+  const isUpdateDownloading = installState.status === 'checking' || installState.status === 'downloading'
+  const isUpdateDownloaded = installState.status === 'downloaded'
+  const isUpdateInstalling = installState.status === 'installing'
+  const isInstallerOpened = installState.status === 'opened'
+  const hasInstallError = installState.status === 'error'
+  const transferSummary =
+    installState.total > 0
+      ? `${installState.percent}% · ${formatUpdateBytes(installState.transferred)} / ${formatUpdateBytes(installState.total)}`
+      : installState.percent > 0
+        ? `${installState.percent}%`
+        : '正在准备下载'
   const dialogTitle =
     status === 'checking'
       ? '正在检查更新'
@@ -4483,6 +4571,29 @@ function VersionUpdateModal({
 
           {hasUpdate && release && (
             <>
+              {(isUpdateDownloading || isUpdateDownloaded || isUpdateInstalling || isInstallerOpened || hasInstallError) && (
+                <section className={`versionUpdateTransfer ${hasInstallError ? 'error' : ''}`}>
+                  <div className="versionUpdateTransferHeader">
+                    <div>
+                      {isUpdateDownloaded || isInstallerOpened ? (
+                        <CheckCircle2 size={20} />
+                      ) : hasInstallError ? (
+                        <AlertTriangle size={20} />
+                      ) : (
+                        <RefreshCw size={20} className={isUpdateDownloading || isUpdateInstalling ? 'spinning' : ''} />
+                      )}
+                      <strong>{installState.message || '正在准备更新'}</strong>
+                    </div>
+                    {isUpdateDownloading && <span>{transferSummary}</span>}
+                  </div>
+                  {isUpdateDownloading && (
+                    <div className="versionUpdateProgress" aria-label={`更新下载进度 ${installState.percent}%`}>
+                      <i style={{ width: `${installState.percent}%` }} />
+                    </div>
+                  )}
+                </section>
+              )}
+
               <section className="versionUpdateSection">
                 <h3>v{release.version} 更新内容</h3>
                 {releaseNotes.length > 0 ? (
@@ -4498,7 +4609,7 @@ function VersionUpdateModal({
 
               <section className="versionUpdateSection">
                 <div className="versionUpdateSectionTitle">
-                  <h3>如何手动更新</h3>
+                  <h3>安装与更新</h3>
                   <span>{guide.platformLabel} · {matchingAsset?.name ?? guide.packageLabel}</span>
                 </div>
                 <ol>
@@ -4507,7 +4618,7 @@ function VersionUpdateModal({
                   ))}
                 </ol>
                 <div className="versionUpdateNote">
-                  单人数据、团队数据库和助理 API Key 都保存在程序目录之外，正常更新不会删除数据。如果这台电脑是团队常驻主机，请先在新版“工作模式”中重新开启团队服务并确认运行，再删除旧版目录。
+                  单人数据、团队数据库和助理 API Key 都保存在程序目录之外，更新不会删除数据。团队主机只在正式安装时短暂停服，新版启动后会自动恢复并修复服务路径。
                 </div>
               </section>
             </>
@@ -4515,8 +4626,8 @@ function VersionUpdateModal({
         </div>
 
         <footer>
-          <button type="button" onClick={onClose}>
-            {hasUpdate ? '稍后下载' : '关闭'}
+          <button type="button" onClick={onClose} disabled={isUpdateInstalling}>
+            {hasUpdate ? '稍后处理' : '关闭'}
           </button>
           {status === 'error' && (
             <button className="primaryButton" type="button" onClick={onRetry}>
@@ -4525,10 +4636,32 @@ function VersionUpdateModal({
             </button>
           )}
           {hasUpdate && release && (
-            <button className="primaryButton" type="button" onClick={() => onDownload(matchingAsset?.url ?? release.url)}>
-              <Download size={15} />
-              下载新版本
-            </button>
+            isUpdateDownloaded ? (
+              <button className="primaryButton" type="button" onClick={onInstall}>
+                {installState.canAutoInstall ? <RefreshCw size={15} /> : <FolderOpen size={15} />}
+                {installState.canAutoInstall ? '安装并重启' : '打开安装包'}
+              </button>
+            ) : (
+              <button
+                className="primaryButton"
+                type="button"
+                disabled={isUpdateDownloading || isUpdateInstalling || isInstallerOpened}
+                onClick={() => onDownload(matchingAsset, release.url)}
+              >
+                {isUpdateDownloading || isUpdateInstalling ? <RefreshCw size={15} className="spinning" /> : <Download size={15} />}
+                {isUpdateDownloading
+                  ? '正在下载'
+                  : isUpdateInstalling
+                    ? '正在安装'
+                    : isInstallerOpened
+                      ? '安装包已打开'
+                      : hasInstallError
+                        ? '重新下载'
+                        : matchingAsset
+                          ? '下载更新'
+                          : '前往下载页'}
+              </button>
+            )
           )}
         </footer>
       </section>

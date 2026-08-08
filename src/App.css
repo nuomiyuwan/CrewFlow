@@ -4049,6 +4049,75 @@ h1 {
   color: #79ddb4;
 }
 
+.versionUpdateTransfer {
+  display: grid;
+  gap: 10px;
+  margin-bottom: 4px;
+  border: 1px solid rgba(128, 233, 247, 0.2);
+  border-radius: 10px;
+  background: rgba(128, 233, 247, 0.055);
+  padding: 12px 14px;
+}
+
+.versionUpdateTransfer.error {
+  border-color: rgba(255, 120, 120, 0.24);
+  background: rgba(255, 120, 120, 0.055);
+}
+
+.versionUpdateTransferHeader,
+.versionUpdateTransferHeader > div {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+
+.versionUpdateTransferHeader {
+  justify-content: space-between;
+}
+
+.versionUpdateTransferHeader > div {
+  min-width: 0;
+}
+
+.versionUpdateTransferHeader svg {
+  flex: 0 0 auto;
+  color: #80e9f7;
+}
+
+.versionUpdateTransfer.error .versionUpdateTransferHeader svg {
+  color: #ff9c9c;
+}
+
+.versionUpdateTransferHeader strong {
+  min-width: 0;
+  overflow: hidden;
+  color: rgba(244, 248, 255, 0.86);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.versionUpdateTransferHeader > span {
+  flex: 0 0 auto;
+  color: rgba(210, 222, 235, 0.58);
+  font-size: 11px;
+}
+
+.versionUpdateProgress {
+  height: 5px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.versionUpdateProgress i {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #80e9f7, #f4dd8f);
+  transition: width 160ms ease;
+}
+
 .versionUpdateSection {
   display: grid;
   gap: 12px;
@@ -4115,6 +4184,11 @@ h1 {
   background: rgba(255, 255, 255, 0.06);
   cursor: pointer;
   padding: 0 15px;
+}
+
+.versionUpdateModal footer button:disabled {
+  cursor: default;
+  opacity: 0.48;
 }
 
 .versionUpdateModal footer .primaryButton {

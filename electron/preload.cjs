@@ -13,6 +13,14 @@ contextBridge.exposeInMainWorld('desktopBridge', {
   installTeamService: () => ipcRenderer.invoke('team-service:install'),
   restartTeamService: () => ipcRenderer.invoke('team-service:restart'),
   stopTeamService: () => ipcRenderer.invoke('team-service:stop'),
+  getAppUpdateState: () => ipcRenderer.invoke('app-update:state'),
+  downloadAppUpdate: (payload) => ipcRenderer.invoke('app-update:download', payload),
+  installAppUpdate: () => ipcRenderer.invoke('app-update:install'),
+  onAppUpdateState: (listener) => {
+    const handler = (_event, state) => listener(state)
+    ipcRenderer.on('app-update:state-changed', handler)
+    return () => ipcRenderer.removeListener('app-update:state-changed', handler)
+  },
   copyText: (value) => ipcRenderer.invoke('clipboard:write-text', value),
   loadAssistantSettings: () => ipcRenderer.invoke('assistant-settings:load'),
   saveAssistantSettings: (payload) => ipcRenderer.invoke('assistant-settings:save', payload),

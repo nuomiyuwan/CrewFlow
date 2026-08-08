@@ -4,7 +4,16 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
-import { localTeamServerCandidates, localTeamServerUrls, readOrCreateAccessKey, serviceAccessKeyPath, serviceRuntime } from './service-manager.mjs'
+import {
+  localTeamServerCandidates,
+  localTeamServerUrls,
+  readOrCreateAccessKey,
+  readServiceRuntimeMetadata,
+  serviceAccessKeyPath,
+  serviceRuntime,
+  serviceRuntimeMetadataPath,
+  writeServiceRuntimeMetadata,
+} from './service-manager.mjs'
 
 test('service runtime uses packaged app executable when available', () => {
   const runtime = serviceRuntime({
@@ -95,6 +104,30 @@ test('service access key prefers the explicit environment value', async () => {
   })
 
   assert.equal(key, 'explicit-key')
+})
+
+test('service runtime metadata records the installed executable and version', async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), 'crewflow-runtime-'))
+  const options = { platform: 'darwin', homeDir: dir, env: {}, appVersion: '1.4.2' }
+
+  try {
+    const runtime = serviceRuntime({
+      appExecutablePath: '/Applications/CrewFlow.app/Contents/MacOS/CrewFlow',
+      serverScript: '/Applications/CrewFlow.app/Contents/Resources/app.asar/server/crewflow-server.mjs',
+    })
+    await writeServiceRuntimeMetadata(runtime, options)
+
+    const metadata = await readServiceRuntimeMetadata(options)
+    const metadataFile = await readFile(serviceRuntimeMetadataPath(options), 'utf8')
+
+    assert.equal(metadata?.executable, runtime.executable)
+    assert.equal(metadata?.appVersion, '1.4.2')
+    assert.equal(metadata?.platform, 'darwin')
+    assert.match(metadata?.installedAt ?? '', /^\d{4}-\d{2}-\d{2}T/)
+    assert.match(metadataFile, /CrewFlow\.app/)
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
 })
 
 test('server modules can be imported when process argv has no script path', () => {
