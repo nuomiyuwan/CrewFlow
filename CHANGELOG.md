@@ -2,6 +2,20 @@
 
 All notable changes to CrewFlow are documented in this file.
 
+## 1.4.4 - 2026-08-13
+
+### Improved
+
+- Allowed project managers to create, edit, assign, and remove tasks within their own active projects while keeping archived projects restricted to controllers and administrators.
+- Serialized team writes on the host and automatically merged concurrent changes that affect different projects, tasks, or calendar plans.
+- Automatically retried safe client writes after a team-data revision change and kept same-record conflicts protected from accidental overwrites.
+
+### Fixed
+
+- Added the missing date field when editing an existing Delivery Calendar plan, with project deadline, overdue, and risk state reconciled after saving.
+- Prevented an otherwise valid project creation or update from disappearing when another computer saved unrelated team data at the same time.
+- Showed a clear team-save error when a network or host failure prevents data from being written.
+
 ## 1.4.3 - 2026-08-08
 
 ### Added

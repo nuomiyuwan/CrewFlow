@@ -1479,6 +1479,24 @@ function createTeamDataMutations(data: Partial<AppData>, baseline: AppData) {
   return mutations
 }
 
+function teamMutationValue(data: AppData, mutation: TeamDataMutation) {
+  if (teamArrayCollections.includes(mutation.collection as TeamDataArrayCollection)) {
+    const collection = mutation.collection as TeamDataArrayCollection
+    return data[collection]?.find((value) => teamDataRecordKey(collection, value) === mutation.key)
+  }
+  if (mutation.collection === 'financeLedger') return data.financeLedger?.[mutation.key]
+  if (mutation.collection === 'workflowOptions') return data.workflowOptions
+  return undefined
+}
+
+function canReplayTeamMutations(mutations: TeamDataMutation[], baseline: AppData, currentData: AppData) {
+  return mutations.every((mutation) => {
+    const baselineValue = teamMutationValue(baseline, mutation)
+    const currentValue = teamMutationValue(currentData, mutation)
+    return JSON.stringify(baselineValue) === JSON.stringify(currentValue)
+  })
+}
+
 function applyTeamDataChanges(savedData: AppData, response: TeamDataChangesResponse) {
   const nextData = normalizeTeamAppData(savedData)
   const mutableData = nextData as unknown as Record<string, unknown>
@@ -1619,6 +1637,7 @@ function App() {
   const teamSaveQueueRef = useRef<Promise<void>>(Promise.resolve())
   const teamSavePendingRef = useRef(0)
   const teamSyncPendingRef = useRef(false)
+  const teamResolvedConflictDataRef = useRef<AppData | null>(null)
   const teamServiceInfoRef = useRef<TeamServiceInfo | null>(null)
   const updateCheckPendingRef = useRef(false)
   const weatherRequestIdRef = useRef(0)
@@ -1816,22 +1835,51 @@ function App() {
               const mutations = createTeamDataMutations(data, baseline)
               if (mutations.length === 0) return true
 
-              const response = await saveTeamAppDataChanges(
-                teamServerUrl,
-                teamAccessKey,
-                mutations,
-                data.version ?? projectDataStorageVersion,
-                teamDataRevisionRef.current,
-              )
-              if (response) {
-                teamIncrementalCapabilityRef.current = 'supported'
-                rememberRemoteSlices(applyTeamDataChanges(baseline, response))
-                rememberConnectedTeamHost()
-                setTeamConnectionStatus('connected')
-                setTeamConnectionMessage('团队数据已保存')
-                return true
+              let retryBaseline = baseline
+              let retryRevision = teamDataRevisionRef.current
+              let resolvedConflict = false
+
+              for (let attempt = 0; attempt < 3; attempt += 1) {
+                try {
+                  const response = await saveTeamAppDataChanges(
+                    teamServerUrl,
+                    teamAccessKey,
+                    mutations,
+                    data.version ?? projectDataStorageVersion,
+                    retryRevision,
+                  )
+                  if (!response) {
+                    teamIncrementalCapabilityRef.current = 'legacy'
+                    break
+                  }
+
+                  teamIncrementalCapabilityRef.current = 'supported'
+                  const savedData = applyTeamDataChanges(retryBaseline, response)
+                  rememberRemoteSlices(savedData)
+                  if (resolvedConflict || teamResolvedConflictDataRef.current) {
+                    teamResolvedConflictDataRef.current = savedData
+                  }
+                  rememberConnectedTeamHost()
+                  setTeamConnectionStatus('connected')
+                  setTeamConnectionMessage(resolvedConflict ? '团队数据冲突已自动合并并保存' : '团队数据已保存')
+                  return true
+                } catch (error) {
+                  if (
+                    error instanceof TeamDataConflictError &&
+                    error.currentData &&
+                    error.code !== 'UNSAFE_DATA_CHANGE' &&
+                    canReplayTeamMutations(mutations, retryBaseline, normalizeTeamAppData(error.currentData)) &&
+                    attempt < 2
+                  ) {
+                    retryBaseline = normalizeTeamAppData(error.currentData)
+                    retryRevision = retryBaseline.revision ?? null
+                    resolvedConflict = true
+                    rememberRemoteSlices(retryBaseline)
+                    continue
+                  }
+                  throw error
+                }
               }
-              teamIncrementalCapabilityRef.current = 'legacy'
             }
 
             const savedData = await saveLegacyTeamAppData(teamServerUrl, teamAccessKey, data, teamDataRevisionRef.current)
@@ -1851,6 +1899,8 @@ function App() {
               )
               return false
             }
+            setTeamConnectionStatus('error')
+            setTeamConnectionMessage(error instanceof Error ? error.message : '团队数据保存失败')
             throw error
           }
         }
@@ -1863,6 +1913,11 @@ function App() {
 
         return queuedSave.finally(() => {
           teamSavePendingRef.current = Math.max(0, teamSavePendingRef.current - 1)
+          if (teamSavePendingRef.current === 0 && teamResolvedConflictDataRef.current) {
+            const resolvedData = teamResolvedConflictDataRef.current
+            teamResolvedConflictDataRef.current = null
+            applyAppDataToState(resolvedData)
+          }
         })
       }
       return window.desktopBridge?.saveAppData?.(data) ?? false
@@ -2259,7 +2314,7 @@ function App() {
   const canAccessProjects = activeNavItems.some((item) => item.id === 'projects')
   const canCreateProject = canRoleCreateProject(role)
   const canManageWorkflowOptions = role === 'controller' || role === 'admin'
-  const canEditProjectTaskBoard = role === 'controller' || role === 'admin'
+  const canEditProjectTaskBoard = role === 'controller' || role === 'admin' || role === 'manager'
   const canEditArchivedProjects = role === 'controller' || role === 'admin'
   const activeStaffMembers = useMemo(() => appStaffMembers.filter(isAssignableStaff), [appStaffMembers])
   const assistantStaffMembers = useMemo(() => {
@@ -7745,6 +7800,7 @@ function CalendarPlanModal({
     ''
   const [title, setTitle] = useState(item?.title ?? draft?.title ?? '项目计划')
   const [owner, setOwner] = useState(initialOwner)
+  const [scheduledDate, setScheduledDate] = useState(date)
 
   useEffect(() => {
     if (item || draft?.owner) return
@@ -7759,7 +7815,7 @@ function CalendarPlanModal({
       <section className="financeEntryModal calendarPlanModal" role="dialog" aria-modal="true" aria-label="添加交付计划" onMouseDown={(event) => event.stopPropagation()}>
         <header>
           <div>
-            <span className="eyebrow">{formatMonthDay(new Date(date))}</span>
+            <span className="eyebrow">{formatMonthDay(new Date(`${scheduledDate}T00:00:00`))}</span>
             <h2>{item ? '编辑计划' : draft ? '确认助理计划' : '添加计划'}</h2>
           </div>
           <button type="button" onClick={onClose} title="关闭">
@@ -7781,6 +7837,12 @@ function CalendarPlanModal({
             <span>计划名称</span>
             <input value={title} onChange={(event) => setTitle(event.target.value)} placeholder="例如：脚本初稿、拍摄计划、成片交付" />
           </label>
+          {item && (
+            <label className="textField">
+              <span>计划日期</span>
+              <input type="date" value={scheduledDate} onChange={(event) => setScheduledDate(event.target.value)} />
+            </label>
+          )}
           <label className="textField">
             <span>负责人</span>
             <select value={owner} onChange={(event) => setOwner(event.target.value)}>
@@ -7804,13 +7866,14 @@ function CalendarPlanModal({
             type="button"
             onClick={() =>
               onSave({
-                date,
+                date: scheduledDate,
                 id: item?.id,
                 projectId,
                 title,
                 owner,
               })
             }
+            disabled={!scheduledDate}
           >
             {item ? '保存修改' : draft ? '确认并保存' : '保存计划'}
           </button>

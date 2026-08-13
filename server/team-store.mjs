@@ -613,16 +613,37 @@ function createSqliteTeamStore({ dataDir, autoBackup = true }) {
 
   function performMutations(rawMutations, { expectedRevision, version } = {}) {
     const currentRevision = databaseRevision(database)
+    const mutations = rawMutations.map(normalizeMutation)
+    if (mutations.length > 50_000) throw new Error('Too many team data mutations in one request')
     if (
       Number.isInteger(expectedRevision) &&
       expectedRevision >= 0 &&
       expectedRevision !== currentRevision
     ) {
-      throw new StaleTeamDataError({ expectedRevision, currentData: readDatabaseData(database) })
+      const changeFloorRevision = Number(metadataValue(database, 'change_floor_revision') || 0)
+      const cannotVerifyChanges = expectedRevision > currentRevision || expectedRevision < changeFloorRevision
+      const overlapsNewerChanges = !cannotVerifyChanges && mutations.some((mutation) => {
+        const currentRecord = database
+          .prepare('SELECT updated_revision FROM records WHERE collection = ? AND record_key = ?')
+          .get(mutation.collection, mutation.key)
+        if (currentRecord && Number(currentRecord.updated_revision) > expectedRevision) return true
+
+        return Boolean(
+          database
+            .prepare(
+              `SELECT 1 FROM change_log
+               WHERE revision > ? AND collection = ? AND record_key = ?
+               LIMIT 1`,
+            )
+            .get(expectedRevision, mutation.collection, mutation.key),
+        )
+      })
+
+      if (cannotVerifyChanges || overlapsNewerChanges) {
+        throw new StaleTeamDataError({ expectedRevision, currentData: readDatabaseData(database) })
+      }
     }
 
-    const mutations = rawMutations.map(normalizeMutation)
-    if (mutations.length > 50_000) throw new Error('Too many team data mutations in one request')
     assertNoBulkCollectionClear(database, mutations)
 
     const nextRevision = currentRevision + 1

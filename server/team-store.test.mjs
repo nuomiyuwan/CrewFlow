@@ -143,9 +143,47 @@ test('team store records granular changes and creates a daily database backup', 
     assert.ok((await readdir(store.backupDirectory)).some((fileName) => /^crewflow-team-\d{4}-\d{2}-\d{2}\.db$/.test(fileName)))
 
     await assert.rejects(
-      store.mutate([{ collection: 'projects', operation: 'delete', key: 'P-1' }], { expectedRevision: seeded.revision }),
+      store.mutate(
+        [
+          {
+            collection: 'tasks',
+            operation: 'upsert',
+            key: 'T-1',
+            value: { id: 'T-1', projectId: 'P-1', title: 'Task A', status: '已完成' },
+          },
+        ],
+        { expectedRevision: seeded.revision },
+      ),
       (error) => error?.code === 'STALE_DATA',
     )
+    store.close()
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('team store queues stale writes when they affect different records', async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), 'crewflow-store-queued-writes-'))
+
+  try {
+    const store = createTeamStore({ dataDir: dir, autoBackup: false })
+    const initial = await store.read()
+
+    const [first, second] = await Promise.all([
+      store.mutate(
+        [{ collection: 'projects', operation: 'upsert', key: 'P-1', value: { id: 'P-1', name: 'Project A' } }],
+        { expectedRevision: initial.revision },
+      ),
+      store.mutate(
+        [{ collection: 'projects', operation: 'upsert', key: 'P-2', value: { id: 'P-2', name: 'Project B' } }],
+        { expectedRevision: initial.revision },
+      ),
+    ])
+    const data = await store.read()
+
+    assert.equal(first.revision, initial.revision + 1)
+    assert.equal(second.revision, initial.revision + 2)
+    assert.deepEqual(data.projects.map((project) => project.id).sort(), ['P-1', 'P-2'])
     store.close()
   } finally {
     await rm(dir, { recursive: true, force: true })
