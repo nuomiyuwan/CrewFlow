@@ -2,6 +2,18 @@
 
 All notable changes to CrewFlow are documented in this file.
 
+## 1.4.7 - 2026-08-14
+
+### Improved
+
+- Prefer the GitCode installer mirror for in-app update checks and downloads in China, with an automatic GitHub fallback when the mirror is unavailable.
+- Keep GitCode as a release-asset mirror so future installer uploads do not require pushing application source code there.
+
+### Fixed
+
+- Automatically reconnect and reload team data when the desktop window starts before the updated host service has finished recovering, without requiring a manual connection test.
+- Kept archive finance-status labels readable without crowding or wrapping in compact layouts.
+
 ## 1.4.6 - 2026-08-14
 
 ### Improved

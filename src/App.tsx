@@ -95,9 +95,11 @@ type UpdateRelease = {
   version: string
   url: string
   notes: string
+  source: 'gitcode' | 'github'
   assets: Array<{
     name: string
     url: string
+    fallbackUrl?: string
     digest?: string
   }>
 }
@@ -327,7 +329,14 @@ type DesktopBridge = {
   restartTeamService: () => Promise<TeamServiceInfo>
   stopTeamService: () => Promise<TeamServiceInfo>
   getAppUpdateState: () => Promise<AppUpdateInstallState>
-  downloadAppUpdate: (payload: { version: string; name: string; url: string; digest?: string }) => Promise<AppUpdateInstallState>
+  checkAppUpdate: () => Promise<UpdateRelease>
+  downloadAppUpdate: (payload: {
+    version: string
+    name: string
+    url: string
+    fallbackUrl?: string
+    digest?: string
+  }) => Promise<AppUpdateInstallState>
   installAppUpdate: () => Promise<AppUpdateInstallState>
   onAppUpdateState: (listener: (state: AppUpdateInstallState) => void) => () => void
   copyText: (value: string) => Promise<boolean>
@@ -503,6 +512,7 @@ type FinanceLedger = Record<
 type FinanceAction = 'payment' | 'invoice'
 type DataMode = 'single' | 'team'
 type TeamConnectionStatus = 'idle' | 'checking' | 'connected' | 'error'
+const teamStartupRetryDelaysMs = [0, 2000]
 type AppData = {
   version: string
   revision?: number
@@ -683,8 +693,8 @@ const teamAccessKeyStorageKey = 'crewflow-team-access-key'
 const workflowOptionsStorageKey = 'crewflow-workflow-options'
 const defaultTeamServerUrl = 'http://127.0.0.1:8787'
 const appVersion = import.meta.env.VITE_APP_VERSION || '0.0.0'
-const crewFlowLatestReleaseUrl = 'https://api.github.com/repos/nuomiyuwan/CrewFlow/releases/latest'
-const updateCheckCacheKey = 'crewflow-update-check-cache'
+const crewFlowGitHubLatestReleaseUrl = 'https://api.github.com/repos/nuomiyuwan/CrewFlow/releases/latest'
+const updateCheckCacheKey = 'crewflow-update-check-cache-v2'
 const updateCheckIntervalMs = 6 * 60 * 60 * 1000
 const defaultAppUpdateInstallState: AppUpdateInstallState = {
   status: 'idle',
@@ -1165,7 +1175,7 @@ function isNewerVersion(candidate: string, current: string) {
   return false
 }
 
-function readCachedUpdateRelease() {
+function readCachedUpdateRelease(): { checkedAt: number; release: UpdateRelease } | null {
   try {
     const raw = localStorage.getItem(updateCheckCacheKey)
     if (!raw) return null
@@ -1182,6 +1192,7 @@ function readCachedUpdateRelease() {
       checkedAt,
       release: {
         ...cached.release,
+        source: cached.release.source === 'gitcode' ? 'gitcode' : 'github',
         assets,
       },
     }
@@ -1199,7 +1210,9 @@ function cacheUpdateRelease(release: UpdateRelease) {
 }
 
 async function fetchLatestCrewFlowRelease() {
-  const response = await fetch(crewFlowLatestReleaseUrl, {
+  if (window.desktopBridge?.checkAppUpdate) return window.desktopBridge.checkAppUpdate()
+
+  const response = await fetch(crewFlowGitHubLatestReleaseUrl, {
     headers: { Accept: 'application/vnd.github+json' },
   })
   if (!response.ok) throw new Error(`版本检查失败：${response.status}`)
@@ -1217,6 +1230,7 @@ async function fetchLatestCrewFlowRelease() {
     version,
     url: release.html_url,
     notes: release.body?.trim() ?? '',
+    source: 'github',
     assets: (release.assets ?? [])
       .filter((asset) => asset.name && asset.browser_download_url)
       .map((asset) => ({
@@ -1326,6 +1340,11 @@ async function fetchTeamAppData(serverUrl: string, accessKey: string) {
   })
   if (!response.ok) throw new Error(`团队数据读取失败：${response.status}`)
   return (await response.json()) as AppData
+}
+
+function shouldRetryInitialTeamLoad(error: unknown) {
+  const message = error instanceof Error ? error.message : ''
+  return !/团队数据读取失败：(400|401|403|404)\b/.test(message)
 }
 
 async function saveLegacyTeamAppData(serverUrl: string, accessKey: string, data: Partial<AppData>, baseRevision?: number | null) {
@@ -2057,17 +2076,44 @@ function App() {
     async function loadFileData() {
       setDataReady(false)
       setLoadedDataSourceKey('')
-      const savedData = await loadCurrentAppData()
-      if (canceled) return
+      const retryDelays = dataMode === 'team' ? teamStartupRetryDelaysMs : [0]
+      let lastError: unknown = null
 
-      if (savedData) applyAppDataToState(savedData)
       if (dataMode === 'team') {
-        rememberConnectedTeamHost()
-        setTeamConnectionStatus('connected')
-        setTeamConnectionMessage('团队数据已连接')
+        setTeamConnectionStatus('checking')
+        setTeamConnectionMessage('正在连接团队服务')
       }
-      setLoadedDataSourceKey(loadingSourceKey)
-      setDataReady(true)
+
+      for (let attempt = 0; attempt < retryDelays.length; attempt += 1) {
+        const retryDelay = retryDelays[attempt]
+        if (retryDelay > 0) {
+          setTeamConnectionStatus('checking')
+          setTeamConnectionMessage('团队服务正在恢复，2 秒后自动重连')
+          await new Promise((resolve) => window.setTimeout(resolve, retryDelay))
+          if (canceled) return
+        }
+
+        try {
+          const savedData = await loadCurrentAppData()
+          if (canceled) return
+
+          if (savedData) applyAppDataToState(savedData)
+          if (dataMode === 'team') {
+            rememberConnectedTeamHost()
+            setTeamConnectionStatus('connected')
+            setTeamConnectionMessage(attempt > 0 ? '团队服务已恢复并同步' : '团队数据已连接')
+          }
+          setLoadedDataSourceKey(loadingSourceKey)
+          setDataReady(true)
+          return
+        } catch (error) {
+          lastError = error
+          const hasAnotherAttempt = attempt < retryDelays.length - 1
+          if (dataMode !== 'team' || !hasAnotherAttempt || !shouldRetryInitialTeamLoad(error)) throw error
+        }
+      }
+
+      throw lastError
     }
 
     loadFileData().catch((error) => {
@@ -3989,6 +4035,7 @@ function App() {
               version: availableUpdate?.version ?? '',
               name: asset.name,
               url: asset.url,
+              fallbackUrl: asset.fallbackUrl,
               digest: asset.digest,
             })
           }}
@@ -4434,6 +4481,10 @@ function updateStatusText(status: UpdateCheckStatus, availableVersion?: string) 
   return '检查更新'
 }
 
+function updateReleaseSourceLabel(source?: UpdateRelease['source']) {
+  return source === 'gitcode' ? 'GitCode 国内源' : 'GitHub 备用源'
+}
+
 function BrandVersionStatus({
   version,
   release,
@@ -4509,7 +4560,7 @@ function updateRuntimeGuide() {
     packageLabel: '与系统匹配的安装包',
     assetPattern: null,
     steps: [
-      '从 GitHub Release 下载与当前系统匹配的安装包。',
+      '从软件更新页下载与当前系统匹配的安装包。',
       '退出正在运行的 CrewFlow 后完成覆盖安装。',
       '重新打开 CrewFlow，确认数据和团队连接正常。',
     ],
@@ -4629,7 +4680,7 @@ function VersionUpdateModal({
             <div className="versionUpdateState">
               <RefreshCw size={22} className="spinning" />
               <div>
-                <strong>正在连接 GitHub Releases</strong>
+                <strong>正在连接更新服务器</strong>
                 <span>请稍候，不会影响当前项目数据。</span>
               </div>
             </div>
@@ -4640,7 +4691,7 @@ function VersionUpdateModal({
               <AlertTriangle size={22} />
               <div>
                 <strong>暂时无法读取最新版本</strong>
-                <span>请检查网络后重新检查；当前版本仍可正常使用。</span>
+                <span>国内源和备用源当前均不可用，请检查网络后重试；现有版本仍可正常使用。</span>
               </div>
             </div>
           )}
@@ -4689,14 +4740,16 @@ function VersionUpdateModal({
                     ))}
                   </ul>
                 ) : (
-                  <p>该版本暂未提供详细更新说明，可前往 GitHub Release 查看。</p>
+                  <p>该版本暂未提供详细更新说明，可前往版本发布页查看。</p>
                 )}
               </section>
 
               <section className="versionUpdateSection">
                 <div className="versionUpdateSectionTitle">
                   <h3>安装与更新</h3>
-                  <span>{guide.platformLabel} · {matchingAsset?.name ?? guide.packageLabel}</span>
+                  <span>
+                    {updateReleaseSourceLabel(release.source)} · {guide.platformLabel} · {matchingAsset?.name ?? guide.packageLabel}
+                  </span>
                 </div>
                 <ol>
                   {guide.steps.map((step) => (

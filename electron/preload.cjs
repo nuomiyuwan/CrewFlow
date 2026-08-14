@@ -14,6 +14,7 @@ contextBridge.exposeInMainWorld('desktopBridge', {
   restartTeamService: () => ipcRenderer.invoke('team-service:restart'),
   stopTeamService: () => ipcRenderer.invoke('team-service:stop'),
   getAppUpdateState: () => ipcRenderer.invoke('app-update:state'),
+  checkAppUpdate: () => ipcRenderer.invoke('app-update:check'),
   downloadAppUpdate: (payload) => ipcRenderer.invoke('app-update:download', payload),
   installAppUpdate: () => ipcRenderer.invoke('app-update:install'),
   onAppUpdateState: (listener) => {

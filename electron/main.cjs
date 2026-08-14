@@ -16,6 +16,11 @@ const {
   compareReleaseVersions,
   releaseVersionParts,
 } = require('./update-cleanup.cjs')
+const {
+  fetchLatestCrewFlowRelease,
+  releaseFeedUrl,
+  validateCrewFlowReleaseAssetUrl,
+} = require('./update-source.cjs')
 
 const isDev = !app.isPackaged
 const isTeamServerMode = process.argv.includes('--team-server')
@@ -23,6 +28,8 @@ let saveQueue = Promise.resolve()
 let mainWindow = null
 let windowsUpdaterConfigured = false
 let windowsUpdateDownloaded = false
+let windowsUpdaterSuppressErrors = false
+let windowsUpdateSource = 'gitcode'
 let downloadedMacUpdatePath = ''
 let appUpdateInstallPending = false
 let appUpdateState = {
@@ -76,23 +83,46 @@ function cleanUpdateFileName(value) {
   return path.basename(typeof value === 'string' ? value : '').replace(/[^a-zA-Z0-9._-]/g, '-')
 }
 
-function validateCrewFlowReleaseAsset(payload = {}) {
-  const fileName = cleanUpdateFileName(payload.name)
-  const assetUrl = new URL(typeof payload.url === 'string' ? payload.url : '')
-  const isCrewFlowRelease =
-    assetUrl.protocol === 'https:' &&
-    assetUrl.hostname === 'github.com' &&
-    assetUrl.pathname.toLowerCase().startsWith('/nuomiyuwan/crewflow/releases/download/')
+function updateSourceLabel(source) {
+  return source === 'gitcode' ? 'GitCode 国内源' : 'GitHub 备用源'
+}
 
-  if (!isCrewFlowRelease || !fileName.toLowerCase().endsWith('.dmg')) {
+function validateUpdateDownloadUrl(value, expectedFileName) {
+  const validated = validateCrewFlowReleaseAssetUrl(value)
+  let urlFileName = ''
+  try {
+    urlFileName = cleanUpdateFileName(decodeURIComponent(path.basename(new URL(validated.url).pathname)))
+  } catch {
     throw new Error('更新文件地址无效')
   }
+  if (!urlFileName || urlFileName !== expectedFileName) throw new Error('更新文件名称与地址不一致')
+  return validated
+}
+
+function validateCrewFlowReleaseAsset(payload = {}, filePattern = /\.(?:dmg|exe)$/i) {
+  const fileName = cleanUpdateFileName(payload.name)
+  if (!fileName || !filePattern.test(fileName)) throw new Error('更新文件名称无效')
+  const primary = validateUpdateDownloadUrl(payload.url, fileName)
+  const fallback = payload.fallbackUrl ? validateUpdateDownloadUrl(payload.fallbackUrl, fileName) : null
 
   return {
     fileName,
-    url: assetUrl.toString(),
+    url: primary.url,
+    source: primary.source,
+    fallbackUrl: fallback && fallback.url !== primary.url ? fallback.url : '',
+    fallbackSource: fallback?.source || '',
     version: typeof payload.version === 'string' ? payload.version.trim() : '',
     digest: typeof payload.digest === 'string' ? payload.digest.trim().toLowerCase() : '',
+  }
+}
+
+async function fetchDownloadResponse(url, timeoutMs = 12000) {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), timeoutMs)
+  try {
+    return await fetch(url, { redirect: 'follow', signal: controller.signal })
+  } finally {
+    clearTimeout(timer)
   }
 }
 
@@ -102,62 +132,90 @@ async function downloadMacUpdate(payload = {}) {
   let fileHandle = null
 
   try {
-    asset = validateCrewFlowReleaseAsset(payload)
+    asset = validateCrewFlowReleaseAsset(payload, /\.dmg$/i)
     const updatesDirectory = macUpdateDownloadsDirectory()
     const targetPath = path.join(updatesDirectory, asset.fileName)
     temporaryPath = `${targetPath}.${process.pid}.download`
-
-    publishAppUpdateState({
-      status: 'downloading',
-      percent: 0,
-      transferred: 0,
-      total: 0,
-      version: asset.version,
-      fileName: asset.fileName,
-      message: '正在下载 macOS 安装包',
-      canAutoInstall: false,
-    })
-
     await fs.promises.mkdir(updatesDirectory, { recursive: true })
-    const response = await fetch(asset.url, { redirect: 'follow' })
-    if (!response.ok || !response.body) throw new Error(`更新下载失败：${response.status}`)
+    const candidates = [
+      { url: asset.url, source: asset.source },
+      ...(asset.fallbackUrl ? [{ url: asset.fallbackUrl, source: asset.fallbackSource }] : []),
+    ]
+    let lastError = null
 
-    const total = Number(response.headers.get('content-length')) || 0
-    const hash = createHash('sha256')
-    let transferred = 0
-    fileHandle = await fs.promises.open(temporaryPath, 'w')
+    for (let index = 0; index < candidates.length; index += 1) {
+      const candidate = candidates[index]
+      try {
+        publishAppUpdateState({
+          status: 'downloading',
+          percent: 0,
+          transferred: 0,
+          total: 0,
+          version: asset.version,
+          fileName: asset.fileName,
+          message: `正在从${updateSourceLabel(candidate.source)}下载 macOS 安装包`,
+          canAutoInstall: false,
+        })
 
-    for await (const value of response.body) {
-      const chunk = Buffer.from(value)
-      await fileHandle.write(chunk)
-      hash.update(chunk)
-      transferred += chunk.length
-      publishAppUpdateState({
-        status: 'downloading',
-        percent: total > 0 ? Math.min(100, Math.round((transferred / total) * 100)) : 0,
-        transferred,
-        total,
-      })
+        await fs.promises.rm(temporaryPath, { force: true })
+        const response = await fetchDownloadResponse(candidate.url)
+        if (!response.ok || !response.body) throw new Error(`更新下载失败：${response.status}`)
+
+        const total = Number(response.headers.get('content-length')) || 0
+        const hash = createHash('sha256')
+        let transferred = 0
+        fileHandle = await fs.promises.open(temporaryPath, 'w')
+
+        for await (const value of response.body) {
+          const chunk = Buffer.from(value)
+          await fileHandle.write(chunk)
+          hash.update(chunk)
+          transferred += chunk.length
+          publishAppUpdateState({
+            status: 'downloading',
+            percent: total > 0 ? Math.min(100, Math.round((transferred / total) * 100)) : 0,
+            transferred,
+            total,
+          })
+        }
+
+        await fileHandle.close()
+        fileHandle = null
+
+        const expectedDigest = asset.digest.startsWith('sha256:') ? asset.digest.slice('sha256:'.length) : ''
+        const actualDigest = hash.digest('hex')
+        if (expectedDigest && expectedDigest !== actualDigest) throw new Error('更新文件校验失败，请重新下载')
+
+        await fs.promises.rm(targetPath, { force: true })
+        await fs.promises.rename(temporaryPath, targetPath)
+        downloadedMacUpdatePath = targetPath
+        return publishAppUpdateState({
+          status: 'downloaded',
+          percent: 100,
+          transferred,
+          total: total || transferred,
+          message: `安装包已从${updateSourceLabel(candidate.source)}下载，可以打开更新`,
+          canAutoInstall: false,
+        })
+      } catch (error) {
+        if (fileHandle) await fileHandle.close().catch(() => {})
+        fileHandle = null
+        await fs.promises.rm(temporaryPath, { force: true }).catch(() => {})
+        lastError = error
+        if (index < candidates.length - 1) {
+          publishAppUpdateState({
+            status: 'checking',
+            percent: 0,
+            transferred: 0,
+            total: 0,
+            message: '国内源暂时不可用，正在切换 GitHub 备用源',
+            canAutoInstall: false,
+          })
+        }
+      }
     }
 
-    await fileHandle.close()
-    fileHandle = null
-
-    const expectedDigest = asset.digest.startsWith('sha256:') ? asset.digest.slice('sha256:'.length) : ''
-    const actualDigest = hash.digest('hex')
-    if (expectedDigest && expectedDigest !== actualDigest) throw new Error('更新文件校验失败，请重新下载')
-
-    await fs.promises.rm(targetPath, { force: true })
-    await fs.promises.rename(temporaryPath, targetPath)
-    downloadedMacUpdatePath = targetPath
-    return publishAppUpdateState({
-      status: 'downloaded',
-      percent: 100,
-      transferred,
-      total: total || transferred,
-      message: '安装包已下载，可以打开更新',
-      canAutoInstall: false,
-    })
+    throw lastError || new Error('更新下载失败')
   } catch (error) {
     if (fileHandle) await fileHandle.close().catch(() => {})
     if (temporaryPath) await fs.promises.rm(temporaryPath, { force: true }).catch(() => {})
@@ -177,13 +235,17 @@ function configureWindowsUpdater() {
   autoUpdater.allowPrerelease = false
 
   autoUpdater.on('checking-for-update', () => {
-    publishAppUpdateState({ status: 'checking', message: '正在检查 Windows 更新', canAutoInstall: true })
+    publishAppUpdateState({
+      status: 'checking',
+      message: `正在连接${updateSourceLabel(windowsUpdateSource)}`,
+      canAutoInstall: true,
+    })
   })
   autoUpdater.on('update-available', (info) => {
     publishAppUpdateState({
       status: 'available',
       version: typeof info?.version === 'string' ? info.version : '',
-      message: '发现可安装的新版本',
+      message: `${updateSourceLabel(windowsUpdateSource)}已找到新版本`,
       canAutoInstall: true,
     })
   })
@@ -196,7 +258,7 @@ function configureWindowsUpdater() {
       percent: Math.max(0, Math.min(100, Math.round(progress.percent || 0))),
       transferred: progress.transferred || 0,
       total: progress.total || 0,
-      message: '正在下载 Windows 更新',
+      message: `正在从${updateSourceLabel(windowsUpdateSource)}下载 Windows 更新`,
       canAutoInstall: true,
     })
   })
@@ -206,16 +268,68 @@ function configureWindowsUpdater() {
       status: 'downloaded',
       percent: 100,
       version: typeof info?.version === 'string' ? info.version : appUpdateState.version,
-      message: '更新已下载，可以安装并重启',
+      message: `更新已从${updateSourceLabel(windowsUpdateSource)}下载，可以安装并重启`,
       canAutoInstall: true,
     })
   })
   autoUpdater.on('error', (error) => {
+    if (windowsUpdaterSuppressErrors) return
     publishAppUpdateState({
       status: 'error',
       message: error instanceof Error ? error.message : 'Windows 更新失败',
       canAutoInstall: true,
     })
+  })
+}
+
+async function downloadWindowsUpdate(payload = {}) {
+  configureWindowsUpdater()
+  const asset = validateCrewFlowReleaseAsset(payload, /\.exe$/i)
+  const expectedComparison = compareReleaseVersions(asset.version, app.getVersion())
+  if (expectedComparison !== null && expectedComparison <= 0) {
+    return publishAppUpdateState({ status: 'up-to-date', message: '当前已经是最新版本', canAutoInstall: true })
+  }
+
+  const candidates = [
+    { url: asset.url, source: asset.source },
+    ...(asset.fallbackUrl ? [{ url: asset.fallbackUrl, source: asset.fallbackSource }] : []),
+  ]
+  let lastError = null
+  windowsUpdateDownloaded = false
+  windowsUpdaterSuppressErrors = true
+
+  try {
+    for (let index = 0; index < candidates.length; index += 1) {
+      const candidate = candidates[index]
+      windowsUpdateSource = candidate.source
+      try {
+        autoUpdater.setFeedURL({ provider: 'generic', url: releaseFeedUrl(candidate.url) })
+        const result = await autoUpdater.checkForUpdates()
+        if (!result?.isUpdateAvailable) throw new Error(`${updateSourceLabel(candidate.source)}暂未提供该版本安装包`)
+        await autoUpdater.downloadUpdate()
+        return appUpdateState
+      } catch (error) {
+        lastError = error
+        if (index < candidates.length - 1) {
+          publishAppUpdateState({
+            status: 'checking',
+            percent: 0,
+            transferred: 0,
+            total: 0,
+            message: '国内源暂时不可用，正在切换 GitHub 备用源',
+            canAutoInstall: true,
+          })
+        }
+      }
+    }
+  } finally {
+    windowsUpdaterSuppressErrors = false
+  }
+
+  return publishAppUpdateState({
+    status: 'error',
+    message: lastError instanceof Error ? lastError.message : 'Windows 更新失败',
+    canAutoInstall: true,
   })
 }
 
@@ -230,12 +344,7 @@ async function downloadApplicationUpdate(payload = {}) {
   }
 
   try {
-    configureWindowsUpdater()
-    windowsUpdateDownloaded = false
-    const result = await autoUpdater.checkForUpdates()
-    if (!result?.updateInfo || appUpdateState.status === 'up-to-date') return appUpdateState
-    await autoUpdater.downloadUpdate()
-    return appUpdateState
+    return await downloadWindowsUpdate(payload)
   } catch (error) {
     return publishAppUpdateState({
       status: 'error',
@@ -243,6 +352,10 @@ async function downloadApplicationUpdate(payload = {}) {
       canAutoInstall: true,
     })
   }
+}
+
+async function checkApplicationUpdate() {
+  return fetchLatestCrewFlowRelease({ platform: process.platform })
 }
 
 function cleanAssistantProfileText(value, maxLength) {
@@ -916,6 +1029,10 @@ if (isTeamServerMode) {
     })
 
     ipcMain.handle('app-update:state', async () => appUpdateState)
+
+    ipcMain.handle('app-update:check', async () => {
+      return checkApplicationUpdate()
+    })
 
     ipcMain.handle('app-update:download', async (_event, payload = {}) => {
       return downloadApplicationUpdate(payload)

@@ -4,7 +4,7 @@ CrewFlow is a desktop command center for project intake, task assignment, delive
 
 It is built with Electron, React, and Vite, and supports both single-user local data and LAN team mode through a lightweight CrewFlow Server.
 
-Current stable version: **v1.4.6**. See [CHANGELOG.md](CHANGELOG.md) for release details.
+Current stable version: **v1.4.7**. See [CHANGELOG.md](CHANGELOG.md) for release details.
 
 中文使用说明：[CrewFlow 用户使用说明](docs/USER_GUIDE.zh-CN.md)
 
@@ -49,12 +49,14 @@ Change this account after first login.
 
 ## Downloads
 
-Download the latest desktop packages from the [GitHub Releases page](https://github.com/nuomiyuwan/CrewFlow/releases).
+Users in China can download the latest desktop packages from the [GitCode Releases page](https://gitcode.com/nuomiyuwan/CrewFlow/releases). [GitHub Releases](https://github.com/nuomiyuwan/CrewFlow/releases) remains the fallback download source and the GitHub repository remains the source-of-truth for application code.
 
 - macOS Apple Silicon and Intel: `CrewFlow-v<version>-macOS-universal.dmg`
 - Windows 64-bit: `CrewFlow-v<version>-Windows-x64-Setup.exe`
 
 Release assets are only promoted after they have been built and verified for that platform.
+
+CrewFlow checks the GitCode installer mirror first and automatically falls back to GitHub if the mirror is unavailable. GitCode is used as a binary release mirror; its repository source is not kept in sync with every application update.
 
 On macOS, open the DMG and drag `CrewFlow.app` into Applications. On Windows, run the Setup installer. App data is stored outside the installation directory, so normal updates do not remove local or team-service data.
 

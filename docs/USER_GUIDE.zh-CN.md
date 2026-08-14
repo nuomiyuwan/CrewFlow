@@ -1,6 +1,6 @@
 # CrewFlow 用户使用说明
 
-适用版本：CrewFlow v1.4.3 及后续兼容版本。
+适用版本：CrewFlow v1.4.7 及后续兼容版本。
 
 CrewFlow 是一套桌面项目协作工具，用来管理项目录入、任务分派、流程节点、交付日历、人员账号、团队负载、项目归档和财务结算。它最初面向视频制作团队设计，但项目类型、任务工种、流程节点、状态和人员标签都可以自定义，因此也适合设计、广告、活动、工程、咨询、培训、软件交付、定制生产等行业。
 
@@ -29,14 +29,14 @@ CrewFlow 把日常工作拆成五层：
 
 ### 下载与安装
 
-从 [GitHub Releases](https://github.com/nuomiyuwan/CrewFlow/releases) 下载与电脑匹配的安装包：
+国内用户优先从 [GitCode Releases](https://gitcode.com/nuomiyuwan/CrewFlow/releases) 下载与电脑匹配的安装包；如果国内源暂时不可用，可改用 [GitHub Releases](https://github.com/nuomiyuwan/CrewFlow/releases)：
 
 - Mac（Apple 芯片和 Intel 芯片）：选择 `macOS-universal.dmg`。
 - 64 位 Windows：选择 `Windows-x64-Setup.exe`。
 
 macOS 用户打开 DMG 后，将 `CrewFlow.app` 拖入“应用程序”文件夹。当前公开包没有 Apple 开发者签名，首次打开时如果被系统拦截，可在 Finder 中右键应用并选择“打开”，或到“系统设置 → 隐私与安全性”确认打开。
 
-Windows 用户运行 Setup 安装程序，程序会安装到当前用户的固定目录并创建快捷方式。如果 SmartScreen 提醒来源未知，请确认文件来自 CrewFlow 官方 GitHub Release 后再选择继续。
+Windows 用户运行 Setup 安装程序，程序会安装到当前用户的固定目录并创建快捷方式。如果 SmartScreen 提醒来源未知，请确认文件来自 CrewFlow 官方 GitCode 或 GitHub Release 后再选择继续。
 
 从旧版 ZIP 迁移到安装版时，第一次运行 Setup 不会自动删除旧文件夹；安装版会继续读取系统用户数据目录中的原有数据。确认新版正常后，可以手动删除旧版程序文件夹。
 
@@ -533,7 +533,7 @@ Windows：
 
 ## 17. 软件更新
 
-CrewFlow 会检查 GitHub Latest Release。发现新版本时，左上角版本号附近会出现更新提示；点击版本号可以查看更新内容、下载进度和安装方法。
+CrewFlow 会优先检查 GitCode 国内安装包镜像。发现新版本时，左上角版本号附近会出现更新提示；点击版本号可以查看更新内容、下载进度和安装方法。国内源连接或下载失败时，软件会自动切换 GitHub 备用源，不需要用户重新操作。
 
 团队更新建议先更新常驻主机，再更新其他员工电脑。更新前仍建议备份团队数据。
 
@@ -545,7 +545,7 @@ CrewFlow 会检查 GitHub Latest Release。发现新版本时，左上角版本�
 
 新旧客户端可以短期混用，但涉及数据结构或团队同步调整的版本不应长期混用。发布说明如果要求升级主机，应优先执行。
 
-当前公开安装包未进行商业代码签名，macOS 可能显示来源确认，Windows 可能显示 SmartScreen 提醒。请只从 CrewFlow 官方 GitHub Release 下载安装包并核对版本名称。
+当前公开安装包未进行商业代码签名，macOS 可能显示来源确认，Windows 可能显示 SmartScreen 提醒。请只从 CrewFlow 官方 GitCode 或 GitHub Release 下载安装包并核对版本名称。
 
 ## 18. 常见问题
 
@@ -608,7 +608,8 @@ CrewFlow 会检查 GitHub Latest Release。发现新版本时，左上角版本�
 
 ## 20. 获取软件与反馈
 
-- 最新版本与安装包：[GitHub Releases](https://github.com/nuomiyuwan/CrewFlow/releases)
+- 国内安装包镜像：[GitCode Releases](https://gitcode.com/nuomiyuwan/CrewFlow/releases)
+- 备用安装包：[GitHub Releases](https://github.com/nuomiyuwan/CrewFlow/releases)
 - 项目主页：[CrewFlow GitHub](https://github.com/nuomiyuwan/CrewFlow)
 - 版本更新记录：[CHANGELOG.md](../CHANGELOG.md)
 - 团队服务技术说明：[server/README.md](../server/README.md)

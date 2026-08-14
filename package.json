@@ -1,7 +1,7 @@
 {
   "name": "crewflow",
   "private": true,
-  "version": "1.4.6",
+  "version": "1.4.7",
   "description": "CrewFlow project management desktop app",
   "author": "nuomiyuwan",
   "repository": "https://github.com/nuomiyuwan/CrewFlow.git",
@@ -28,7 +28,8 @@
     "package:win": "npm run build && electron-builder --win nsis --x64 --publish never",
     "package:dir:mac": "npm run build && electron-builder --mac --arm64 --dir",
     "package:dir:win": "npm run build && electron-builder --win --x64 --dir",
-    "package:all": "npm run package:mac && npm run package:win"
+    "package:all": "npm run package:mac && npm run package:win",
+    "publish:gitcode": "node scripts/publish-gitcode-release.mjs"
   },
   "build": {
     "appId": "local.crewflow",

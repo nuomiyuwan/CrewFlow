@@ -3512,12 +3512,17 @@ h1 {
 
 .financeStatus {
   display: inline-flex;
+  flex: 0 0 auto;
   align-items: center;
   justify-content: center;
+  min-width: max-content;
   min-height: 28px;
   border-radius: 999px;
   font-size: 12px;
   font-weight: 800;
+  line-height: 1;
+  padding: 0 11px;
+  white-space: nowrap;
 }
 
 .financeStatus.ok {
