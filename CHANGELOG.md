@@ -2,6 +2,12 @@
 
 All notable changes to CrewFlow are documented in this file.
 
+## 1.4.6 - 2026-08-14
+
+### Improved
+
+- Automatically remove completed CrewFlow update installers after the updated version starts, including compatible installers downloaded by earlier versions, while preserving newer packages that have not been installed.
+
 ## 1.4.5 - 2026-08-14
 
 ### Added

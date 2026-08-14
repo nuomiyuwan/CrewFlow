@@ -10,6 +10,12 @@ const {
   requestAssistant,
   testAssistantProvider,
 } = require('./assistant-service.cjs')
+const {
+  cleanupCompletedMacUpdateDownloads,
+  cleanupCompletedWindowsUpdateDownloads,
+  compareReleaseVersions,
+  releaseVersionParts,
+} = require('./update-cleanup.cjs')
 
 const isDev = !app.isPackaged
 const isTeamServerMode = process.argv.includes('--team-server')
@@ -43,6 +49,19 @@ function assistantSettingsPath() {
 
 function updateRecoveryMarkerPath() {
   return path.join(app.getPath('userData'), 'update-team-service-recovery.json')
+}
+
+function updateDownloadCleanupMarkerPath() {
+  return path.join(app.getPath('userData'), 'update-download-cleanup.json')
+}
+
+function macUpdateDownloadsDirectory() {
+  return path.join(app.getPath('userData'), 'updates')
+}
+
+function windowsUpdaterPendingDirectory() {
+  const localAppData = process.env.LOCALAPPDATA || path.join(app.getPath('home'), 'AppData', 'Local')
+  return path.join(localAppData, 'crewflow-updater', 'pending')
 }
 
 function publishAppUpdateState(patch = {}) {
@@ -84,7 +103,7 @@ async function downloadMacUpdate(payload = {}) {
 
   try {
     asset = validateCrewFlowReleaseAsset(payload)
-    const updatesDirectory = path.join(app.getPath('userData'), 'updates')
+    const updatesDirectory = macUpdateDownloadsDirectory()
     const targetPath = path.join(updatesDirectory, asset.fileName)
     temporaryPath = `${targetPath}.${process.pid}.download`
 
@@ -553,6 +572,81 @@ async function readTeamServiceRecoveryMarker() {
   }
 }
 
+async function writeUpdateDownloadCleanupMarker({ version, platform, fileName = '' }) {
+  if (!releaseVersionParts(version) || (platform !== 'darwin' && platform !== 'win32')) return false
+
+  const markerPath = updateDownloadCleanupMarkerPath()
+  const temporaryPath = `${markerPath}.${process.pid}.tmp`
+  try {
+    await fs.promises.mkdir(path.dirname(markerPath), { recursive: true })
+    await fs.promises.writeFile(
+      temporaryPath,
+      `${JSON.stringify(
+        {
+          version,
+          platform,
+          fileName: cleanUpdateFileName(fileName),
+          createdAt: new Date().toISOString(),
+        },
+        null,
+        2,
+      )}\n`,
+      'utf8',
+    )
+    await fs.promises.rename(temporaryPath, markerPath)
+    return true
+  } catch (error) {
+    await fs.promises.rm(temporaryPath, { force: true }).catch(() => {})
+    console.error('CrewFlow update cleanup marker failed:', error)
+    return false
+  }
+}
+
+async function readUpdateDownloadCleanupMarker() {
+  const markerPath = updateDownloadCleanupMarkerPath()
+  try {
+    const value = JSON.parse(await fs.promises.readFile(markerPath, 'utf8'))
+    if (!releaseVersionParts(value?.version) || (value?.platform !== 'darwin' && value?.platform !== 'win32')) {
+      await fs.promises.rm(markerPath, { force: true })
+      return null
+    }
+    return {
+      version: value.version,
+      platform: value.platform,
+      fileName: cleanUpdateFileName(value.fileName),
+    }
+  } catch (error) {
+    if (error?.code !== 'ENOENT') await fs.promises.rm(markerPath, { force: true }).catch(() => {})
+    return null
+  }
+}
+
+async function cleanupCompletedUpdateDownloads() {
+  if (!app.isPackaged || (process.platform !== 'darwin' && process.platform !== 'win32')) return
+
+  const currentVersion = app.getVersion()
+  const marker = await readUpdateDownloadCleanupMarker()
+  const markerComparison = marker ? compareReleaseVersions(currentVersion, marker.version) : null
+  const markerCompleted = marker?.platform === process.platform && markerComparison !== null && markerComparison >= 0
+
+  if (process.platform === 'darwin') {
+    await cleanupCompletedMacUpdateDownloads({
+      currentVersion,
+      updatesDirectory: macUpdateDownloadsDirectory(),
+      markerFileName: marker?.fileName,
+      markerCompleted,
+    })
+  } else {
+    await cleanupCompletedWindowsUpdateDownloads({
+      currentVersion,
+      pendingDirectory: windowsUpdaterPendingDirectory(),
+      markerCompleted,
+    })
+  }
+
+  if (markerCompleted) await fs.promises.rm(updateDownloadCleanupMarkerPath(), { force: true })
+}
+
 async function waitForLocalTeamService(expectedRunning, timeoutMs = 8000) {
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
@@ -659,6 +753,11 @@ async function installApplicationUpdate() {
         canAutoInstall: false,
       })
       await waitForPendingAppDataSaves()
+      await writeUpdateDownloadCleanupMarker({
+        version: appUpdateState.version,
+        platform: 'darwin',
+        fileName: path.basename(downloadedMacUpdatePath),
+      })
       if (isTeamHost) await prepareLocalTeamServiceForUpdate()
 
       const openError = await shell.openPath(downloadedMacUpdatePath)
@@ -695,6 +794,7 @@ async function installApplicationUpdate() {
       canAutoInstall: true,
     })
     await waitForPendingAppDataSaves()
+    await writeUpdateDownloadCleanupMarker({ version: appUpdateState.version, platform: 'win32' })
     if (isTeamHost) await prepareLocalTeamServiceForUpdate()
     setTimeout(() => autoUpdater.quitAndInstall(false, true), 150)
     return appUpdateState
@@ -870,6 +970,9 @@ if (isTeamServerMode) {
       })
     })
 
+    cleanupCompletedUpdateDownloads().catch((error) => {
+      console.error('CrewFlow completed update cleanup failed:', error)
+    })
     createWindow()
     restoreOrRepairLocalTeamService().catch((error) => {
       console.error('CrewFlow team service startup repair failed:', error)
