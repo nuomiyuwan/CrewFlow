@@ -18,6 +18,7 @@ let mainWindow = null
 let windowsUpdaterConfigured = false
 let windowsUpdateDownloaded = false
 let downloadedMacUpdatePath = ''
+let appUpdateInstallPending = false
 let appUpdateState = {
   status: 'idle',
   percent: 0,
@@ -436,6 +437,14 @@ function queueWriteAppData(data) {
   return saveQueue
 }
 
+async function waitForPendingAppDataSaves() {
+  while (true) {
+    const pendingSave = saveQueue
+    await pendingSave
+    if (pendingSave === saveQueue) return
+  }
+}
+
 function serverModuleUrl(fileName) {
   return pathToFileURL(path.join(__dirname, '../server', fileName)).href
 }
@@ -572,6 +581,30 @@ async function prepareLocalTeamServiceForUpdate() {
   return true
 }
 
+async function confirmApplicationUpdate({ isTeamHost, platform }) {
+  const isMac = platform === 'darwin'
+  const options = {
+    type: 'question',
+    title: '准备更新 CrewFlow',
+    message: isTeamHost ? '本机正在运行团队服务，是否继续更新？' : '是否继续更新 CrewFlow？',
+    detail: isTeamHost
+      ? isMac
+        ? '继续后会先停止团队服务、打开安装包并退出 CrewFlow。其他电脑会暂时断开；安装新版并重新打开后，服务会自动恢复。'
+        : '继续后会先停止团队服务并退出 CrewFlow，然后安装新版本。其他电脑会暂时断开；新版启动后，服务会自动恢复。'
+      : isMac
+        ? '继续后会打开安装包并退出 CrewFlow。请在安装窗口中把新版拖入“应用程序”并选择替换。'
+        : '继续后 CrewFlow 会退出，并由安装程序完成替换和重启。',
+    buttons: ['继续更新', '取消'],
+    defaultId: 0,
+    cancelId: 1,
+    noLink: true,
+  }
+  const result = mainWindow && !mainWindow.isDestroyed()
+    ? await dialog.showMessageBox(mainWindow, options)
+    : await dialog.showMessageBox(options)
+  return result.response === 0
+}
+
 async function restoreOrRepairLocalTeamService() {
   if (!app.isPackaged || (process.platform !== 'darwin' && process.platform !== 'win32')) return
 
@@ -598,33 +631,82 @@ async function restoreOrRepairLocalTeamService() {
 async function installApplicationUpdate() {
   if (!app.isPackaged) return publishAppUpdateState({ status: 'error', message: '开发模式不能安装正式更新' })
 
-  if (process.platform === 'darwin') {
-    if (!downloadedMacUpdatePath) return publishAppUpdateState({ status: 'error', message: '请先下载安装包' })
-    if (await fetchLocalTeamHealth()) await writeTeamServiceRecoveryMarker(appUpdateState.version)
-    const openError = await shell.openPath(downloadedMacUpdatePath)
-    if (openError) return publishAppUpdateState({ status: 'error', message: openError, canAutoInstall: false })
-    return publishAppUpdateState({
-      status: 'opened',
-      message: '安装包已打开，请退出 CrewFlow 后拖动覆盖旧版',
-      canAutoInstall: false,
-    })
-  }
-
-  if (process.platform !== 'win32' || !windowsUpdateDownloaded) {
-    return publishAppUpdateState({ status: 'error', message: '请先下载完整更新' })
-  }
+  if (appUpdateInstallPending) return appUpdateState
+  appUpdateInstallPending = true
 
   try {
-    publishAppUpdateState({ status: 'installing', message: '正在准备安装更新', canAutoInstall: true })
-    await prepareLocalTeamServiceForUpdate()
+    if (process.platform === 'darwin') {
+      if (!downloadedMacUpdatePath) return publishAppUpdateState({ status: 'error', message: '请先下载安装包' })
+      try {
+        await fs.promises.access(downloadedMacUpdatePath, fs.constants.R_OK)
+      } catch {
+        downloadedMacUpdatePath = ''
+        return publishAppUpdateState({ status: 'error', message: '安装包已被移动或删除，请重新下载', canAutoInstall: false })
+      }
+
+      const isTeamHost = Boolean(await fetchLocalTeamHealth())
+      if (!(await confirmApplicationUpdate({ isTeamHost, platform: process.platform }))) {
+        return publishAppUpdateState({
+          status: 'downloaded',
+          message: '已取消更新，安装包仍保留在本机',
+          canAutoInstall: false,
+        })
+      }
+
+      publishAppUpdateState({
+        status: 'installing',
+        message: isTeamHost ? '正在保存数据并停止团队服务' : '正在保存数据并准备退出',
+        canAutoInstall: false,
+      })
+      await waitForPendingAppDataSaves()
+      if (isTeamHost) await prepareLocalTeamServiceForUpdate()
+
+      const openError = await shell.openPath(downloadedMacUpdatePath)
+      if (openError) {
+        if (isTeamHost) await restoreOrRepairLocalTeamService()
+        return publishAppUpdateState({ status: 'error', message: openError, canAutoInstall: false })
+      }
+
+      const state = publishAppUpdateState({
+        status: 'opened',
+        message: isTeamHost ? '安装包已打开，团队服务已停止，CrewFlow 正在退出' : '安装包已打开，CrewFlow 正在退出',
+        canAutoInstall: false,
+      })
+      setTimeout(() => app.quit(), 350)
+      return state
+    }
+
+    if (process.platform !== 'win32' || !windowsUpdateDownloaded) {
+      return publishAppUpdateState({ status: 'error', message: '请先下载完整更新' })
+    }
+
+    const isTeamHost = Boolean(await fetchLocalTeamHealth())
+    if (!(await confirmApplicationUpdate({ isTeamHost, platform: process.platform }))) {
+      return publishAppUpdateState({
+        status: 'downloaded',
+        message: '已取消更新，安装程序仍保留在本机',
+        canAutoInstall: true,
+      })
+    }
+
+    publishAppUpdateState({
+      status: 'installing',
+      message: isTeamHost ? '正在保存数据并停止团队服务' : '正在保存数据并准备安装',
+      canAutoInstall: true,
+    })
+    await waitForPendingAppDataSaves()
+    if (isTeamHost) await prepareLocalTeamServiceForUpdate()
     setTimeout(() => autoUpdater.quitAndInstall(false, true), 150)
     return appUpdateState
   } catch (error) {
+    if (await readTeamServiceRecoveryMarker()) await restoreOrRepairLocalTeamService()
     return publishAppUpdateState({
       status: 'error',
       message: error instanceof Error ? error.message : '更新安装准备失败',
-      canAutoInstall: true,
+      canAutoInstall: process.platform === 'win32',
     })
+  } finally {
+    appUpdateInstallPending = false
   }
 }
 

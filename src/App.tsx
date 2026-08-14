@@ -1940,6 +1940,34 @@ function App() {
     [appAccounts, appCalendarItems, appFinanceRecords, appHolidayItems, appProjects, appStaffMembers, appTasks, appWorkflowOptions],
   )
 
+  async function prepareAndInstallApplicationUpdate() {
+    const bridge = window.desktopBridge
+    if (!bridge?.installAppUpdate) return
+
+    try {
+      setAppUpdateInstallState((current) => ({
+        ...current,
+        status: 'installing',
+        message: '正在等待当前数据保存',
+      }))
+      if (dataMode === 'team') {
+        while (true) {
+          const pendingSave = teamSaveQueueRef.current
+          await pendingSave
+          if (pendingSave === teamSaveQueueRef.current) break
+        }
+      }
+      const state = await bridge.installAppUpdate()
+      setAppUpdateInstallState(state)
+    } catch (error) {
+      setAppUpdateInstallState((current) => ({
+        ...current,
+        status: 'error',
+        message: error instanceof Error ? error.message : '更新安装准备失败',
+      }))
+    }
+  }
+
   useEffect(() => {
     clearLegacyLocalStorage()
   }, [])
@@ -3546,7 +3574,7 @@ function App() {
                 open={showUpdateDialog}
                 onOpen={() => {
                   setShowUpdateDialog(true)
-                  if (updateCheckStatus === 'idle' || updateCheckStatus === 'error') void checkForUpdates(true)
+                  void checkForUpdates(true)
                 }}
               />
             </div>
@@ -3767,8 +3795,10 @@ function App() {
         )}
         {section === 'finance' && (
           <FinanceView
+            role={role}
             projects={roleVisibleProjects}
             displayProjects={filteredProjects}
+            tasks={appTasks}
             loadAppData={loadCurrentAppData}
             saveAppData={saveCurrentAppData}
             onRecordsChange={setAppFinanceRecords}
@@ -3962,7 +3992,7 @@ function App() {
               digest: asset.digest,
             })
           }}
-          onInstall={() => void window.desktopBridge?.installAppUpdate?.()}
+          onInstall={() => void prepareAndInstallApplicationUpdate()}
         />
       )}
       {currentAccount && showWelcomeGuide && (
@@ -4466,7 +4496,8 @@ function updateRuntimeGuide() {
       assetPattern: /macOS-(?:universal|arm64|x64)\.dmg$/i,
       steps: [
         '点击“下载更新”，等待 DMG 安装包下载完成。',
-        '点击“打开安装包”，然后退出正在运行的 CrewFlow。',
+        '点击“准备更新并退出”；CrewFlow 会检测本机是否为团队主机，必要时先停止服务。',
+        '安装包打开后 CrewFlow 会自动完全退出。',
         '把新版 CrewFlow 拖入“应用程序”，确认覆盖旧版。',
         '重新打开 CrewFlow；团队主机会自动修复并恢复后台服务。',
       ],
@@ -4694,7 +4725,7 @@ function VersionUpdateModal({
             isUpdateDownloaded ? (
               <button className="primaryButton" type="button" onClick={onInstall}>
                 {installState.canAutoInstall ? <RefreshCw size={15} /> : <FolderOpen size={15} />}
-                {installState.canAutoInstall ? '安装并重启' : '打开安装包'}
+                {installState.canAutoInstall ? '安装并重启' : '准备更新并退出'}
               </button>
             ) : (
               <button
@@ -8715,18 +8746,23 @@ function TeamLoad({
 }
 
 function FinanceView({
+  role,
   projects,
   displayProjects = projects,
+  tasks,
   loadAppData,
   saveAppData,
   onRecordsChange,
 }: {
+  role: Role
   projects: Project[]
   displayProjects?: Project[]
+  tasks: Task[]
   loadAppData: AppDataLoader
   saveAppData: AppDataSaver
   onRecordsChange?: (records: FinanceRecord[]) => void
 }) {
+  const [activeFinanceView, setActiveFinanceView] = useState<'settlement' | 'participation'>('settlement')
   const [selectedFinanceProjectId, setSelectedFinanceProjectId] = useState(projects[0]?.id ?? '')
   const [records, setRecords] = useState<FinanceRecord[]>(() => loadStoredFinanceRecords())
   const [ledger, setLedger] = useState<FinanceLedger>(() => loadStoredFinanceLedger())
@@ -8751,6 +8787,7 @@ function FinanceView({
     visibleRecords.find((record) => record.projectId === selectedFinanceProjectId) ?? visibleRecords[0] ?? null
   const selectedProject = selectedRecord ? projects.find((project) => project.id === selectedRecord.projectId) ?? null : null
   const selectedLedger = selectedRecord ? ledger[selectedRecord.projectId] ?? emptyFinanceLedger() : emptyFinanceLedger()
+  const showParticipationView = role === 'controller' && activeFinanceView === 'participation'
 
   useEffect(() => {
     if (!financeReady) return
@@ -8884,101 +8921,675 @@ function FinanceView({
 
   return (
     <div className="contentGrid financeGrid">
-      <FinanceMetric icon={DollarSign} label="合同总额" value={formatMoney(totalContract)} tone="cyan" />
-      <FinanceMetric icon={CheckCircle2} label="已收金额" value={formatMoney(totalReceived)} tone="green" />
-      <FinanceMetric icon={AlertTriangle} label="未收金额" value={formatMoney(totalUnreceived)} tone="amber" />
-
-      <section className="panel span12">
-        <div className="panelHeader">
-          <div>
-            <h2>项目结算</h2>
-            <p>只显示收付款、开票和合同状态</p>
-          </div>
-          <div className="financeBadges">
-            <span>{overdueCount} 个逾期</span>
-            <span>{pendingInvoiceCount} 个待处理发票</span>
-          </div>
+      {role === 'controller' && (
+        <div className="financeViewTabs span12" role="tablist" aria-label="财务视图">
+          <button
+            className={activeFinanceView === 'settlement' ? 'active' : ''}
+            type="button"
+            role="tab"
+            aria-selected={activeFinanceView === 'settlement'}
+            onClick={() => setActiveFinanceView('settlement')}
+          >
+            <DollarSign size={17} />
+            项目结算
+          </button>
+          <button
+            className={activeFinanceView === 'participation' ? 'active' : ''}
+            type="button"
+            role="tab"
+            aria-selected={activeFinanceView === 'participation'}
+            onClick={() => setActiveFinanceView('participation')}
+          >
+            <Users size={17} />
+            月度项目参与统计
+          </button>
         </div>
-        <div className="settlementTable">
-          {visibleRecords.length === 0 && <EmptyState title="财务暂无项目" note="新建项目后，这里会建立空白商务档案，金额从 0 开始录入。" />}
-          {visibleRecords.map((record) => {
-            const project = projects.find((item) => item.id === record.projectId)
-            const unpaid = record.contractAmount - record.receivedAmount
-            const receivedRatio = record.contractAmount > 0 ? Math.round((record.receivedAmount / record.contractAmount) * 100) : 0
-            const settlementStatus = financeSettlementStatus(record)
-            const settlementText = record.contractAmount > 0 ? settlementStatus : '待录入'
+      )}
 
-            return (
-              <button
-                key={record.projectId}
-                className={`settlementRow ${selectedFinanceProjectId === record.projectId ? 'active' : ''}`}
-                type="button"
-                onClick={() => setSelectedFinanceProjectId(record.projectId)}
-              >
-                <div>
-                  <strong>{project?.name}</strong>
-                  <span>
-                    {project?.client || '客户未填写'} · {project?.type} · 项目经理：{project?.manager || '未分配'}
-                  </span>
-                </div>
-                <div className="moneyCell">
-                  <span>合同</span>
-                  <strong>{formatMoney(record.contractAmount)}</strong>
-                </div>
-                <div className="moneyCell">
-                  <span>已收</span>
-                  <strong>{formatMoney(record.receivedAmount)}</strong>
-                </div>
-                <div className="moneyCell">
-                  <span>未收</span>
-                  <strong>{formatMoney(unpaid)}</strong>
-                </div>
-                <span className={`financeStatus ${record.contractAmount > 0 ? financeTone(settlementStatus) : 'wait'}`}>{settlementText}</span>
-                <div className="miniProgress" title={`已收 ${receivedRatio}%`}>
-                  <span style={{ width: `${receivedRatio}%` }} />
-                </div>
-              </button>
-            )
-          })}
-        </div>
-      </section>
+      {showParticipationView ? (
+        <MonthlyProjectParticipation projects={projects} tasks={tasks} records={syncedRecords} />
+      ) : (
+        <>
+          <FinanceMetric icon={DollarSign} label="合同总额" value={formatMoney(totalContract)} tone="cyan" />
+          <FinanceMetric icon={CheckCircle2} label="已收金额" value={formatMoney(totalReceived)} tone="green" />
+          <FinanceMetric icon={AlertTriangle} label="未收金额" value={formatMoney(totalUnreceived)} tone="amber" />
 
-      <section className="panel span12 financeDetailPanel">
-        <div className="panelHeader">
-          <div>
-            <h2>项目商务详情</h2>
-            <p>点击左侧项目后查看具体商务情况</p>
-          </div>
-        </div>
-        {selectedProject && selectedRecord ? (
-          <FinanceProjectDetail
-            project={selectedProject}
-            record={selectedRecord}
-            ledger={selectedLedger}
-            onAction={openFinanceAction}
-            onEditEntry={editFinanceEntry}
-            onDeleteEntry={deleteFinanceEntry}
-          onUpdateRecord={updateSelectedFinanceRecord}
-        />
-        ) : (
-          <EmptyState title="请选择项目" note="项目建立后，点击项目结算列表即可录入甲方商务。" />
-        )}
-      </section>
+          <section className="panel span12">
+            <div className="panelHeader">
+              <div>
+                <h2>项目结算</h2>
+                <p>只显示收付款、开票和合同状态</p>
+              </div>
+              <div className="financeBadges">
+                <span>{overdueCount} 个逾期</span>
+                <span>{pendingInvoiceCount} 个待处理发票</span>
+              </div>
+            </div>
+            <div className="settlementTable">
+              {visibleRecords.length === 0 && <EmptyState title="财务暂无项目" note="新建项目后，这里会建立空白商务档案，金额从 0 开始录入。" />}
+              {visibleRecords.map((record) => {
+                const project = projects.find((item) => item.id === record.projectId)
+                const unpaid = record.contractAmount - record.receivedAmount
+                const receivedRatio = record.contractAmount > 0 ? Math.round((record.receivedAmount / record.contractAmount) * 100) : 0
+                const settlementStatus = financeSettlementStatus(record)
+                const settlementText = record.contractAmount > 0 ? settlementStatus : '待录入'
 
-      {activeAction && selectedProject && (
-        <FinanceEntryModal
-          action={activeAction}
-          project={selectedProject}
-          editingEntry={editingEntry?.action === activeAction ? editingEntry.entry : null}
-          onClose={() => {
-            setEditingEntry(null)
-            setActiveAction(null)
-          }}
-          onSave={saveFinanceEntry}
-        />
+                return (
+                  <button
+                    key={record.projectId}
+                    className={`settlementRow ${selectedFinanceProjectId === record.projectId ? 'active' : ''}`}
+                    type="button"
+                    onClick={() => setSelectedFinanceProjectId(record.projectId)}
+                  >
+                    <div>
+                      <strong>{project?.name}</strong>
+                      <span>
+                        {project?.client || '客户未填写'} · {project?.type} · 项目经理：{project?.manager || '未分配'}
+                      </span>
+                    </div>
+                    <div className="moneyCell">
+                      <span>合同</span>
+                      <strong>{formatMoney(record.contractAmount)}</strong>
+                    </div>
+                    <div className="moneyCell">
+                      <span>已收</span>
+                      <strong>{formatMoney(record.receivedAmount)}</strong>
+                    </div>
+                    <div className="moneyCell">
+                      <span>未收</span>
+                      <strong>{formatMoney(unpaid)}</strong>
+                    </div>
+                    <span className={`financeStatus ${record.contractAmount > 0 ? financeTone(settlementStatus) : 'wait'}`}>{settlementText}</span>
+                    <div className="miniProgress" title={`已收 ${receivedRatio}%`}>
+                      <span style={{ width: `${receivedRatio}%` }} />
+                    </div>
+                  </button>
+                )
+              })}
+            </div>
+          </section>
+
+          <section className="panel span12 financeDetailPanel">
+            <div className="panelHeader">
+              <div>
+                <h2>项目商务详情</h2>
+                <p>点击左侧项目后查看具体商务情况</p>
+              </div>
+            </div>
+            {selectedProject && selectedRecord ? (
+              <FinanceProjectDetail
+                project={selectedProject}
+                record={selectedRecord}
+                ledger={selectedLedger}
+                onAction={openFinanceAction}
+                onEditEntry={editFinanceEntry}
+                onDeleteEntry={deleteFinanceEntry}
+                onUpdateRecord={updateSelectedFinanceRecord}
+              />
+            ) : (
+              <EmptyState title="请选择项目" note="项目建立后，点击项目结算列表即可录入甲方商务。" />
+            )}
+          </section>
+
+          {activeAction && selectedProject && (
+            <FinanceEntryModal
+              action={activeAction}
+              project={selectedProject}
+              editingEntry={editingEntry?.action === activeAction ? editingEntry.entry : null}
+              onClose={() => {
+                setEditingEntry(null)
+                setActiveAction(null)
+              }}
+              onSave={saveFinanceEntry}
+            />
+          )}
+        </>
       )}
     </div>
   )
+}
+
+type MonthlyParticipantKind = 'internal' | 'external'
+
+type MonthlyProjectSummary = {
+  id: string
+  name: string
+  due: string
+  contractAmount: number
+  amountRecorded: boolean
+}
+
+type MonthlyParticipationProject = MonthlyProjectSummary & {
+  workTypes: string[]
+}
+
+type MonthlyParticipant = {
+  key: string
+  name: string
+  kind: MonthlyParticipantKind
+  projects: MonthlyParticipationProject[]
+  totalContractAmount: number
+  pendingAmountCount: number
+}
+
+function MonthlyProjectParticipation({
+  projects,
+  tasks,
+  records,
+}: {
+  projects: Project[]
+  tasks: Task[]
+  records: FinanceRecord[]
+}) {
+  const [monthKey, setMonthKey] = useState(() => previousMonthKey())
+  const [selectedParticipantKey, setSelectedParticipantKey] = useState('')
+  const [selectedProjectId, setSelectedProjectId] = useState('')
+  const [showAllProjectBars, setShowAllProjectBars] = useState(false)
+  const [showAllParticipantBars, setShowAllParticipantBars] = useState(false)
+  const [showAllRelationshipProjects, setShowAllRelationshipProjects] = useState(false)
+  const report = useMemo(
+    () => buildMonthlyParticipationReport(projects, tasks, records, monthKey),
+    [monthKey, projects, records, tasks],
+  )
+  const projectBars = useMemo(
+    () =>
+      [...report.projects].sort(
+        (left, right) =>
+          Number(right.amountRecorded) - Number(left.amountRecorded) ||
+          right.contractAmount - left.contractAmount ||
+          left.due.localeCompare(right.due) ||
+          left.name.localeCompare(right.name, 'zh-CN'),
+      ),
+    [report.projects],
+  )
+  const participantBars = useMemo(
+    () =>
+      [...report.participants].sort(
+        (left, right) =>
+          right.projects.length - left.projects.length ||
+          (left.kind === right.kind ? left.name.localeCompare(right.name, 'zh-CN') : left.kind === 'internal' ? -1 : 1),
+      ),
+    [report.participants],
+  )
+  const relationshipProjects = useMemo(
+    () => [...report.projects].sort((left, right) => left.due.localeCompare(right.due) || left.name.localeCompare(right.name, 'zh-CN')),
+    [report.projects],
+  )
+  const selectedParticipant = report.participants.find((participant) => participant.key === selectedParticipantKey) ?? null
+  const selectedProject = report.projects.find((project) => project.id === selectedProjectId) ?? null
+  const selectedRelationship = selectedParticipant?.projects.find((project) => project.id === selectedProjectId) ?? null
+  const selectedParticipantProjectIds = new Set(selectedParticipant?.projects.map((project) => project.id) ?? [])
+  const selectedProjectParticipantKeys = new Set(
+    selectedProject
+      ? report.participants
+          .filter((participant) => participant.projects.some((project) => project.id === selectedProject.id))
+          .map((participant) => participant.key)
+      : [],
+  )
+  const visibleProjectBars = showAllProjectBars ? projectBars : projectBars.slice(0, 8)
+  const visibleParticipantBars = showAllParticipantBars ? participantBars : participantBars.slice(0, 8)
+  const visibleRelationshipProjects = showAllRelationshipProjects ? relationshipProjects : relationshipProjects.slice(0, 8)
+  const maxProjectAmount = Math.max(1, ...projectBars.map((project) => project.contractAmount))
+  const maxParticipantProjects = Math.max(1, ...participantBars.map((participant) => participant.projects.length))
+
+  useEffect(() => {
+    setSelectedParticipantKey((current) =>
+      current && !report.participants.some((participant) => participant.key === current) ? '' : current,
+    )
+    setSelectedProjectId((current) => (current && !report.projects.some((project) => project.id === current) ? '' : current))
+  }, [report.participants, report.projects])
+
+  useEffect(() => {
+    setShowAllProjectBars(false)
+    setShowAllParticipantBars(false)
+    setShowAllRelationshipProjects(false)
+  }, [monthKey])
+
+  function selectProject(projectId: string) {
+    const nextProjectId = selectedProjectId === projectId ? '' : projectId
+    setSelectedProjectId(nextProjectId)
+    if (nextProjectId && selectedParticipant && !selectedParticipant.projects.some((project) => project.id === nextProjectId)) {
+      setSelectedParticipantKey('')
+    }
+  }
+
+  function selectParticipant(participantKey: string) {
+    const nextParticipantKey = selectedParticipantKey === participantKey ? '' : participantKey
+    setSelectedParticipantKey(nextParticipantKey)
+    const nextParticipant = report.participants.find((participant) => participant.key === nextParticipantKey)
+    if (nextParticipant && selectedProject && !nextParticipant.projects.some((project) => project.id === selectedProject.id)) {
+      setSelectedProjectId('')
+    }
+  }
+
+  function selectRelationship(participantKey: string, projectId: string) {
+    setSelectedParticipantKey(participantKey)
+    setSelectedProjectId(projectId)
+  }
+
+  function clearSelection() {
+    setSelectedParticipantKey('')
+    setSelectedProjectId('')
+  }
+
+  return (
+    <>
+      <FinanceMetric icon={FolderKanban} label="交付项目" value={`${report.projects.length} 个`} tone="cyan" />
+      <FinanceMetric icon={DollarSign} label="项目总额" value={formatMoney(report.totalContractAmount)} tone="green" />
+      <FinanceMetric icon={Users} label="内部参与人" value={`${report.internalParticipantCount} 人`} tone="blue" />
+      <FinanceMetric icon={Users} label="外包参与方" value={`${report.externalParticipantCount} 个`} tone="amber" />
+
+      <section className="monthlyParticipationToolbar span12">
+        <div className="monthlyParticipationHeader">
+          <div>
+            <h2>{formatMonthHeading(monthKey)}项目参与总览</h2>
+            <p>按项目最终交付日期归入月份；参与金额只表示项目规模，不代表个人收入或提成。</p>
+          </div>
+          <div className="monthlyParticipationHeaderActions">
+            <div className="financeBadges">
+              <span>{report.projects.length} 个项目</span>
+              {report.pendingAmountCount > 0 && <span>{report.pendingAmountCount} 个金额待录入</span>}
+              {report.unassignedProjects.length > 0 && <span>{report.unassignedProjects.length} 个项目未分配参与人</span>}
+            </div>
+            <div className="monthlyParticipationControls">
+              <button
+                type="button"
+                title="上一个月"
+                aria-label="上一个月"
+                onClick={() => setMonthKey((current) => shiftMonthKey(current, -1))}
+              >
+                <ChevronLeft size={18} />
+              </button>
+              <label>
+                <span>统计月份</span>
+                <input type="month" value={monthKey} onChange={(event) => event.target.value && setMonthKey(event.target.value)} />
+              </label>
+              <button
+                type="button"
+                title="下一个月"
+                aria-label="下一个月"
+                onClick={() => setMonthKey((current) => shiftMonthKey(current, 1))}
+              >
+                <ChevronRight size={18} />
+              </button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      {report.projects.length === 0 ? (
+        <section className="panel span12 monthlyParticipationEmpty">
+          <EmptyState title="这个月暂无交付项目" note="项目会按照编辑项目中的最终交付日期自动归入对应月份。" />
+        </section>
+      ) : (
+        <>
+          <section className="panel span6 monthlyChartPanel">
+            <div className="monthlySectionHeader">
+              <div>
+                <h3>项目金额分布</h3>
+                <p>合同金额待录入的项目仍会保留在图中</p>
+              </div>
+              <span>{report.projects.length} 个项目</span>
+            </div>
+            <div className="monthlyBarChart">
+              {visibleProjectBars.map((project) => {
+                const isRelated = !selectedParticipant || selectedParticipantProjectIds.has(project.id)
+                const barWidth = project.amountRecorded ? Math.max(4, (project.contractAmount / maxProjectAmount) * 100) : 0
+
+                return (
+                  <button
+                    className={`monthlyBarRow project ${selectedProjectId === project.id ? 'selected' : ''} ${isRelated ? '' : 'muted'}`}
+                    key={project.id}
+                    type="button"
+                    aria-pressed={selectedProjectId === project.id}
+                    onClick={() => selectProject(project.id)}
+                  >
+                    <span className="monthlyBarLabel">
+                      <strong>{project.name}</strong>
+                      <small>交付 {formatDeliveryDate(project.due)}</small>
+                    </span>
+                    <span className="monthlyBarTrack" aria-hidden="true">
+                      <span style={{ width: `${barWidth}%` }} />
+                    </span>
+                    <strong className={project.amountRecorded ? '' : 'pending'}>
+                      {project.amountRecorded ? formatMoney(project.contractAmount) : '待录入'}
+                    </strong>
+                  </button>
+                )
+              })}
+            </div>
+            {projectBars.length > 8 && (
+              <button className="monthlyShowAllButton" type="button" onClick={() => setShowAllProjectBars((current) => !current)}>
+                {showAllProjectBars ? '收起项目' : `查看全部 ${projectBars.length} 个项目`}
+              </button>
+            )}
+          </section>
+
+          <section className="panel span6 monthlyChartPanel">
+            <div className="monthlySectionHeader">
+              <div>
+                <h3>参与项目分布</h3>
+                <p>按参与项目数量展示，内部人员与外包方分色</p>
+              </div>
+              <div className="monthlyChartLegend" aria-label="参与方类型图例">
+                <span className="internal">内部</span>
+                <span className="external">外包</span>
+              </div>
+            </div>
+            {report.participants.length === 0 ? (
+              <EmptyState title="暂无参与人信息" note="这些项目尚未设置项目经理、内部执行人员或外包参与方。" />
+            ) : (
+              <div className="monthlyBarChart">
+                {visibleParticipantBars.map((participant) => {
+                  const isRelated = !selectedProject || selectedProjectParticipantKeys.has(participant.key)
+                  return (
+                    <button
+                      className={`monthlyBarRow participant ${participant.kind} ${selectedParticipantKey === participant.key ? 'selected' : ''} ${isRelated ? '' : 'muted'}`}
+                      key={participant.key}
+                      type="button"
+                      aria-pressed={selectedParticipantKey === participant.key}
+                      onClick={() => selectParticipant(participant.key)}
+                    >
+                      <span className="monthlyBarLabel">
+                        <strong>{participant.name}</strong>
+                        <small>
+                          {participant.kind === 'external' ? '外包' : '内部'} ·{' '}
+                          {participant.totalContractAmount > 0
+                            ? `参与项目 ${formatMoney(participant.totalContractAmount)}`
+                            : participant.pendingAmountCount > 0
+                              ? '参与项目金额待录入'
+                              : '暂无项目金额'}
+                        </small>
+                      </span>
+                      <span className="monthlyBarTrack" aria-hidden="true">
+                        <span style={{ width: `${Math.max(5, (participant.projects.length / maxParticipantProjects) * 100)}%` }} />
+                      </span>
+                      <strong>{participant.projects.length} 个</strong>
+                    </button>
+                  )
+                })}
+              </div>
+            )}
+            {participantBars.length > 8 && (
+              <button className="monthlyShowAllButton" type="button" onClick={() => setShowAllParticipantBars((current) => !current)}>
+                {showAllParticipantBars ? '收起参与方' : `查看全部 ${participantBars.length} 个参与方`}
+              </button>
+            )}
+          </section>
+
+          <section className="panel span12 monthlyRelationshipPanel">
+            <div className="monthlySectionHeader monthlyRelationshipHeader">
+              <div>
+                <h3>项目协作关系</h3>
+                <p>沿项目时间顺序查看参与人员、外包方和各自承担的工作</p>
+              </div>
+              {(selectedParticipant || selectedProject) && (
+                <button className="monthlyClearSelection" type="button" onClick={clearSelection}>
+                  <X size={15} />
+                  清除筛选
+                </button>
+              )}
+            </div>
+
+            {(selectedParticipant || selectedProject) && (
+              <div className="monthlySelectionSummary">
+                <strong>
+                  {selectedParticipant && selectedProject
+                    ? `${selectedParticipant.name} · ${selectedProject.name}`
+                    : selectedParticipant
+                      ? selectedParticipant.name
+                      : selectedProject?.name}
+                </strong>
+                <span>
+                  {selectedParticipant && selectedProject
+                    ? selectedRelationship
+                      ? `${selectedRelationship.workTypes.join(' / ')} · ${selectedProject.amountRecorded ? formatMoney(selectedProject.contractAmount) : '金额待录入'} · 交付 ${formatDeliveryDate(selectedProject.due)}`
+                      : '当前参与方未参与这个项目'
+                    : selectedParticipant
+                      ? `参与 ${selectedParticipant.projects.length} 个项目；参与金额可能与其他人员重复，不代表个人收入。`
+                      : `${selectedProject?.amountRecorded ? formatMoney(selectedProject.contractAmount) : '金额待录入'} · 最终交付 ${formatDeliveryDate(selectedProject?.due ?? '')}`}
+                </span>
+              </div>
+            )}
+
+            <div className="monthlyRelationshipList">
+              {visibleRelationshipProjects.map((project) => {
+                const projectParticipants = report.participants.flatMap((participant) => {
+                  const relationship = participant.projects.find((item) => item.id === project.id)
+                  return relationship ? [{ participant, relationship }] : []
+                })
+                const isMuted =
+                  (selectedParticipant && !selectedParticipantProjectIds.has(project.id)) ||
+                  (selectedProject && selectedProject.id !== project.id)
+
+                return (
+                  <article
+                    className={`monthlyRelationshipRow ${selectedProjectId === project.id ? 'selected' : ''} ${isMuted ? 'muted' : ''}`}
+                    key={project.id}
+                  >
+                    <button
+                      className="monthlyRelationshipProject"
+                      type="button"
+                      aria-pressed={selectedProjectId === project.id}
+                      onClick={() => selectProject(project.id)}
+                    >
+                      <span>{formatDeliveryDate(project.due)}</span>
+                      <strong>{project.name}</strong>
+                      <small>{project.amountRecorded ? formatMoney(project.contractAmount) : '金额待录入'}</small>
+                    </button>
+                    <div className="monthlyRelationshipConnector" aria-hidden="true">
+                      <span />
+                    </div>
+                    <div className="monthlyRelationshipPeople">
+                      {projectParticipants.length > 0 ? (
+                        projectParticipants.map(({ participant, relationship }) => (
+                          <button
+                            className={`monthlyRelationshipPerson ${participant.kind} ${selectedParticipantKey === participant.key ? 'selected' : ''}`}
+                            key={`${project.id}:${participant.key}`}
+                            type="button"
+                            onClick={() => selectRelationship(participant.key, project.id)}
+                          >
+                            <span>{participant.kind === 'external' ? '外包' : '内部'}</span>
+                            <strong>{participant.name}</strong>
+                            <small>{relationship.workTypes.join(' / ')}</small>
+                          </button>
+                        ))
+                      ) : (
+                        <span className="monthlyRelationshipEmpty">待分配参与人</span>
+                      )}
+                    </div>
+                  </article>
+                )
+              })}
+            </div>
+
+            {relationshipProjects.length > 8 && (
+              <button className="monthlyShowAllButton" type="button" onClick={() => setShowAllRelationshipProjects((current) => !current)}>
+                {showAllRelationshipProjects ? '收起协作关系' : `查看全部 ${relationshipProjects.length} 个项目`}
+              </button>
+            )}
+          </section>
+        </>
+      )}
+    </>
+  )
+}
+
+function buildMonthlyParticipationReport(projects: Project[], tasks: Task[], records: FinanceRecord[], monthKey: string) {
+  const recordByProjectId = new Map(records.map((record) => [record.projectId, record]))
+  const tasksByProjectId = new Map<string, Task[]>()
+  tasks.forEach((task) => {
+    const current = tasksByProjectId.get(task.projectId) ?? []
+    current.push(task)
+    tasksByProjectId.set(task.projectId, current)
+  })
+
+  const monthProjects = projects
+    .filter((project) => projectDeliveryMonthKey(project.due) === monthKey)
+    .sort((left, right) => left.due.localeCompare(right.due) || left.name.localeCompare(right.name, 'zh-CN'))
+  const projectSummaries: MonthlyProjectSummary[] = monthProjects.map((project) => {
+    const contractAmount = Math.max(0, Number(recordByProjectId.get(project.id)?.contractAmount) || 0)
+    return {
+      id: project.id,
+      name: project.name,
+      due: project.due,
+      contractAmount,
+      amountRecorded: contractAmount > 0,
+    }
+  })
+  const projectSummaryById = new Map(projectSummaries.map((project) => [project.id, project]))
+  const participants = new Map<
+    string,
+    {
+      key: string
+      name: string
+      kind: MonthlyParticipantKind
+      projects: Map<string, MonthlyParticipationProject & { workTypeSet: Set<string> }>
+    }
+  >()
+  const unassignedProjects: Project[] = []
+
+  monthProjects.forEach((project) => {
+    const record = recordByProjectId.get(project.id)
+    const contractAmount = Math.max(0, Number(record?.contractAmount) || 0)
+    const amountRecorded = contractAmount > 0
+    let participantAdded = false
+
+    function addParticipant(kind: MonthlyParticipantKind, name: string, workType: string, keyOverride?: string) {
+      const cleanName = name.trim()
+      if (!cleanName || cleanName === '未分配' || cleanName === '待分配') return
+
+      participantAdded = true
+      const participantKey = keyOverride ?? `${kind}:${cleanName}`
+      const participant = participants.get(participantKey) ?? {
+        key: participantKey,
+        name: cleanName,
+        kind,
+        projects: new Map(),
+      }
+      const currentProject = participant.projects.get(project.id)
+      if (currentProject) {
+        currentProject.workTypeSet.add(workType)
+      } else {
+        participant.projects.set(project.id, {
+          id: project.id,
+          name: project.name,
+          due: project.due,
+          workTypes: [],
+          workTypeSet: new Set([workType]),
+          contractAmount,
+          amountRecorded,
+        })
+      }
+      participants.set(participantKey, participant)
+    }
+
+    const managerName = project.manager?.trim() ?? ''
+    if (managerName) addParticipant('internal', managerName, '项目经理')
+
+    const projectTasks = tasksByProjectId.get(project.id) ?? []
+    projectTasks.forEach((task) => {
+      const workType = monthlyParticipationTaskLabel(task, project)
+      if (isExternalTask(task)) {
+        const externalName = externalAssigneeName(task).trim()
+        const isPendingExternal = !externalName || externalName === '待补充'
+        addParticipant(
+          'external',
+          isPendingExternal ? '待补充外包方' : externalName,
+          workType,
+          isPendingExternal ? `external-pending:${project.id}` : undefined,
+        )
+        return
+      }
+
+      addParticipant('internal', task.assignee ?? '', workType)
+    })
+
+    if (!participantAdded) unassignedProjects.push(project)
+  })
+
+  const participantRows: MonthlyParticipant[] = Array.from(participants.values())
+    .map((participant) => {
+      const participantProjects = Array.from(participant.projects.values())
+        .map(({ workTypeSet, ...project }) => ({
+          ...project,
+          workTypes: Array.from(workTypeSet),
+        }))
+        .sort((left, right) => left.due.localeCompare(right.due) || left.name.localeCompare(right.name, 'zh-CN'))
+
+      return {
+        key: participant.key,
+        name: participant.name,
+        kind: participant.kind,
+        projects: participantProjects,
+        totalContractAmount: participantProjects.reduce(
+          (sum, project) => sum + (project.amountRecorded ? project.contractAmount : 0),
+          0,
+        ),
+        pendingAmountCount: participantProjects.filter((project) => !project.amountRecorded).length,
+      }
+    })
+    .sort((left, right) => {
+      if (left.kind !== right.kind) return left.kind === 'internal' ? -1 : 1
+      return left.name.localeCompare(right.name, 'zh-CN')
+    })
+
+  return {
+    projects: projectSummaries,
+    participants: participantRows,
+    unassignedProjects: unassignedProjects
+      .map((project) => projectSummaryById.get(project.id))
+      .filter((project): project is MonthlyProjectSummary => Boolean(project)),
+    totalContractAmount: projectSummaries.reduce((sum, project) => sum + project.contractAmount, 0),
+    pendingAmountCount: projectSummaries.filter((project) => !project.amountRecorded).length,
+    internalParticipantCount: participantRows.filter((participant) => participant.kind === 'internal').length,
+    externalParticipantCount: participantRows.filter((participant) => participant.kind === 'external').length,
+  }
+}
+
+function previousMonthKey(today = new Date()) {
+  return monthKeyForDate(new Date(today.getFullYear(), today.getMonth() - 1, 1))
+}
+
+function monthKeyForDate(date: Date) {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`
+}
+
+function shiftMonthKey(monthKey: string, offset: number) {
+  const match = monthKey.match(/^(\d{4})-(\d{2})$/)
+  if (!match) return previousMonthKey()
+  return monthKeyForDate(new Date(Number(match[1]), Number(match[2]) - 1 + offset, 1))
+}
+
+function projectDeliveryMonthKey(due: string) {
+  const match = due.trim().match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})/)
+  if (match) return `${match[1]}-${match[2].padStart(2, '0')}`
+
+  const parsed = new Date(due)
+  return Number.isNaN(parsed.getTime()) ? '' : monthKeyForDate(parsed)
+}
+
+function formatMonthHeading(monthKey: string) {
+  const match = monthKey.match(/^(\d{4})-(\d{2})$/)
+  return match ? `${match[1]}年${Number(match[2])}月` : monthKey
+}
+
+function formatDeliveryDate(due: string) {
+  const match = due.trim().match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})/)
+  if (match) return `${Number(match[2])}月${Number(match[3])}日`
+  return due || '日期待设置'
+}
+
+function monthlyParticipationTaskLabel(task: Task, project: Project) {
+  if (task.workType?.trim()) return task.workType.trim()
+
+  const title = task.title.trim()
+  const projectPrefix = project.name.trim()
+  if (projectPrefix && title.startsWith(projectPrefix)) {
+    return title.slice(projectPrefix.length).trim() || '执行任务'
+  }
+
+  return title || '执行任务'
 }
 
 function FinanceProjectDetail({

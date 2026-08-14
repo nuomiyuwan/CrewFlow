@@ -4,7 +4,7 @@ CrewFlow is a desktop command center for project intake, task assignment, delive
 
 It is built with Electron, React, and Vite, and supports both single-user local data and LAN team mode through a lightweight CrewFlow Server.
 
-Current stable version: **v1.4.4**. See [CHANGELOG.md](CHANGELOG.md) for release details.
+Current stable version: **v1.4.5**. See [CHANGELOG.md](CHANGELOG.md) for release details.
 
 中文使用说明：[CrewFlow 用户使用说明](docs/USER_GUIDE.zh-CN.md)
 

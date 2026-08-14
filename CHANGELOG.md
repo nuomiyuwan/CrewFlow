@@ -2,6 +2,20 @@
 
 All notable changes to CrewFlow are documented in this file.
 
+## 1.4.5 - 2026-08-14
+
+### Added
+
+- Added a controller-only monthly project participation report in Finance, grouped by each project's final delivery month and including project managers, internal assignees, and outsourced participants.
+- Added project amount and participation charts, linked filters, a project collaboration view, missing-amount indicators, and month switching without changing stored project data.
+
+### Improved
+
+- Forced a fresh GitHub update check whenever the sidebar version number is clicked instead of reusing an earlier up-to-date cache.
+- Added a guided macOS update handoff that detects a running local team host, waits for pending saves, stops the service, opens the DMG, and fully quits CrewFlow.
+- Restored the team service automatically after the updated app starts, while keeping the current app open and repairing the service if update preparation fails.
+- Kept the project amount and participant distribution panels aligned at the same height, with eight rows shown by default and expandable overflow.
+
 ## 1.4.4 - 2026-08-13
 
 ### Improved

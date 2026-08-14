@@ -494,6 +494,10 @@ h2 {
   grid-column: span 5;
 }
 
+.span6 {
+  grid-column: span 6;
+}
+
 .span7 {
   grid-column: span 7;
 }
@@ -1830,6 +1834,7 @@ button.pathBox {
 
   .span4,
   .span5,
+  .span6,
   .span7,
   .span8 {
     grid-column: span 12;
@@ -2538,6 +2543,899 @@ h1 {
   font-size: 12px;
   font-weight: 700;
   padding: 7px 10px;
+}
+
+.financeViewTabs {
+  display: inline-flex;
+  width: fit-content;
+  border: 1px solid rgba(180, 202, 216, 0.16);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.045);
+  padding: 4px;
+}
+
+.financeViewTabs button {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 38px;
+  border: 0;
+  border-radius: 7px;
+  color: rgba(210, 222, 235, 0.66);
+  background: transparent;
+  cursor: pointer;
+  padding: 0 14px;
+}
+
+.financeViewTabs button.active {
+  color: #f7fbff;
+  background: rgba(129, 237, 247, 0.13);
+  box-shadow: inset 0 0 0 1px rgba(128, 233, 247, 0.28);
+}
+
+.monthlyParticipationPanel {
+  min-width: 0;
+}
+
+.monthlyParticipationHeader {
+  align-items: center;
+}
+
+.monthlyParticipationHeaderActions {
+  display: flex;
+  align-items: flex-end;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.monthlyParticipationControls {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.monthlyParticipationControls > button {
+  display: grid;
+  width: 38px;
+  min-height: 38px;
+  border: 1px solid rgba(128, 233, 247, 0.22);
+  border-radius: 8px;
+  color: #91f3fb;
+  background: rgba(129, 237, 247, 0.07);
+  cursor: pointer;
+  padding: 0;
+  place-items: center;
+}
+
+.monthlyParticipationControls label {
+  display: grid;
+  grid-template-columns: auto minmax(126px, 1fr);
+  align-items: center;
+  gap: 9px;
+  min-height: 38px;
+  border: 1px solid rgba(180, 202, 216, 0.18);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.045);
+  padding: 0 10px;
+}
+
+.monthlyParticipationControls label span {
+  color: rgba(128, 233, 247, 0.78);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.monthlyParticipationControls input {
+  min-width: 126px;
+  border: 0;
+  outline: 0;
+  color: #f7fbff;
+  background: transparent;
+  color-scheme: dark;
+}
+
+.monthlyParticipantList {
+  display: grid;
+  gap: 12px;
+}
+
+.monthlyParticipantRow {
+  display: grid;
+  min-width: 0;
+  border: 1px solid rgba(180, 202, 216, 0.17);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.035);
+  overflow: hidden;
+}
+
+.monthlyParticipantRow.external {
+  border-color: rgba(244, 221, 143, 0.25);
+}
+
+.monthlyParticipantRow > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  min-height: 62px;
+  padding: 10px 14px;
+}
+
+.monthlyParticipantIdentity {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  gap: 10px;
+}
+
+.monthlyParticipantIdentity > span {
+  flex: 0 0 auto;
+  border: 1px solid rgba(128, 233, 247, 0.24);
+  border-radius: 999px;
+  color: #91f3fb;
+  background: rgba(129, 237, 247, 0.08);
+  font-size: 11px;
+  font-weight: 800;
+  padding: 4px 8px;
+}
+
+.monthlyParticipantRow.external .monthlyParticipantIdentity > span {
+  border-color: rgba(244, 221, 143, 0.28);
+  color: #f4dd8f;
+  background: rgba(244, 221, 143, 0.08);
+}
+
+.monthlyParticipantIdentity strong {
+  overflow: hidden;
+  color: #f7fbff;
+  font-size: 16px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.monthlyParticipantTotal {
+  display: grid;
+  grid-template-columns: auto auto;
+  align-items: baseline;
+  gap: 2px 12px;
+  text-align: right;
+}
+
+.monthlyParticipantTotal > span,
+.monthlyParticipantTotal > small {
+  color: rgba(210, 222, 235, 0.56);
+  font-size: 11px;
+}
+
+.monthlyParticipantTotal > strong {
+  color: #f7fbff;
+  font-size: 15px;
+}
+
+.monthlyParticipantTotal > small {
+  grid-column: 1 / -1;
+}
+
+.monthlyParticipantProjects {
+  display: grid;
+  border-top: 1px solid rgba(180, 202, 216, 0.12);
+}
+
+.monthlyParticipantProject {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 18px;
+  min-height: 62px;
+  padding: 10px 14px;
+}
+
+.monthlyParticipantProject + .monthlyParticipantProject {
+  border-top: 1px solid rgba(180, 202, 216, 0.1);
+}
+
+.monthlyParticipantProject > div:first-child,
+.monthlyParticipantProjectAmount {
+  display: grid;
+  min-width: 0;
+  gap: 4px;
+}
+
+.monthlyParticipantProject > div:first-child strong,
+.monthlyParticipantProject > div:first-child span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.monthlyParticipantProject > div:first-child strong {
+  color: rgba(244, 248, 255, 0.9);
+  font-size: 14px;
+}
+
+.monthlyParticipantProject > div:first-child span,
+.monthlyParticipantProjectAmount span {
+  color: rgba(210, 222, 235, 0.56);
+  font-size: 12px;
+}
+
+.monthlyParticipantProjectAmount {
+  justify-items: end;
+  text-align: right;
+}
+
+.monthlyParticipantProjectAmount strong {
+  color: #91f3fb;
+  font-size: 13px;
+}
+
+.monthlyParticipantPendingNote {
+  margin: 0;
+  border-top: 1px solid rgba(244, 221, 143, 0.14);
+  color: rgba(244, 221, 143, 0.76);
+  background: rgba(244, 221, 143, 0.035);
+  font-size: 11px;
+  padding: 8px 14px;
+}
+
+.monthlyUnassignedProjects {
+  display: grid;
+  gap: 5px;
+  margin-top: 12px;
+  border: 1px solid rgba(244, 221, 143, 0.2);
+  border-radius: 8px;
+  color: rgba(244, 221, 143, 0.82);
+  background: rgba(244, 221, 143, 0.045);
+  padding: 11px 13px;
+}
+
+.monthlyUnassignedProjects strong {
+  font-size: 12px;
+}
+
+.monthlyUnassignedProjects span {
+  color: rgba(210, 222, 235, 0.62);
+  font-size: 12px;
+}
+
+.monthlyParticipationToolbar,
+.monthlyChartPanel {
+  min-width: 0;
+}
+
+.monthlyParticipationToolbar {
+  padding: 2px 2px 0;
+}
+
+.monthlyParticipationHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+}
+
+.monthlyParticipationHeader h2,
+.monthlySectionHeader h3 {
+  margin: 0;
+  color: #f7fbff;
+}
+
+.monthlyParticipationHeader h2 {
+  font-size: 20px;
+}
+
+.monthlyParticipationHeader p,
+.monthlySectionHeader p {
+  margin: 4px 0 0;
+  color: rgba(210, 222, 235, 0.58);
+  font-size: 12px;
+}
+
+.monthlyParticipationEmpty {
+  min-height: 180px;
+}
+
+.monthlyChartPanel {
+  display: flex;
+  align-self: stretch;
+  flex-direction: column;
+}
+
+.monthlySectionHeader {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+  margin-bottom: 16px;
+}
+
+.monthlySectionHeader h3 {
+  font-size: 17px;
+}
+
+.monthlySectionHeader > span {
+  flex: 0 0 auto;
+  border: 1px solid rgba(180, 202, 216, 0.16);
+  border-radius: 999px;
+  color: rgba(244, 248, 255, 0.72);
+  background: rgba(255, 255, 255, 0.045);
+  font-size: 11px;
+  font-weight: 700;
+  padding: 5px 9px;
+}
+
+.monthlyChartLegend {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: rgba(210, 222, 235, 0.62);
+  font-size: 11px;
+}
+
+.monthlyChartLegend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.monthlyChartLegend span::before {
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+  background: #72dce6;
+  content: '';
+}
+
+.monthlyChartLegend span.external::before {
+  background: #dfc56d;
+}
+
+.monthlyBarChart {
+  display: grid;
+  gap: 3px;
+}
+
+.monthlyBarRow {
+  display: grid;
+  grid-template-columns: minmax(116px, 156px) minmax(76px, 1fr) minmax(58px, auto);
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  min-height: 54px;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  color: inherit;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+  padding: 7px 9px;
+  transition:
+    border-color 150ms ease,
+    background 150ms ease,
+    opacity 150ms ease;
+}
+
+.monthlyBarRow:hover,
+.monthlyBarRow.selected {
+  border-color: rgba(128, 233, 247, 0.24);
+  background: rgba(129, 237, 247, 0.055);
+}
+
+.monthlyBarRow.external:hover,
+.monthlyBarRow.external.selected {
+  border-color: rgba(244, 221, 143, 0.27);
+  background: rgba(244, 221, 143, 0.05);
+}
+
+.monthlyBarRow.muted {
+  opacity: 0.3;
+}
+
+.monthlyBarLabel {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+
+.monthlyBarLabel strong,
+.monthlyBarLabel small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.monthlyBarLabel strong {
+  color: rgba(244, 248, 255, 0.9);
+  font-size: 13px;
+}
+
+.monthlyBarLabel small {
+  color: rgba(210, 222, 235, 0.5);
+  font-size: 10px;
+}
+
+.monthlyBarTrack {
+  display: block;
+  height: 8px;
+  border-radius: 3px;
+  background: rgba(180, 202, 216, 0.1);
+  overflow: hidden;
+}
+
+.monthlyBarTrack > span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: #72dce6;
+}
+
+.monthlyBarRow.project .monthlyBarTrack > span {
+  background: #75d9bf;
+}
+
+.monthlyBarRow.external .monthlyBarTrack > span {
+  background: #dfc56d;
+}
+
+.monthlyBarRow > strong:last-child {
+  color: rgba(244, 248, 255, 0.82);
+  font-size: 12px;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.monthlyBarRow > strong.pending {
+  color: rgba(244, 221, 143, 0.72);
+}
+
+.monthlyShowAllButton {
+  width: 100%;
+  min-height: 34px;
+  margin-top: 8px;
+  border: 0;
+  color: #82eaf3;
+  background: transparent;
+  cursor: pointer;
+  font-size: 11px;
+}
+
+.monthlyShowAllButton:hover {
+  color: #c5f9fd;
+  background: rgba(129, 237, 247, 0.045);
+}
+
+.monthlyClearSelection {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 34px;
+  border: 1px solid rgba(128, 233, 247, 0.22);
+  border-radius: 7px;
+  color: #8cebf5;
+  background: rgba(129, 237, 247, 0.055);
+  cursor: pointer;
+  padding: 0 10px;
+}
+
+.monthlySelectionSummary {
+  display: grid;
+  grid-template-columns: minmax(140px, auto) minmax(0, 1fr);
+  align-items: center;
+  gap: 4px 14px;
+  margin-bottom: 12px;
+  border-left: 2px solid #72dce6;
+  color: rgba(244, 248, 255, 0.88);
+  background: rgba(129, 237, 247, 0.045);
+  padding: 9px 11px;
+}
+
+.monthlySelectionSummary strong,
+.monthlySelectionSummary span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.monthlySelectionSummary strong {
+  font-size: 12px;
+}
+
+.monthlySelectionSummary span {
+  color: rgba(210, 222, 235, 0.64);
+  font-size: 12px;
+}
+
+.monthlyMatrixViewport {
+  max-width: 100%;
+  border: 1px solid rgba(180, 202, 216, 0.14);
+  border-radius: 8px;
+  background: rgba(10, 18, 29, 0.2);
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  padding: 0 0 7px;
+  scrollbar-color: rgba(128, 233, 247, 0.36) transparent;
+  scrollbar-width: thin;
+}
+
+.monthlyMatrixViewport::-webkit-scrollbar {
+  height: 7px;
+}
+
+.monthlyMatrixViewport::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: rgba(128, 233, 247, 0.32);
+}
+
+.monthlyMatrixViewport::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.monthlyMatrixGrid {
+  display: grid;
+  width: max-content;
+  min-width: 100%;
+  gap: 1px;
+  background: rgba(180, 202, 216, 0.1);
+}
+
+.monthlyMatrixCorner,
+.monthlyMatrixProject,
+.monthlyMatrixPerson,
+.monthlyMatrixCell {
+  min-width: 0;
+  border: 0;
+  border-radius: 0;
+  color: inherit;
+  background: rgba(28, 38, 54, 0.98);
+}
+
+.monthlyMatrixCorner {
+  position: sticky;
+  left: 0;
+  z-index: 3;
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  min-height: 86px;
+  color: rgba(210, 222, 235, 0.55);
+  background: rgba(25, 36, 51, 1);
+  font-size: 11px;
+  padding: 12px;
+}
+
+.monthlyMatrixCorner strong {
+  color: #8cebf5;
+  font-size: 12px;
+}
+
+.monthlyMatrixProject {
+  display: grid;
+  align-content: center;
+  gap: 5px;
+  min-height: 86px;
+  text-align: left;
+  cursor: pointer;
+  padding: 11px;
+  transition:
+    background 150ms ease,
+    opacity 150ms ease;
+}
+
+.monthlyMatrixProject:hover,
+.monthlyMatrixProject.selected {
+  background: rgba(61, 108, 119, 0.72);
+}
+
+.monthlyMatrixProject strong,
+.monthlyMatrixProject span,
+.monthlyMatrixProject small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.monthlyMatrixProject strong {
+  color: rgba(244, 248, 255, 0.9);
+  font-size: 12px;
+}
+
+.monthlyMatrixProject span {
+  color: #86e7d2;
+  font-size: 11px;
+}
+
+.monthlyMatrixProject small {
+  color: rgba(210, 222, 235, 0.48);
+  font-size: 10px;
+}
+
+.monthlyMatrixPerson {
+  position: sticky;
+  left: 0;
+  z-index: 2;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-content: center;
+  align-items: center;
+  gap: 3px 8px;
+  min-height: 64px;
+  text-align: left;
+  cursor: pointer;
+  padding: 9px 11px;
+  transition:
+    background 150ms ease,
+    opacity 150ms ease;
+}
+
+.monthlyMatrixPerson:hover,
+.monthlyMatrixPerson.selected {
+  background: rgba(53, 96, 108, 0.96);
+}
+
+.monthlyMatrixPerson.external:hover,
+.monthlyMatrixPerson.external.selected {
+  background: rgba(100, 87, 50, 0.92);
+}
+
+.monthlyMatrixPerson > span {
+  grid-row: 1 / span 2;
+  border-radius: 4px;
+  color: #8cebf5;
+  background: rgba(129, 237, 247, 0.09);
+  font-size: 9px;
+  font-weight: 800;
+  padding: 4px 5px;
+}
+
+.monthlyMatrixPerson.external > span {
+  color: #f4dd8f;
+  background: rgba(244, 221, 143, 0.09);
+}
+
+.monthlyMatrixPerson strong,
+.monthlyMatrixPerson small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.monthlyMatrixPerson strong {
+  color: rgba(244, 248, 255, 0.9);
+  font-size: 12px;
+}
+
+.monthlyMatrixPerson small {
+  color: rgba(210, 222, 235, 0.48);
+  font-size: 10px;
+}
+
+.monthlyMatrixCell {
+  min-height: 64px;
+  color: rgba(210, 222, 235, 0.26);
+  font-size: 11px;
+  line-height: 1.35;
+  text-align: left;
+  padding: 9px 11px;
+  transition:
+    background 150ms ease,
+    opacity 150ms ease;
+}
+
+.monthlyMatrixCell.involved {
+  color: rgba(224, 250, 252, 0.88);
+  background: rgba(55, 104, 115, 0.72);
+  cursor: pointer;
+}
+
+.monthlyMatrixCell.involved.external {
+  color: rgba(255, 243, 196, 0.88);
+  background: rgba(99, 84, 44, 0.76);
+}
+
+.monthlyMatrixCell.involved:hover,
+.monthlyMatrixCell.involved.selected {
+  box-shadow: inset 0 0 0 1px rgba(128, 233, 247, 0.58);
+  background: rgba(63, 126, 139, 0.9);
+}
+
+.monthlyMatrixCell.involved.external:hover,
+.monthlyMatrixCell.involved.external.selected {
+  box-shadow: inset 0 0 0 1px rgba(244, 221, 143, 0.58);
+  background: rgba(117, 97, 45, 0.92);
+}
+
+.monthlyMatrixCell.empty:disabled {
+  cursor: default;
+  opacity: 1;
+}
+
+.monthlyRelationshipPanel {
+  align-self: start;
+  min-width: 0;
+}
+
+.monthlyRelationshipHeader {
+  align-items: center;
+}
+
+.monthlyRelationshipList {
+  display: grid;
+  border-top: 1px solid rgba(180, 202, 216, 0.12);
+}
+
+.monthlyRelationshipRow {
+  display: grid;
+  grid-template-columns: minmax(150px, 184px) 34px minmax(0, 1fr);
+  align-items: center;
+  min-width: 0;
+  min-height: 94px;
+  border-bottom: 1px solid rgba(180, 202, 216, 0.1);
+  transition:
+    background 150ms ease,
+    opacity 150ms ease;
+}
+
+.monthlyRelationshipRow.selected {
+  background: rgba(129, 237, 247, 0.035);
+}
+
+.monthlyRelationshipRow.muted {
+  opacity: 0.28;
+}
+
+.monthlyRelationshipProject {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+  border: 0;
+  border-left: 2px solid rgba(114, 220, 230, 0.48);
+  border-radius: 0;
+  color: inherit;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+  padding: 7px 10px;
+}
+
+.monthlyRelationshipProject:hover,
+.monthlyRelationshipProject[aria-pressed='true'] {
+  border-left-color: #72dce6;
+  background: rgba(129, 237, 247, 0.055);
+}
+
+.monthlyRelationshipProject span,
+.monthlyRelationshipProject strong,
+.monthlyRelationshipProject small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.monthlyRelationshipProject span {
+  color: #7be1eb;
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.monthlyRelationshipProject strong {
+  color: rgba(244, 248, 255, 0.92);
+  font-size: 14px;
+}
+
+.monthlyRelationshipProject small {
+  color: rgba(134, 231, 210, 0.72);
+  font-size: 11px;
+}
+
+.monthlyRelationshipConnector {
+  position: relative;
+  height: 100%;
+}
+
+.monthlyRelationshipConnector::before {
+  position: absolute;
+  top: 50%;
+  right: 0;
+  left: 0;
+  height: 1px;
+  background: rgba(128, 233, 247, 0.25);
+  content: '';
+}
+
+.monthlyRelationshipConnector span {
+  position: absolute;
+  top: calc(50% - 4px);
+  left: calc(50% - 4px);
+  width: 8px;
+  height: 8px;
+  border: 2px solid rgba(128, 233, 247, 0.78);
+  border-radius: 50%;
+  background: #202b3b;
+}
+
+.monthlyRelationshipPeople {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 7px;
+  min-width: 0;
+  padding: 10px 0 10px 8px;
+}
+
+.monthlyRelationshipPerson {
+  display: grid;
+  grid-template-columns: auto minmax(0, auto);
+  align-items: center;
+  gap: 2px 7px;
+  min-height: 52px;
+  max-width: 220px;
+  border: 1px solid rgba(128, 233, 247, 0.18);
+  border-radius: 7px;
+  color: inherit;
+  background: rgba(129, 237, 247, 0.045);
+  text-align: left;
+  cursor: pointer;
+  padding: 6px 9px;
+  transition:
+    border-color 150ms ease,
+    background 150ms ease;
+}
+
+.monthlyRelationshipPerson:hover,
+.monthlyRelationshipPerson.selected {
+  border-color: rgba(128, 233, 247, 0.48);
+  background: rgba(129, 237, 247, 0.11);
+}
+
+.monthlyRelationshipPerson.external {
+  border-color: rgba(244, 221, 143, 0.2);
+  background: rgba(244, 221, 143, 0.045);
+}
+
+.monthlyRelationshipPerson.external:hover,
+.monthlyRelationshipPerson.external.selected {
+  border-color: rgba(244, 221, 143, 0.5);
+  background: rgba(244, 221, 143, 0.11);
+}
+
+.monthlyRelationshipPerson > span {
+  grid-row: 1 / span 2;
+  border-radius: 4px;
+  color: #8cebf5;
+  background: rgba(129, 237, 247, 0.09);
+  font-size: 9px;
+  font-weight: 800;
+  padding: 4px 5px;
+}
+
+.monthlyRelationshipPerson.external > span {
+  color: #f4dd8f;
+  background: rgba(244, 221, 143, 0.09);
+}
+
+.monthlyRelationshipPerson strong,
+.monthlyRelationshipPerson small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.monthlyRelationshipPerson strong {
+  color: rgba(244, 248, 255, 0.9);
+  font-size: 12px;
+}
+
+.monthlyRelationshipPerson small {
+  color: rgba(210, 222, 235, 0.52);
+  font-size: 10px;
+}
+
+.monthlyRelationshipEmpty {
+  border: 1px dashed rgba(244, 221, 143, 0.24);
+  border-radius: 7px;
+  color: rgba(244, 221, 143, 0.66);
+  font-size: 11px;
+  padding: 9px 12px;
 }
 
 .settlementTable,
@@ -6390,6 +7288,56 @@ h1 {
   place-items: center;
 }
 
+@media (max-width: 1180px) {
+  .monthlyParticipationHeader {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .monthlyParticipationHeaderActions {
+    align-items: flex-start;
+  }
+
+  .monthlyParticipationHeaderActions .financeBadges {
+    justify-content: flex-start;
+  }
+
+  .monthlyChartPanel {
+    grid-column: span 12;
+  }
+}
+
+@media (max-width: 900px) {
+  .financeGrid > .financeMetric {
+    grid-column: span 6;
+  }
+
+  .monthlyParticipantRow > header,
+  .monthlyParticipantProject {
+    align-items: start;
+    grid-template-columns: 1fr;
+  }
+
+  .monthlyParticipantRow > header {
+    flex-direction: column;
+  }
+
+  .monthlyParticipantTotal,
+  .monthlyParticipantProjectAmount {
+    justify-items: start;
+    text-align: left;
+  }
+
+  .monthlySelectionSummary {
+    grid-template-columns: 1fr;
+  }
+
+  .monthlySelectionSummary strong,
+  .monthlySelectionSummary span {
+    white-space: normal;
+  }
+}
+
 @media (max-width: 720px) {
   .customCustomer {
     grid-template-columns: repeat(3, auto);
@@ -6406,6 +7354,46 @@ h1 {
   .taskDateFilter > span {
     width: 100%;
     margin-left: 0;
+  }
+
+  .monthlyParticipationHeaderActions,
+  .monthlyParticipationControls,
+  .monthlyParticipationControls label {
+    width: 100%;
+  }
+
+  .monthlyParticipationControls label {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .monthlyParticipationControls input {
+    min-width: 0;
+    width: 100%;
+  }
+
+  .monthlyBarRow {
+    grid-template-columns: minmax(104px, 138px) minmax(64px, 1fr) minmax(54px, auto);
+    gap: 8px;
+  }
+
+  .monthlyMatrixHeader,
+  .monthlyRelationshipHeader {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .monthlyRelationshipRow {
+    grid-template-columns: 1fr;
+    gap: 7px;
+    padding: 10px 0;
+  }
+
+  .monthlyRelationshipConnector {
+    display: none;
+  }
+
+  .monthlyRelationshipPeople {
+    padding: 0 0 0 12px;
   }
 
   .pathField.pathFieldWithActions {
