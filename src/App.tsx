@@ -17,8 +17,10 @@ import {
   Bot,
   CalendarDays,
   CheckCircle2,
+  ChevronDown,
   ChevronLeft,
   ChevronRight,
+  ChevronUp,
   Clock3,
   CloudSun,
   Download,
@@ -1583,6 +1585,7 @@ function App() {
   const [teamAccessKey, setTeamAccessKey] = useState(() => loadStoredTeamAccessKey())
   const [teamConnectionStatus, setTeamConnectionStatus] = useState<TeamConnectionStatus>('idle')
   const [teamConnectionMessage, setTeamConnectionMessage] = useState('')
+  const [lastTeamSyncAt, setLastTeamSyncAt] = useState<number | null>(null)
   const [teamServiceInfo, setTeamServiceInfo] = useState<TeamServiceInfo | null>(null)
   const [teamServiceBusy, setTeamServiceBusy] = useState(false)
   const [teamServiceMessage, setTeamServiceMessage] = useState('')
@@ -1770,6 +1773,9 @@ function App() {
   const rememberConnectedTeamHost = useCallback((info?: TeamServiceInfo | null) => {
     setRemoteTeamServiceHost(remoteHostForTeamServer(info))
   }, [remoteHostForTeamServer])
+  const markTeamSync = useCallback(() => {
+    setLastTeamSyncAt(Date.now())
+  }, [])
 
   const refreshTeamServiceInfo = useCallback(async () => {
     if (!window.desktopBridge?.getTeamServiceInfo) {
@@ -1881,6 +1887,7 @@ function App() {
                   rememberConnectedTeamHost()
                   setTeamConnectionStatus('connected')
                   setTeamConnectionMessage(resolvedConflict ? '团队数据冲突已自动合并并保存' : '团队数据已保存')
+                  markTeamSync()
                   return true
                 } catch (error) {
                   if (
@@ -1906,10 +1913,12 @@ function App() {
             rememberConnectedTeamHost()
             setTeamConnectionStatus('connected')
             setTeamConnectionMessage('团队数据已保存')
+            markTeamSync()
             return true
           } catch (error) {
             if (error instanceof TeamDataConflictError && error.currentData) {
               applyAppDataToState(error.currentData)
+              markTeamSync()
               setTeamConnectionStatus('error')
               setTeamConnectionMessage(
                 error.code === 'UNSAFE_DATA_CHANGE'
@@ -1941,7 +1950,7 @@ function App() {
       }
       return window.desktopBridge?.saveAppData?.(data) ?? false
     },
-    [applyAppDataToState, dataMode, rememberConnectedTeamHost, rememberRemoteSlices, teamAccessKey, teamServerUrl],
+    [applyAppDataToState, dataMode, markTeamSync, rememberConnectedTeamHost, rememberRemoteSlices, teamAccessKey, teamServerUrl],
   )
   const currentAppDataSnapshot = useMemo<AppData>(
     () => ({
@@ -1958,6 +1967,8 @@ function App() {
     }),
     [appAccounts, appCalendarItems, appFinanceRecords, appHolidayItems, appProjects, appStaffMembers, appTasks, appWorkflowOptions],
   )
+  const currentAppDataSnapshotRef = useRef(currentAppDataSnapshot)
+  currentAppDataSnapshotRef.current = currentAppDataSnapshot
 
   async function prepareAndInstallApplicationUpdate() {
     const bridge = window.desktopBridge
@@ -1969,6 +1980,24 @@ function App() {
         status: 'installing',
         message: '正在等待当前数据保存',
       }))
+
+      // Wait for the latest edit render, then explicitly persist every state-backed slice.
+      // Merely waiting for the queue can miss an edit whose save effect has not run yet.
+      await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()))
+      const latestData = currentAppDataSnapshotRef.current
+      const saved = await saveCurrentAppData({
+        version: latestData.version,
+        projects: latestData.projects,
+        tasks: latestData.tasks,
+        calendarItems: latestData.calendarItems,
+        financeRecords: latestData.financeRecords,
+        staffMembers: latestData.staffMembers,
+        accounts: latestData.accounts,
+        holidayItems: latestData.holidayItems,
+        workflowOptions: latestData.workflowOptions,
+      })
+      if (!saved) throw new Error('当前修改尚未保存，已取消更新。请确认团队连接后重试。')
+
       if (dataMode === 'team') {
         while (true) {
           const pendingSave = teamSaveQueueRef.current
@@ -2014,6 +2043,7 @@ function App() {
     remoteTeamDataRef.current = null
     remoteSliceSnapshotsRef.current = {}
     teamDataRevisionRef.current = null
+    setLastTeamSyncAt(null)
   }, [dataMode, teamAccessKey, teamServerUrl])
 
   useEffect(() => {
@@ -2102,6 +2132,7 @@ function App() {
             rememberConnectedTeamHost()
             setTeamConnectionStatus('connected')
             setTeamConnectionMessage(attempt > 0 ? '团队服务已恢复并同步' : '团队数据已连接')
+            markTeamSync()
           }
           setLoadedDataSourceKey(loadingSourceKey)
           setDataReady(true)
@@ -2129,7 +2160,7 @@ function App() {
     return () => {
       canceled = true
     }
-  }, [applyAppDataToState, dataMode, dataSourceKey, loadCurrentAppData, rememberConnectedTeamHost])
+  }, [applyAppDataToState, dataMode, dataSourceKey, loadCurrentAppData, markTeamSync, rememberConnectedTeamHost])
 
   useEffect(() => {
     if (!dataSourceReady) return
@@ -2222,12 +2253,16 @@ function App() {
           const response = await fetchTeamAppDataChanges(teamServerUrl, teamAccessKey, revision as number)
           if (response) {
             teamIncrementalCapabilityRef.current = 'supported'
+            let receivedChanges = false
             if (response.resetRequired) {
               const savedData = await fetchTeamAppData(teamServerUrl, teamAccessKey)
               applyAppDataToState(savedData)
+              receivedChanges = true
             } else if (response.changes.length > 0) {
               applyAppDataToState(applyTeamDataChanges(baseline, response))
+              receivedChanges = true
             }
+            if (receivedChanges) markTeamSync()
             rememberConnectedTeamHost()
             setTeamConnectionStatus('connected')
             setTeamConnectionMessage('团队数据已同步')
@@ -2238,6 +2273,12 @@ function App() {
 
         const savedData = await loadCurrentAppData()
         if (savedData) applyAppDataToState(savedData)
+        if (
+          savedData &&
+          (!baseline || savedData.revision !== revision || savedData.updatedAt !== baseline.updatedAt)
+        ) {
+          markTeamSync()
+        }
         rememberConnectedTeamHost()
         setTeamConnectionStatus('connected')
         setTeamConnectionMessage('团队数据已同步')
@@ -2254,7 +2295,7 @@ function App() {
     }, 2 * 1000)
 
     return () => window.clearInterval(timer)
-  }, [applyAppDataToState, dataMode, dataSourceReady, loadCurrentAppData, rememberConnectedTeamHost, teamAccessKey, teamServerUrl])
+  }, [applyAppDataToState, dataMode, dataSourceReady, loadCurrentAppData, markTeamSync, rememberConnectedTeamHost, teamAccessKey, teamServerUrl])
 
   useEffect(() => {
     if (!showDataModeModal) return
@@ -2584,6 +2625,7 @@ function App() {
       rememberConnectedTeamHost()
       setTeamConnectionStatus('connected')
       setTeamConnectionMessage(`已连接：${health.name ?? 'CrewFlow Server'}`)
+      markTeamSync()
       return true
     } catch (error) {
       setTeamConnectionStatus('error')
@@ -2605,6 +2647,7 @@ function App() {
       rememberConnectedTeamHost()
       setTeamConnectionStatus('connected')
       setTeamConnectionMessage('单人数据已导入团队库')
+      markTeamSync()
     } catch (error) {
       setTeamConnectionStatus('error')
       setTeamConnectionMessage(error instanceof Error ? error.message : '导入团队库失败')
@@ -3571,6 +3614,7 @@ function App() {
           dataMode={dataMode}
           teamConnectionStatus={teamConnectionStatus}
           teamConnectionMessage={teamConnectionMessage}
+          lastTeamSyncAt={lastTeamSyncAt}
           onAccountChange={setLoginAccountId}
           onPasswordChange={setLoginPassword}
           onLogin={handleLogin}
@@ -3676,6 +3720,7 @@ function App() {
             dataMode={dataMode}
             teamConnectionStatus={teamConnectionStatus}
             teamConnectionMessage={teamConnectionMessage}
+            lastTeamSyncAt={lastTeamSyncAt}
             onOpen={() => setShowDataModeModal(true)}
           />
         </div>
@@ -3812,7 +3857,15 @@ function App() {
             onAssistantDraftHandled={() => setAssistantCalendarDrafts((current) => current.slice(1))}
           />
         )}
-        {section === 'team' && <TeamLoad projects={appProjects} tasks={appTasks} calendarItems={appCalendarItems} staffMembers={appStaffMembers} />}
+        {section === 'team' && (
+          <TeamLoad
+            projects={appProjects}
+            tasks={appTasks}
+            calendarItems={appCalendarItems}
+            staffMembers={appStaffMembers}
+            taskWorkTypes={appWorkflowOptions.taskWorkTypes}
+          />
+        )}
         {section === 'people' && (
           <PeopleManagement
             projects={appProjects}
@@ -4448,15 +4501,26 @@ function connectionStatusText(status: TeamConnectionStatus, message: string) {
   return '使用本机数据'
 }
 
+function formatTeamSyncTime(timestamp: number) {
+  return new Date(timestamp).toLocaleTimeString('zh-CN', {
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false,
+  })
+}
+
 function DataModeStatus({
   dataMode,
   teamConnectionStatus,
   teamConnectionMessage,
+  lastTeamSyncAt,
   onOpen,
 }: {
   dataMode: DataMode
   teamConnectionStatus: TeamConnectionStatus
   teamConnectionMessage: string
+  lastTeamSyncAt: number | null
   onOpen: () => void
 }) {
   const Icon = dataMode === 'team' && teamConnectionStatus === 'connected' ? CheckCircle2 : HardDrive
@@ -4465,9 +4529,12 @@ function DataModeStatus({
   return (
     <button className={`nasStatus dataModeStatus ${statusClass}`} type="button" onClick={onOpen}>
       <Icon size={18} />
-      <div>
+      <div className="dataModeStatusCopy">
         <strong>{dataModeLabel(dataMode)}</strong>
-        <span>{dataMode === 'team' ? connectionStatusText(teamConnectionStatus, teamConnectionMessage) : '数据只保存在本机'}</span>
+        <div className="dataModeStatusMeta">
+          <span>{dataMode === 'team' ? connectionStatusText(teamConnectionStatus, teamConnectionMessage) : '数据只保存在本机'}</span>
+          {dataMode === 'team' && lastTeamSyncAt && <time dateTime={new Date(lastTeamSyncAt).toISOString()}>最近同步 {formatTeamSyncTime(lastTeamSyncAt)}</time>}
+        </div>
       </div>
     </button>
   )
@@ -5090,6 +5157,20 @@ function WorkflowOptionsModal({
     updateList(category, draft[category].filter((item) => item !== value))
   }
 
+  function moveOption(category: WorkflowOptionCategory, value: string, direction: 'up' | 'down') {
+    const currentList = draft[category]
+    const currentIndex = currentList.indexOf(value)
+    if (currentIndex < 0) return
+
+    const nextIndex = direction === 'up' ? currentIndex - 1 : currentIndex + 1
+    if (nextIndex < 0 || nextIndex >= currentList.length) return
+
+    const nextList = [...currentList]
+    const [movedValue] = nextList.splice(currentIndex, 1)
+    nextList.splice(nextIndex, 0, movedValue)
+    updateList(category, nextList)
+  }
+
   function saveOptions() {
     onSave(normalizeWorkflowOptions(draft), renames)
     onClose()
@@ -5116,6 +5197,7 @@ function WorkflowOptionsModal({
             onAdd={addOption}
             onRename={renameOption}
             onDelete={deleteOption}
+            onMove={moveOption}
           />
           <WorkflowOptionSection
             title="任务工种"
@@ -5125,6 +5207,7 @@ function WorkflowOptionsModal({
             onAdd={addOption}
             onRename={renameOption}
             onDelete={deleteOption}
+            onMove={moveOption}
           />
           <WorkflowOptionSection
             title="当前节点状态"
@@ -5134,6 +5217,7 @@ function WorkflowOptionsModal({
             onAdd={addOption}
             onRename={renameOption}
             onDelete={deleteOption}
+            onMove={moveOption}
           />
           <WorkflowOptionSection
             title="流程节点"
@@ -5143,6 +5227,7 @@ function WorkflowOptionsModal({
             onAdd={addOption}
             onRename={renameOption}
             onDelete={deleteOption}
+            onMove={moveOption}
           />
           <WorkflowOptionSection
             title="人员标签"
@@ -5153,6 +5238,7 @@ function WorkflowOptionsModal({
             onAdd={addOption}
             onRename={renameOption}
             onDelete={deleteOption}
+            onMove={moveOption}
           />
         </div>
         <footer>
@@ -5187,6 +5273,7 @@ function WorkflowOptionSection({
   onAdd,
   onRename,
   onDelete,
+  onMove,
 }: {
   title: string
   note: string
@@ -5196,6 +5283,7 @@ function WorkflowOptionSection({
   onAdd: (category: WorkflowOptionCategory, value: string) => void
   onRename: (category: WorkflowOptionCategory, previousValue: string, nextValue: string) => void
   onDelete: (category: WorkflowOptionCategory, value: string) => void
+  onMove: (category: WorkflowOptionCategory, value: string, direction: 'up' | 'down') => void
 }) {
   const [newValue, setNewValue] = useState('')
   const protectedSet = new Set(protectedValues)
@@ -5212,15 +5300,18 @@ function WorkflowOptionSection({
         <p>{note}</p>
       </div>
       <div className="workflowOptionRows">
-        {values.map((value) => (
+        {values.map((value, index) => (
           <WorkflowOptionRow
             key={value}
             category={category}
             value={value}
             canDelete={(category === 'projectTypes' || values.length > 1) && !protectedSet.has(value)}
             isProtected={protectedSet.has(value)}
+            canMoveUp={index > 0}
+            canMoveDown={index < values.length - 1}
             onRename={onRename}
             onDelete={onDelete}
+            onMove={onMove}
           />
         ))}
       </div>
@@ -5239,15 +5330,21 @@ function WorkflowOptionRow({
   value,
   canDelete,
   isProtected = false,
+  canMoveUp,
+  canMoveDown,
   onRename,
   onDelete,
+  onMove,
 }: {
   category: WorkflowOptionCategory
   value: string
   canDelete: boolean
   isProtected?: boolean
+  canMoveUp: boolean
+  canMoveDown: boolean
   onRename: (category: WorkflowOptionCategory, previousValue: string, nextValue: string) => void
   onDelete: (category: WorkflowOptionCategory, value: string) => void
+  onMove: (category: WorkflowOptionCategory, value: string, direction: 'up' | 'down') => void
 }) {
   const [draftValue, setDraftValue] = useState(value)
 
@@ -5285,9 +5382,17 @@ function WorkflowOptionRow({
           }
         }}
       />
-      <button type="button" onClick={() => onDelete(category, value)} disabled={!canDelete || isProtected} title={isProtected ? '关键标签会被保留' : '删除选项'}>
-        {isProtected ? '保留' : '删除'}
-      </button>
+      <div className="workflowOptionRowActions">
+        <button type="button" className="workflowOptionMoveButton" onClick={() => onMove(category, value, 'up')} disabled={!canMoveUp} title="上移" aria-label={`上移${value}`}>
+          <ChevronUp size={16} />
+        </button>
+        <button type="button" className="workflowOptionMoveButton" onClick={() => onMove(category, value, 'down')} disabled={!canMoveDown} title="下移" aria-label={`下移${value}`}>
+          <ChevronDown size={16} />
+        </button>
+        <button type="button" onClick={() => onDelete(category, value)} disabled={!canDelete || isProtected} title={isProtected ? '关键标签会被保留' : '删除选项'}>
+          {isProtected ? '保留' : '删除'}
+        </button>
+      </div>
     </div>
   )
 }
@@ -5299,6 +5404,7 @@ function LoginScreen({
   dataMode,
   teamConnectionStatus,
   teamConnectionMessage,
+  lastTeamSyncAt,
   onAccountChange,
   onPasswordChange,
   onLogin,
@@ -5310,6 +5416,7 @@ function LoginScreen({
   dataMode: DataMode
   teamConnectionStatus: TeamConnectionStatus
   teamConnectionMessage: string
+  lastTeamSyncAt: number | null
   onAccountChange: (accountId: string) => void
   onPasswordChange: (password: string) => void
   onLogin: () => void
@@ -5356,6 +5463,7 @@ function LoginScreen({
           dataMode={dataMode}
           teamConnectionStatus={teamConnectionStatus}
           teamConnectionMessage={teamConnectionMessage}
+          lastTeamSyncAt={lastTeamSyncAt}
           onOpen={onOpenDataMode}
         />
         <span className="loginVersion">CrewFlow v{appVersion}</span>
@@ -8709,22 +8817,44 @@ function TeamLoad({
   tasks,
   calendarItems,
   staffMembers,
+  taskWorkTypes,
 }: {
   projects: Project[]
   tasks: Task[]
   calendarItems: CalendarItem[]
   staffMembers: StaffMember[]
+  taskWorkTypes: string[]
 }) {
   const activeProjects = projects.filter((project) => !isArchivedProject(project))
   const activeProjectIds = new Set(activeProjects.map((project) => project.id))
   const teamLoad = staffMembers.filter((member) => member.accountRole !== 'controller' && member.status === '在职').map((person) => {
-    const personTasks = tasks.filter((task) => task.assignee === person.name && task.status !== '已完成' && activeProjectIds.has(task.projectId))
+    const personAssignedTasks = tasks.filter((task) => task.assignee === person.name && activeProjectIds.has(task.projectId))
+    const personTasks = personAssignedTasks.filter((task) => task.status !== '已完成')
     const managedProjects = activeProjects.filter((project) => project.manager === person.name)
     const ownedProjects = activeProjects.filter((project) => project.owner === person.name)
-    const relatedProjectIds = new Set([...personTasks.map((task) => task.projectId), ...managedProjects.map((project) => project.id), ...ownedProjects.map((project) => project.id)])
+    const activeRelatedProjectIds = new Set([
+      ...personTasks.map((task) => task.projectId),
+      ...managedProjects.map((project) => project.id),
+      ...ownedProjects.map((project) => project.id),
+    ])
+    const relatedProjectIds = new Set([
+      ...personAssignedTasks.map((task) => task.projectId),
+      ...managedProjects.map((project) => project.id),
+      ...ownedProjects.map((project) => project.id),
+    ])
     const relatedProjects = activeProjects.filter((project) => relatedProjectIds.has(project.id))
+    const relatedProjectTasks = relatedProjects.map((project) => ({
+      project,
+      tasks: personAssignedTasks
+        .filter((task) => task.projectId === project.id)
+        .map((task) => ({
+          id: task.id,
+          description: teamTaskDescription(task, project, taskWorkTypes),
+          status: task.status,
+        })),
+    }))
     const risk = activeProjects.filter(
-      (project) => relatedProjectIds.has(project.id) && isProjectAtRisk(project, new Date(), calendarItems),
+      (project) => activeRelatedProjectIds.has(project.id) && isProjectAtRisk(project, new Date(), calendarItems),
     ).length
     const revisionTasks = personTasks.filter((task) => task.status === '修改中').length
     const load = Math.min(100, personTasks.length * 12 + managedProjects.length * 10 + ownedProjects.length * 8 + revisionTasks * 6)
@@ -8735,8 +8865,10 @@ function TeamLoad({
       risk,
       tasks: personTasks.length,
       managedProjects: managedProjects.length,
+      managedProjectIds: managedProjects.map((project) => project.id),
       relatedProjects,
-      isProjectManager: person.tags.includes('项目经理'),
+      relatedProjectTasks,
+      isProjectManager: person.accountRole === 'manager' || person.tags.includes('项目经理'),
     }
   })
 
@@ -8773,12 +8905,44 @@ function TeamLoad({
                 </div>
                 <div className="teamProjectProgress">
                   <span className="teamProjectProgressTitle">参与项目进度</span>
-                  {person.relatedProjects.length > 0 ? (
+                  {person.relatedProjectTasks.length > 0 ? (
                     <div className="teamProjectProgressList">
-                      {person.relatedProjects.map((project) => (
-                        <div className="teamProjectProgressItem" key={project.id} title={`${project.name} · ${project.stage || '待设置流程节点'}`}>
+                      {person.relatedProjectTasks.map(({ project, tasks: projectTasks }) => (
+                        <div
+                          className="teamProjectProgressItem"
+                          key={project.id}
+                          title={
+                            projectTasks.length > 0
+                              ? `${project.name} · ${projectTasks.map((task) => `${task.description} · ${task.status}`).join('、')}`
+                              : `${project.name} · ${project.stage || '待设置流程节点'}`
+                          }
+                        >
                           <strong>{project.name}</strong>
-                          <span>{project.stage || '待设置流程节点'}</span>
+                          {person.managedProjectIds.includes(project.id) && (
+                            <span className="teamProjectStage">当前节点：{project.stage || '待设置流程节点'}</span>
+                          )}
+                          {projectTasks.length > 0 ? (
+                            projectTasks.map((task) => (
+                              <div className="teamProjectTaskDetail" key={task.id}>
+                                <span>{task.description}</span>
+                                <em
+                                  className={`teamProjectTaskStatus ${
+                                    task.status === '已完成'
+                                      ? 'done'
+                                      : task.status === '修改中'
+                                        ? 'revision'
+                                        : task.status === '制作中'
+                                          ? 'active'
+                                          : 'pending'
+                                  }`}
+                                >
+                                  {task.status}
+                                </em>
+                              </div>
+                            ))
+                          ) : (
+                            <span>{project.stage || '待设置流程节点'}</span>
+                          )}
                         </div>
                       ))}
                     </div>
@@ -11995,6 +12159,15 @@ function taskWorkType(task: Task, project: Project, options = defaultTaskWorkOpt
   const cleanTitle = task.title.replace(project.name, '').trim()
   const matchedType = options.find((option) => cleanTitle === option || cleanTitle.includes(option))
   return matchedType ?? options[0] ?? defaultTaskWorkOptions[0]
+}
+
+function teamTaskDescription(task: Task, project: Project, options = defaultTaskWorkOptions) {
+  const workType = taskWorkType(task, project, options)
+  const title = task.title.trim()
+  const projectPrefix = project.name.trim()
+  const detail = projectPrefix && title.startsWith(projectPrefix) ? title.slice(projectPrefix.length).trim() : title
+
+  return detail && detail !== workType ? `${workType} · ${detail}` : workType
 }
 
 function taskTitleForWorkType(projectName: string, workType: string) {

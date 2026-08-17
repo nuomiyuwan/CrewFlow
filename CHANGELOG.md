@@ -2,6 +2,20 @@
 
 All notable changes to CrewFlow are documented in this file.
 
+## 1.4.8 - 2026-08-17
+
+### Added
+
+- Added last-sync time to the team mode status indicator, so users can confirm when the latest team data was synchronized.
+- Added move-up and move-down controls to reorder custom options in Option Management.
+
+### Improved
+
+- Team Load now shows each participant's assigned work within each active project, including the work description and whether it is completed.
+- Completed work remains visible as project history but is excluded from active task counts and load calculations.
+- Project managers see the current workflow node only for projects they actually manage; ordinary project participation no longer shows manager-only progress.
+- Before installing an application update, CrewFlow explicitly persists the latest in-memory data snapshot so recent edits are not rolled back during replacement.
+
 ## 1.4.7 - 2026-08-14
 
 ### Improved

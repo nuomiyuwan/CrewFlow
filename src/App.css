@@ -270,6 +270,26 @@ label {
   line-height: 1.4;
 }
 
+.dataModeStatusCopy {
+  min-width: 0;
+  flex: 1;
+}
+
+.dataModeStatusMeta {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 2px 9px;
+}
+
+.dataModeStatusMeta time {
+  color: rgba(128, 233, 247, 0.7);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.4;
+  white-space: nowrap;
+}
+
 .dataModeStatus.connected {
   border-color: rgba(35, 154, 96, 0.34);
   background: rgba(27, 83, 68, 0.28);
@@ -4762,7 +4782,7 @@ h1 {
 }
 
 .teamProjectProgressItem strong,
-.teamProjectProgressItem span {
+.teamProjectProgressItem > span {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -4772,9 +4792,52 @@ h1 {
   font-size: 13px;
 }
 
-.teamProjectProgressItem span,
+.teamProjectProgressItem > span,
 .teamProjectProgressEmpty {
   font-size: 11px;
+}
+
+.teamProjectProgressItem .teamProjectStage {
+  color: rgba(128, 233, 247, 0.78);
+}
+
+.teamProjectTaskDetail {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+}
+
+.teamProjectTaskDetail > span {
+  min-width: 0;
+  overflow: hidden;
+  color: rgba(210, 222, 235, 0.66);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.teamProjectTaskStatus {
+  flex: 0 0 auto;
+  font-size: 10px;
+  font-style: normal;
+  white-space: nowrap;
+}
+
+.teamProjectTaskStatus.done {
+  color: #72e5a9;
+}
+
+.teamProjectTaskStatus.active {
+  color: #80e9f7;
+}
+
+.teamProjectTaskStatus.revision {
+  color: #ffd27d;
+}
+
+.teamProjectTaskStatus.pending {
+  color: rgba(210, 222, 235, 0.62);
 }
 
 @media (max-width: 720px) {
@@ -6605,6 +6668,12 @@ h1 {
   gap: 8px;
 }
 
+.workflowOptionRowActions {
+  display: flex;
+  align-items: stretch;
+  gap: 6px;
+}
+
 .workflowOptionRow input,
 .workflowOptionAdd input {
   min-width: 0;
@@ -6636,6 +6705,13 @@ h1 {
   background: rgba(255, 255, 255, 0.06);
   cursor: pointer;
   padding: 0 14px;
+}
+
+.workflowOptionRowActions .workflowOptionMoveButton {
+  display: grid;
+  width: 38px;
+  place-items: center;
+  padding: 0;
 }
 
 .workflowOptionRow button:disabled,
