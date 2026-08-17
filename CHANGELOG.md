@@ -4,17 +4,17 @@ All notable changes to CrewFlow are documented in this file.
 
 ## 1.4.8 - 2026-08-17
 
-### Added
+### 新增
 
-- Added last-sync time to the team mode status indicator, so users can confirm when the latest team data was synchronized.
-- Added move-up and move-down controls to reorder custom options in Option Management.
+- 团队模式状态区域显示最近同步时间，方便确认团队数据最后一次同步的时间。
+- 选项管理支持通过上移、下移按钮调整自定义选项顺序。
 
-### Improved
+### 优化
 
-- Team Load now shows each participant's assigned work within each active project, including the work description and whether it is completed.
-- Completed work remains visible as project history but is excluded from active task counts and load calculations.
-- Project managers see the current workflow node only for projects they actually manage; ordinary project participation no longer shows manager-only progress.
-- Before installing an application update, CrewFlow explicitly persists the latest in-memory data snapshot so recent edits are not rolled back during replacement.
+- 团队负载中显示每个人参与的项目、具体负责内容和任务完成状态。
+- 已完成任务继续保留在项目参与记录中，但不再计入当前任务数量和负载计算。
+- 只有项目的实际项目经理，才能在对应项目中看到当前流程节点；普通参与人员不再显示项目经理专属进度。
+- 安装应用更新前，主动保存最新的数据状态，避免替换程序后最近修改被回滚。
 
 ## 1.4.7 - 2026-08-14
 
