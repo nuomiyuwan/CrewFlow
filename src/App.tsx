@@ -9828,6 +9828,16 @@ function FinanceProjectDetail({
 }) {
   const unreceived = record.contractAmount - record.receivedAmount
 
+  async function selectContractFile() {
+    const filePath = await window.desktopBridge?.selectProjectFile('选择合同文件')
+    if (filePath) onUpdateRecord({ contractFile: filePath })
+  }
+
+  async function openContractFile() {
+    if (!record.contractFile) return
+    await window.desktopBridge?.openProjectFile(record.contractFile)
+  }
+
   return (
     <div className="businessDetail">
       <div className="businessHero">
@@ -9858,6 +9868,16 @@ function FinanceProjectDetail({
             placeholder="填写合同上的正式名称"
             onChange={(value) => onUpdateRecord({ contractName: value })}
           />
+          <div className="editableLine financeContractLine" title={record.contractFile || '尚未选择合同文件'}>
+            <span>合同文件路径</span>
+            <span className="financeContractPath">{record.contractFile ? compactFileName(record.contractFile) : '尚未选择合同文件'}</span>
+            <button type="button" onClick={selectContractFile}>
+              选择文件
+            </button>
+            <button type="button" onClick={openContractFile} disabled={!record.contractFile}>
+              打开
+            </button>
+          </div>
           <EditableSelectLine
             label="报价是否制作"
             value={record.quoteStatus}
@@ -12553,7 +12573,7 @@ function Timeline({ calendarItems }: { calendarItems: CalendarItem[] }) {
           <span>{item.time}</span>
           <div>
             <strong>{item.title}</strong>
-            <p>{item.type}</p>
+            <p>{item.project ? `${item.project} · ${item.type}` : item.type}</p>
           </div>
         </div>
       ))}
