@@ -110,6 +110,41 @@ test('server accepts app data access with the configured access key', async (t) 
   })
 })
 
+test('server tracks online team members and merges multiple devices for one account', async (t) => {
+  await withSecuredServer(t, async (baseUrl) => {
+    const headers = { 'Content-Type': 'application/json', 'X-CrewFlow-Key': 'team-secret' }
+    const revisionBefore = (await (await fetch(`${baseUrl}/health`)).json()).revision
+    const heartbeat = (payload) => fetch(`${baseUrl}/api/presence`, {
+      method: 'PUT',
+      headers,
+      body: JSON.stringify(payload),
+    })
+
+    assert.equal((await fetch(`${baseUrl}/api/presence`)).status, 401)
+    assert.equal((await heartbeat({ clientId: 'device-a', accountId: 'pm01', name: '王经理', role: 'manager' })).status, 200)
+    assert.equal((await heartbeat({ clientId: 'device-b', accountId: 'pm01', name: '王经理', role: 'manager' })).status, 200)
+    assert.equal((await heartbeat({ clientId: 'device-c', accountId: 'member01', name: '李执行', role: 'member' })).status, 200)
+
+    const response = await fetch(`${baseUrl}/api/presence`, {
+      headers: { 'X-CrewFlow-Key': 'team-secret' },
+    })
+    const body = await response.json()
+    assert.equal(response.status, 200)
+    assert.equal(body.members.length, 2)
+    assert.equal(body.members.find((member) => member.accountId === 'pm01').connections, 2)
+
+    const leaveResponse = await fetch(`${baseUrl}/api/presence`, {
+      method: 'DELETE',
+      headers,
+      body: JSON.stringify({ clientId: 'device-a' }),
+    })
+    const afterLeave = await leaveResponse.json()
+    assert.equal(afterLeave.members.find((member) => member.accountId === 'pm01').connections, 1)
+    const revisionAfter = (await (await fetch(`${baseUrl}/health`)).json()).revision
+    assert.equal(revisionAfter, revisionBefore)
+  })
+})
+
 test('server rejects stale app data writes', async (t) => {
   await withServer(t, async (baseUrl) => {
     const firstResponse = await fetch(`${baseUrl}/api/app-data`, {

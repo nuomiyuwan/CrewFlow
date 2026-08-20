@@ -1,7 +1,7 @@
 {
   "name": "crewflow",
   "private": true,
-  "version": "1.4.9",
+  "version": "1.4.10",
   "description": "CrewFlow project management desktop app",
   "author": "nuomiyuwan",
   "repository": "https://github.com/nuomiyuwan/CrewFlow.git",

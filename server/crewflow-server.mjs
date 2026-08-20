@@ -23,7 +23,7 @@ const defaultDataDir = defaultServerDataDir()
 function sendJson(response, statusCode, payload) {
   response.writeHead(statusCode, {
     'Access-Control-Allow-Origin': '*',
-    'Access-Control-Allow-Methods': 'GET, PUT, OPTIONS',
+    'Access-Control-Allow-Methods': 'GET, PUT, DELETE, OPTIONS',
     'Access-Control-Allow-Headers': 'Content-Type, X-CrewFlow-Key',
     'Content-Type': 'application/json; charset=utf-8',
   })
@@ -50,7 +50,47 @@ async function readRequestJson(request) {
   return JSON.parse(Buffer.concat(chunks).toString('utf8'))
 }
 
-export function createCrewFlowServer({ store, accessKey = defaultAccessKey } = {}) {
+function cleanPresenceText(value, maxLength) {
+  return typeof value === 'string' ? value.trim().slice(0, maxLength) : ''
+}
+
+export function createCrewFlowServer({ store, accessKey = defaultAccessKey, presenceTtlMs = 25_000 } = {}) {
+  const presenceConnections = new Map()
+
+  const presenceSnapshot = () => {
+    const now = Date.now()
+    for (const [clientId, connection] of presenceConnections.entries()) {
+      if (now - connection.lastSeenAt > presenceTtlMs) presenceConnections.delete(clientId)
+    }
+
+    const membersByAccount = new Map()
+    for (const connection of presenceConnections.values()) {
+      const current = membersByAccount.get(connection.accountId)
+      if (current) {
+        current.connections += 1
+        current.lastSeenAt = Math.max(current.lastSeenAt, connection.lastSeenAt)
+        if (connection.lastSeenAt >= current.lastSeenAt) {
+          current.name = connection.name
+          current.role = connection.role
+        }
+      } else {
+        membersByAccount.set(connection.accountId, {
+          accountId: connection.accountId,
+          name: connection.name,
+          role: connection.role,
+          lastSeenAt: connection.lastSeenAt,
+          connections: 1,
+        })
+      }
+    }
+
+    return {
+      ok: true,
+      members: [...membersByAccount.values()].sort((left, right) => left.name.localeCompare(right.name, 'zh-CN')),
+      updatedAt: now,
+    }
+  }
+
   const server = http.createServer(async (request, response) => {
     try {
       if (request.method === 'OPTIONS') {
@@ -78,6 +118,45 @@ export function createCrewFlowServer({ store, accessKey = defaultAccessKey } = {
           revision: storage.revision,
         })
         return
+      }
+
+      if (url.pathname === '/api/presence') {
+        if (!hasValidAccessKey(request, url, accessKey)) {
+          sendJson(response, 401, { ok: false, error: 'Invalid CrewFlow access key' })
+          return
+        }
+
+        if (request.method === 'GET') {
+          sendJson(response, 200, presenceSnapshot())
+          return
+        }
+
+        if (request.method === 'PUT') {
+          const payload = await readRequestJson(request)
+          const clientId = cleanPresenceText(payload.clientId, 120)
+          const accountId = cleanPresenceText(payload.accountId, 120)
+          if (!clientId || !accountId) {
+            sendJson(response, 400, { ok: false, error: 'clientId and accountId are required' })
+            return
+          }
+
+          presenceConnections.set(clientId, {
+            accountId,
+            name: cleanPresenceText(payload.name, 80) || accountId,
+            role: cleanPresenceText(payload.role, 32) || 'member',
+            lastSeenAt: Date.now(),
+          })
+          sendJson(response, 200, presenceSnapshot())
+          return
+        }
+
+        if (request.method === 'DELETE') {
+          const payload = await readRequestJson(request)
+          const clientId = cleanPresenceText(payload.clientId, 120)
+          if (clientId) presenceConnections.delete(clientId)
+          sendJson(response, 200, presenceSnapshot())
+          return
+        }
       }
 
       if (request.method === 'GET' && url.pathname === '/api/app-data') {
@@ -169,7 +248,10 @@ export function createCrewFlowServer({ store, accessKey = defaultAccessKey } = {
     }
   })
 
-  server.on('close', () => store.close?.())
+  server.on('close', () => {
+    presenceConnections.clear()
+    store.close?.()
+  })
   return server
 }
 

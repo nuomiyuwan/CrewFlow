@@ -514,7 +514,20 @@ type FinanceLedger = Record<
 type FinanceAction = 'payment' | 'invoice'
 type DataMode = 'single' | 'team'
 type TeamConnectionStatus = 'idle' | 'checking' | 'connected' | 'error'
-const teamStartupRetryDelaysMs = [0, 2000]
+type TeamPresenceMember = {
+  accountId: string
+  name: string
+  role: Role
+  lastSeenAt: number
+  connections: number
+}
+type TeamPresenceResponse = {
+  ok: boolean
+  members: TeamPresenceMember[]
+  updatedAt: number
+}
+const teamStartupRetryIntervalMs = 2000
+const teamPresenceHeartbeatIntervalMs = 8 * 1000
 type AppData = {
   version: string
   revision?: number
@@ -692,6 +705,7 @@ const welcomeGuideStorageKeyPrefix = 'crewflow-welcome-dismissed'
 const dataModeStorageKey = 'crewflow-data-mode'
 const teamServerUrlStorageKey = 'crewflow-team-server-url'
 const teamAccessKeyStorageKey = 'crewflow-team-access-key'
+const teamPresenceClientIdStorageKey = 'crewflow-team-presence-client-id-v1'
 const workflowOptionsStorageKey = 'crewflow-workflow-options'
 const defaultTeamServerUrl = 'http://127.0.0.1:8787'
 const appVersion = import.meta.env.VITE_APP_VERSION || '0.0.0'
@@ -955,6 +969,20 @@ function loadStoredAccountId() {
     return localStorage.getItem(sessionStorageKey) ?? ''
   } catch {
     return ''
+  }
+}
+
+function loadOrCreateTeamPresenceClientId() {
+  try {
+    const saved = localStorage.getItem(teamPresenceClientIdStorageKey)
+    if (saved) return saved
+    const generated = typeof crypto.randomUUID === 'function'
+      ? crypto.randomUUID()
+      : `client-${Date.now()}-${Math.random().toString(36).slice(2)}`
+    localStorage.setItem(teamPresenceClientIdStorageKey, generated)
+    return generated
+  } catch {
+    return `client-${Date.now()}-${Math.random().toString(36).slice(2)}`
   }
 }
 
@@ -1571,6 +1599,39 @@ async function fetchTeamHealth(serverUrl: string) {
   return (await response.json()) as Partial<TeamServiceInfo> & { ok?: boolean; name?: string; revision?: number }
 }
 
+async function fetchTeamPresence(serverUrl: string, accessKey: string) {
+  const response = await fetch(teamApiUrl(serverUrl, '/api/presence'), {
+    headers: teamRequestHeaders(accessKey),
+  })
+  if (response.status === 404) return null
+  if (!response.ok) throw new Error(`在线成员读取失败：${response.status}`)
+  return (await response.json()) as TeamPresenceResponse
+}
+
+async function updateTeamPresence(
+  serverUrl: string,
+  accessKey: string,
+  member: Pick<TeamPresenceMember, 'accountId' | 'name' | 'role'> & { clientId: string },
+) {
+  const response = await fetch(teamApiUrl(serverUrl, '/api/presence'), {
+    method: 'PUT',
+    headers: teamRequestHeaders(accessKey, true),
+    body: JSON.stringify(member),
+  })
+  if (response.status === 404) return null
+  if (!response.ok) throw new Error(`在线状态更新失败：${response.status}`)
+  return (await response.json()) as TeamPresenceResponse
+}
+
+async function leaveTeamPresence(serverUrl: string, accessKey: string, clientId: string) {
+  await fetch(teamApiUrl(serverUrl, '/api/presence'), {
+    method: 'DELETE',
+    headers: teamRequestHeaders(accessKey, true),
+    body: JSON.stringify({ clientId }),
+    keepalive: true,
+  })
+}
+
 function clearLegacyLocalStorage() {
   try {
     legacyLocalStorageKeys.forEach((key) => localStorage.removeItem(key))
@@ -1586,6 +1647,8 @@ function App() {
   const [teamConnectionStatus, setTeamConnectionStatus] = useState<TeamConnectionStatus>('idle')
   const [teamConnectionMessage, setTeamConnectionMessage] = useState('')
   const [lastTeamSyncAt, setLastTeamSyncAt] = useState<number | null>(null)
+  const [teamPresenceMembers, setTeamPresenceMembers] = useState<TeamPresenceMember[] | null>(null)
+  const [teamPresenceClientId] = useState(() => loadOrCreateTeamPresenceClientId())
   const [teamServiceInfo, setTeamServiceInfo] = useState<TeamServiceInfo | null>(null)
   const [teamServiceBusy, setTeamServiceBusy] = useState(false)
   const [teamServiceMessage, setTeamServiceMessage] = useState('')
@@ -1858,7 +1921,14 @@ function App() {
             const baseline = remoteTeamDataRef.current
             if (teamIncrementalCapabilityRef.current !== 'legacy' && baseline) {
               const mutations = createTeamDataMutations(data, baseline)
-              if (mutations.length === 0) return true
+              if (mutations.length === 0) {
+                setTeamConnectionStatus('connected')
+                setTeamConnectionMessage('团队数据已同步')
+                return true
+              }
+
+              setTeamConnectionStatus('checking')
+              setTeamConnectionMessage('正在保存团队数据')
 
               let retryBaseline = baseline
               let retryRevision = teamDataRevisionRef.current
@@ -1908,6 +1978,8 @@ function App() {
               }
             }
 
+            setTeamConnectionStatus('checking')
+            setTeamConnectionMessage('正在保存团队数据')
             const savedData = await saveLegacyTeamAppData(teamServerUrl, teamAccessKey, data, teamDataRevisionRef.current)
             rememberRemoteSlices(savedData)
             rememberConnectedTeamHost()
@@ -2106,20 +2178,18 @@ function App() {
     async function loadFileData() {
       setDataReady(false)
       setLoadedDataSourceKey('')
-      const retryDelays = dataMode === 'team' ? teamStartupRetryDelaysMs : [0]
-      let lastError: unknown = null
+      let attempt = 0
 
       if (dataMode === 'team') {
         setTeamConnectionStatus('checking')
         setTeamConnectionMessage('正在连接团队服务')
       }
 
-      for (let attempt = 0; attempt < retryDelays.length; attempt += 1) {
-        const retryDelay = retryDelays[attempt]
-        if (retryDelay > 0) {
+      while (!canceled) {
+        if (attempt > 0) {
           setTeamConnectionStatus('checking')
-          setTeamConnectionMessage('团队服务正在恢复，2 秒后自动重连')
-          await new Promise((resolve) => window.setTimeout(resolve, retryDelay))
+          setTeamConnectionMessage('团队服务暂不可用，2 秒后自动重连')
+          await new Promise((resolve) => window.setTimeout(resolve, teamStartupRetryIntervalMs))
           if (canceled) return
         }
 
@@ -2138,13 +2208,10 @@ function App() {
           setDataReady(true)
           return
         } catch (error) {
-          lastError = error
-          const hasAnotherAttempt = attempt < retryDelays.length - 1
-          if (dataMode !== 'team' || !hasAnotherAttempt || !shouldRetryInitialTeamLoad(error)) throw error
+          if (dataMode !== 'team' || !shouldRetryInitialTeamLoad(error)) throw error
+          attempt += 1
         }
       }
-
-      throw lastError
     }
 
     loadFileData().catch((error) => {
@@ -2307,6 +2374,47 @@ function App() {
     (currentAccount?.staffId ? appStaffMembers.find((member) => member.id === currentAccount.staffId)?.name : null) ??
     currentAccount?.userName ??
     null
+  const presenceAccountId = currentAccount?.id ?? ''
+  const presenceAccountRole = currentAccount?.role ?? null
+  const presenceAccountName = currentUser?.trim() || currentAccount?.userName.trim() || currentAccount?.label || presenceAccountId
+
+  useEffect(() => {
+    if (dataMode !== 'team' || !dataSourceReady) {
+      setTeamPresenceMembers(null)
+      return
+    }
+
+    let active = true
+    const presenceClientId = presenceAccountId
+      ? `${teamPresenceClientId}:${presenceAccountId}`.slice(0, 120)
+      : ''
+    const refreshPresence = async () => {
+      try {
+        const response = presenceAccountId && presenceAccountRole
+          ? await updateTeamPresence(teamServerUrl, teamAccessKey, {
+              clientId: presenceClientId,
+              accountId: presenceAccountId,
+              name: presenceAccountName,
+              role: presenceAccountRole,
+            })
+          : await fetchTeamPresence(teamServerUrl, teamAccessKey)
+        if (active) setTeamPresenceMembers(response?.members ?? null)
+      } catch {
+        if (active) setTeamPresenceMembers(null)
+      }
+    }
+
+    void refreshPresence()
+    const timer = window.setInterval(refreshPresence, teamPresenceHeartbeatIntervalMs)
+
+    return () => {
+      active = false
+      window.clearInterval(timer)
+      if (presenceClientId) {
+        void leaveTeamPresence(teamServerUrl, teamAccessKey, presenceClientId).catch(() => undefined)
+      }
+    }
+  }, [dataMode, dataSourceReady, presenceAccountId, presenceAccountName, presenceAccountRole, teamAccessKey, teamPresenceClientId, teamServerUrl])
 
   useEffect(() => {
     if (activeNavItems.some((item) => item.id === section)) return
@@ -2333,7 +2441,7 @@ function App() {
   const roleVisibleProjects = useMemo(() => {
     if (role === 'controller' || role === 'admin' || role === 'finance') return appProjects
     if (!currentUser) return []
-    if (role === 'manager') return appProjects.filter((project) => project.manager === currentUser)
+    if (role === 'manager') return appProjects.filter((project) => isProjectLead(project, currentUser))
 
     const memberProjectIds = new Set(appTasks.filter((task) => task.assignee === currentUser).map((task) => task.projectId))
     return appProjects.filter((project) => memberProjectIds.has(project.id))
@@ -2352,7 +2460,7 @@ function App() {
     if (role === 'controller' || role === 'admin' || role === 'finance') return appTasks
     if (!currentUser) return []
     if (role === 'manager') {
-      const managerProjectIds = new Set(appProjects.filter((project) => project.manager === currentUser).map((project) => project.id))
+      const managerProjectIds = new Set(appProjects.filter((project) => isProjectLead(project, currentUser)).map((project) => project.id))
       return appTasks.filter((task) => managerProjectIds.has(task.projectId))
     }
 
@@ -2363,7 +2471,7 @@ function App() {
     if (role === 'controller' || role === 'admin' || role === 'finance') return appCalendarItems
     if (!currentUser) return []
     if (role === 'manager') {
-      const managerProjectIds = new Set(appProjects.filter((project) => project.manager === currentUser).map((project) => project.id))
+      const managerProjectIds = new Set(appProjects.filter((project) => isProjectLead(project, currentUser)).map((project) => project.id))
       return appCalendarItems.filter((item) => managerProjectIds.has(item.projectId))
     }
 
@@ -2429,7 +2537,6 @@ function App() {
   const canAccessProjects = activeNavItems.some((item) => item.id === 'projects')
   const canCreateProject = canRoleCreateProject(role)
   const canManageWorkflowOptions = role === 'controller' || role === 'admin'
-  const canEditProjectTaskBoard = role === 'controller' || role === 'admin' || role === 'manager'
   const canEditArchivedProjects = role === 'controller' || role === 'admin'
   const activeStaffMembers = useMemo(() => appStaffMembers.filter(isAssignableStaff), [appStaffMembers])
   const assistantStaffMembers = useMemo(() => {
@@ -2460,7 +2567,7 @@ function App() {
         (project) =>
           role === 'controller' ||
           role === 'admin' ||
-          (role === 'manager' && Boolean(currentUser) && project.manager === currentUser),
+          ((role === 'manager' || role === 'finance') && isProjectLead(project, currentUser)),
       ),
     [assistantProjects, currentUser, role],
   )
@@ -2470,13 +2577,13 @@ function App() {
         (project) =>
           role === 'controller' ||
           role === 'admin' ||
-          (role === 'manager' && Boolean(currentUser) && project.manager === currentUser),
+          ((role === 'manager' || role === 'finance') && isProjectLead(project, currentUser)),
       ),
     [assistantProjects, currentUser, role],
   )
   const assistantEditableTasks = useMemo(() => {
     if (role === 'controller' || role === 'admin') return assistantTasks
-    if (role === 'manager') {
+    if (role === 'manager' || role === 'finance') {
       const editableProjectIds = new Set(assistantEditableProjects.map((project) => project.id))
       return assistantTasks.filter((task) => editableProjectIds.has(task.projectId))
     }
@@ -2508,8 +2615,11 @@ function App() {
           latestAccounts = mergeStoredAccounts(savedData.accounts ?? loginAccounts)
           applyAppDataToState(savedData)
           rememberConnectedTeamHost()
+          setLoadedDataSourceKey(dataSourceKey)
+          setDataReady(true)
           setTeamConnectionStatus('connected')
           setTeamConnectionMessage('团队账号已同步')
+          markTeamSync()
         }
       } catch (error) {
         setTeamConnectionStatus('error')
@@ -2542,9 +2652,23 @@ function App() {
   }
 
   function openProjectEditor(project: Project) {
-    if (isArchivedProject(project) && !canEditArchivedProjects) return
+    if (!projectEditScope(project)) return
     setAssistantProjectEditDraft(null)
     setEditingProject(project)
+  }
+
+  function projectEditScope(project: Project): 'full' | 'status' | null {
+    if (role === 'controller' || role === 'admin') return 'full'
+    if ((role !== 'manager' && role !== 'finance') || !isProjectLead(project, currentUser)) return null
+    return isArchivedProject(project) ? 'status' : 'full'
+  }
+
+  function canEditProject(project: Project) {
+    return projectEditScope(project) !== null
+  }
+
+  function canEditProjectTaskBoard(project: Project) {
+    return projectEditScope(project) === 'full'
   }
 
   function closeWelcomeGuide() {
@@ -2623,6 +2747,8 @@ function App() {
       if (health.incrementalSync === false) teamIncrementalCapabilityRef.current = 'legacy'
       applyAppDataToState(savedData)
       rememberConnectedTeamHost()
+      setLoadedDataSourceKey(dataSourceKey)
+      setDataReady(true)
       setTeamConnectionStatus('connected')
       setTeamConnectionMessage(`已连接：${health.name ?? 'CrewFlow Server'}`)
       markTeamSync()
@@ -3033,41 +3159,57 @@ function App() {
 
   function handleUpdateProject(updatedProject: Project, updatedTasks?: Task[]) {
     const previousProject = appProjects.find((project) => project.id === updatedProject.id)
+    if (!previousProject) return
+    const editScope = projectEditScope(previousProject)
+    if (!editScope) return
+    const authorizedProject =
+      editScope === 'status'
+        ? {
+            ...previousProject,
+            status: updatedProject.status,
+            healthStatusExplicit: updatedProject.healthStatusExplicit,
+            workStatus: updatedProject.workStatus,
+            stage: updatedProject.stage,
+            calendarTitle: updatedProject.calendarTitle,
+            due: updatedProject.due,
+            progress: updatedProject.progress,
+          }
+        : updatedProject
     const previousClientProvince = previousProject
       ? Object.entries(appWorkflowOptions.customerGroups).find(([, customers]) => customers.includes(previousProject.client))?.[0]
       : undefined
-    const dueDate = new Date(updatedProject.due)
+    const dueDate = new Date(authorizedProject.due)
     const previousDueText = previousProject ? formatMonthDay(new Date(previousProject.due)) : ''
-    const milestoneTitle = updatedProject.calendarTitle?.trim() || updatedProject.stage
+    const milestoneTitle = authorizedProject.calendarTitle?.trim() || authorizedProject.stage
     const nextMilestone = `${formatMonthDay(dueDate)} ${milestoneTitle}`
-    const nextProjectTasks = updatedTasks?.map((task) => ({
+    const nextProjectTasks = editScope === 'full' ? updatedTasks?.map((task) => ({
       ...task,
-      projectId: updatedProject.id,
-      project: updatedProject.name,
-      title: previousProject ? task.title.replace(previousProject.name, updatedProject.name) : task.title,
+      projectId: authorizedProject.id,
+      project: authorizedProject.name,
+      title: previousProject ? task.title.replace(previousProject.name, authorizedProject.name) : task.title,
       due: task.due === previousProject?.due || task.due === previousDueText ? formatMonthDay(dueDate) : task.due,
-    }))
+    })) : undefined
 
     setAppProjects((current) =>
       current.map((project) =>
-        project.id === updatedProject.id
+        project.id === authorizedProject.id
           ? {
-              ...updatedProject,
+              ...authorizedProject,
               nextMilestone,
             }
           : project,
       ),
     )
     if (nextProjectTasks) {
-      setAppTasks((current) => [...nextProjectTasks, ...current.filter((task) => task.projectId !== updatedProject.id)])
+      setAppTasks((current) => [...nextProjectTasks, ...current.filter((task) => task.projectId !== authorizedProject.id)])
     } else {
       setAppTasks((current) =>
         current.map((task) =>
-          task.projectId === updatedProject.id
+          task.projectId === authorizedProject.id
             ? {
                 ...task,
-                project: updatedProject.name,
-                title: previousProject ? task.title.replace(previousProject.name, updatedProject.name) : task.title,
+                project: authorizedProject.name,
+                title: previousProject ? task.title.replace(previousProject.name, authorizedProject.name) : task.title,
                 due: task.due === previousProject?.due || task.due === previousDueText ? formatMonthDay(dueDate) : task.due,
               }
             : task,
@@ -3076,31 +3218,31 @@ function App() {
     }
     setAppCalendarItems((current) =>
       current.map((item) => {
-        if (item.projectId !== updatedProject.id) return item
+        if (item.projectId !== authorizedProject.id) return item
 
         const isPrimaryPlan = previousProject ? isPrimaryProjectCalendarItem(item, previousProject) : false
         const primaryPlanChanged = Boolean(
           isPrimaryPlan &&
             previousProject &&
-            (previousProject.due !== updatedProject.due ||
+            (previousProject.due !== authorizedProject.due ||
               (previousProject.calendarTitle?.trim() || previousProject.stage) !== milestoneTitle),
         )
 
         return {
           ...item,
-          project: updatedProject.name,
-          date: isPrimaryPlan ? updatedProject.due : item.date,
+          project: authorizedProject.name,
+          date: isPrimaryPlan ? authorizedProject.due : item.date,
           day: isPrimaryPlan ? dueDate.getDate() : item.day,
           time: isPrimaryPlan ? formatMonthDay(dueDate) : item.time,
           title: isPrimaryPlan ? milestoneTitle : item.title,
-          type: isPrimaryPlan ? updatedProject.stage : item.type,
-          owner: item.owner === previousProject?.manager || isPrimaryPlan ? updatedProject.manager : item.owner,
+          type: isPrimaryPlan ? authorizedProject.stage : item.type,
+          owner: item.owner === previousProject?.manager || isPrimaryPlan ? authorizedProject.manager : item.owner,
           completed: primaryPlanChanged ? false : item.completed,
         }
       }),
     )
-    if (previousClientProvince && updatedProject.client !== previousProject?.client) {
-      addCustomerOption(previousClientProvince, updatedProject.client)
+    if (previousClientProvince && authorizedProject.client !== previousProject?.client) {
+      addCustomerOption(previousClientProvince, authorizedProject.client)
     }
     setEditingProject(null)
     setAssistantProjectEditDraft(null)
@@ -3134,8 +3276,8 @@ function App() {
 
   function canEditCalendarProject(projectId: string) {
     if (role === 'controller' || role === 'admin') return true
-    if (role !== 'manager' || !currentUser) return false
-    return appProjects.some((project) => project.id === projectId && project.manager === currentUser)
+    if ((role !== 'manager' && role !== 'finance') || !currentUser) return false
+    return appProjects.some((project) => project.id === projectId && isProjectLead(project, currentUser))
   }
 
   function syncPrimaryProjectDate(project: Project, targetDate: string, title: string) {
@@ -3420,7 +3562,7 @@ function App() {
       appProjects.find((item) => item.name.trim() === operation.projectName.trim())
     if (!project || isArchivedProject(project)) return false
     if (!assistantEditableProjects.some((item) => item.id === project.id)) return false
-    if (operation.type === 'assign_task' && !canEditProjectTaskBoard) return false
+    if (operation.type === 'assign_task' && !canEditProjectTaskBoard(project)) return false
 
     const manager = activeStaffMembers.some((member) => member.name === operation.manager && canManageProject(member))
       ? operation.manager
@@ -3614,7 +3756,9 @@ function App() {
           dataMode={dataMode}
           teamConnectionStatus={teamConnectionStatus}
           teamConnectionMessage={teamConnectionMessage}
+          dataSourceReady={dataSourceReady}
           lastTeamSyncAt={lastTeamSyncAt}
+          onlineMemberCount={teamPresenceMembers?.length ?? null}
           onAccountChange={setLoginAccountId}
           onPasswordChange={setLoginPassword}
           onLogin={handleLogin}
@@ -3627,6 +3771,7 @@ function App() {
             teamAccessKey={teamAccessKey}
             teamConnectionStatus={teamConnectionStatus}
             teamConnectionMessage={teamConnectionMessage}
+            teamPresenceMembers={teamPresenceMembers}
             activeRemoteTeamHost={activeRemoteTeamHost}
             teamServiceInfo={teamServiceInfo}
             teamServiceBusy={teamServiceBusy}
@@ -3720,7 +3865,9 @@ function App() {
             dataMode={dataMode}
             teamConnectionStatus={teamConnectionStatus}
             teamConnectionMessage={teamConnectionMessage}
+            dataSourceReady={dataSourceReady}
             lastTeamSyncAt={lastTeamSyncAt}
+            onlineMemberCount={teamPresenceMembers?.length ?? null}
             onOpen={() => setShowDataModeModal(true)}
           />
         </div>
@@ -3823,8 +3970,8 @@ function App() {
             workflowOptions={appWorkflowOptions}
             selectedProject={selectedProject}
             setSelectedProjectId={setSelectedProjectId}
+            canEditProject={canEditProject}
             canEditTaskBoard={canEditProjectTaskBoard}
-            canEditArchivedProjects={canEditArchivedProjects}
             canDeleteProject={canDeleteProject}
             onEditProject={openProjectEditor}
             onDeleteProject={handleDeleteProject}
@@ -3888,7 +4035,8 @@ function App() {
             projects={archivedProjects}
             allTasks={appTasks}
             financeRecords={appFinanceRecords}
-            canEditArchivedProjects={canEditArchivedProjects}
+            canEditArchivedProject={canEditProject}
+            canEditAllArchivedProjects={canEditArchivedProjects}
             onEditProject={openProjectEditor}
           />
         )}
@@ -3925,7 +4073,7 @@ function App() {
         workSchedule={workSchedule}
         canCreateProject={canCreateProject}
         workflowOptions={appWorkflowOptions}
-        canEditProjectTaskBoard={canEditProjectTaskBoard}
+        canEditProjectTaskBoard={assistantEditableProjects.some(canEditProjectTaskBoard)}
         onOpenNewProject={() => {
           setAssistantNewProjectDraft(null)
           setShowNewProjectModal(true)
@@ -3933,6 +4081,22 @@ function App() {
         onReviewCalendarPlans={handleReviewAssistantCalendarPlans}
         onReviewOperation={handleReviewAssistantOperation}
       />
+
+      {dataMode === 'team' && (!dataSourceReady || teamConnectionStatus === 'error') && (
+        <div className="teamReconnectGate" role="status" aria-live="polite">
+          <section>
+            {teamConnectionStatus === 'error' ? <AlertTriangle size={24} /> : <RefreshCw className="spinning" size={24} />}
+            <div>
+              <strong>{teamConnectionStatus === 'error' ? '团队连接需要处理' : '正在恢复团队连接'}</strong>
+              <span>{teamConnectionMessage || '正在读取团队数据'}</span>
+              <p>连接完成前已暂停新增和修改，防止数据只留在本机。</p>
+            </div>
+            <button type="button" onClick={() => setShowDataModeModal(true)}>
+              连接设置
+            </button>
+          </section>
+        </div>
+      )}
 
       {showNewProjectModal && (
           <NewProjectModal
@@ -3971,8 +4135,9 @@ function App() {
           projectTasks={appTasks.filter((task) => task.projectId === editingProject.id)}
           staffMembers={activeStaffMembers}
           workflowOptions={appWorkflowOptions}
-          canDelete={canDeleteProject(editingProject)}
-          canEditTaskBoard={canEditProjectTaskBoard}
+          canDelete={projectEditScope(editingProject) === 'full' && canDeleteProject(editingProject)}
+          canEditTaskBoard={canEditProjectTaskBoard(editingProject)}
+          editScope={projectEditScope(editingProject) ?? 'status'}
           draft={assistantProjectEditDraft ?? undefined}
           onClose={() => {
             setEditingProject(null)
@@ -4019,6 +4184,7 @@ function App() {
           teamAccessKey={teamAccessKey}
           teamConnectionStatus={teamConnectionStatus}
           teamConnectionMessage={teamConnectionMessage}
+          teamPresenceMembers={teamPresenceMembers}
           activeRemoteTeamHost={activeRemoteTeamHost}
           teamServiceInfo={teamServiceInfo}
           teamServiceBusy={teamServiceBusy}
@@ -4514,17 +4680,22 @@ function DataModeStatus({
   dataMode,
   teamConnectionStatus,
   teamConnectionMessage,
+  dataSourceReady,
   lastTeamSyncAt,
+  onlineMemberCount,
   onOpen,
 }: {
   dataMode: DataMode
   teamConnectionStatus: TeamConnectionStatus
   teamConnectionMessage: string
+  dataSourceReady: boolean
   lastTeamSyncAt: number | null
+  onlineMemberCount: number | null
   onOpen: () => void
 }) {
-  const Icon = dataMode === 'team' && teamConnectionStatus === 'connected' ? CheckCircle2 : HardDrive
-  const statusClass = dataMode === 'team' ? teamConnectionStatus : 'single'
+  const effectiveStatus = dataMode === 'team' && !dataSourceReady ? 'checking' : teamConnectionStatus
+  const Icon = dataMode === 'team' && effectiveStatus === 'connected' ? CheckCircle2 : HardDrive
+  const statusClass = dataMode === 'team' ? effectiveStatus : 'single'
 
   return (
     <button className={`nasStatus dataModeStatus ${statusClass}`} type="button" onClick={onOpen}>
@@ -4532,8 +4703,9 @@ function DataModeStatus({
       <div className="dataModeStatusCopy">
         <strong>{dataModeLabel(dataMode)}</strong>
         <div className="dataModeStatusMeta">
-          <span>{dataMode === 'team' ? connectionStatusText(teamConnectionStatus, teamConnectionMessage) : '数据只保存在本机'}</span>
-          {dataMode === 'team' && lastTeamSyncAt && <time dateTime={new Date(lastTeamSyncAt).toISOString()}>最近同步 {formatTeamSyncTime(lastTeamSyncAt)}</time>}
+          <span>{dataMode === 'team' ? connectionStatusText(effectiveStatus, teamConnectionMessage) : '数据只保存在本机'}</span>
+          {dataMode === 'team' && dataSourceReady && lastTeamSyncAt && <time dateTime={new Date(lastTeamSyncAt).toISOString()}>最近同步 {formatTeamSyncTime(lastTeamSyncAt)}</time>}
+          {dataMode === 'team' && onlineMemberCount !== null && <b className="teamOnlineCount">{onlineMemberCount} 人在线</b>}
         </div>
       </div>
     </button>
@@ -4881,6 +5053,7 @@ function DataModeModal({
   teamAccessKey,
   teamConnectionStatus,
   teamConnectionMessage,
+  teamPresenceMembers,
   activeRemoteTeamHost,
   teamServiceInfo,
   teamServiceBusy,
@@ -4901,6 +5074,7 @@ function DataModeModal({
   teamAccessKey: string
   teamConnectionStatus: TeamConnectionStatus
   teamConnectionMessage: string
+  teamPresenceMembers: TeamPresenceMember[] | null
   activeRemoteTeamHost: string
   teamServiceInfo: TeamServiceInfo | null
   teamServiceBusy: boolean
@@ -5054,6 +5228,36 @@ function DataModeModal({
         <div className={`dataModeConnection ${teamConnectionStatus}`}>
           {connectionStatusText(teamConnectionStatus, teamConnectionMessage)}
         </div>
+        {dataMode === 'team' && teamPresenceMembers !== null && (
+          <section className="teamPresencePanel" aria-label="在线成员">
+            <div className="teamPresenceHeader">
+              <div>
+                <Users size={17} />
+                <strong>在线成员</strong>
+              </div>
+              <span>{teamPresenceMembers.length} 人在线</span>
+            </div>
+            {teamPresenceMembers.length > 0 ? (
+              <div className="teamPresenceList">
+                {teamPresenceMembers.map((member) => (
+                  <div className="teamPresenceMember" key={member.accountId}>
+                    <i aria-hidden="true">{member.name.trim().slice(0, 1) || '?'}</i>
+                    <div>
+                      <strong>{member.name}</strong>
+                      <span>
+                        {roleLabelFor(member.role)}
+                        {member.connections > 1 ? ` · ${member.connections} 台设备` : ''}
+                      </span>
+                    </div>
+                    <em>在线</em>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <p className="teamPresenceEmpty">暂时没有已登录成员</p>
+            )}
+          </section>
+        )}
         <footer>
           <button type="button" onClick={onCheckTeamConnection} disabled={teamConnectionStatus === 'checking'}>
             测试连接
@@ -5404,7 +5608,9 @@ function LoginScreen({
   dataMode,
   teamConnectionStatus,
   teamConnectionMessage,
+  dataSourceReady,
   lastTeamSyncAt,
+  onlineMemberCount,
   onAccountChange,
   onPasswordChange,
   onLogin,
@@ -5416,7 +5622,9 @@ function LoginScreen({
   dataMode: DataMode
   teamConnectionStatus: TeamConnectionStatus
   teamConnectionMessage: string
+  dataSourceReady: boolean
   lastTeamSyncAt: number | null
+  onlineMemberCount: number | null
   onAccountChange: (accountId: string) => void
   onPasswordChange: (password: string) => void
   onLogin: () => void
@@ -5463,7 +5671,9 @@ function LoginScreen({
           dataMode={dataMode}
           teamConnectionStatus={teamConnectionStatus}
           teamConnectionMessage={teamConnectionMessage}
+          dataSourceReady={dataSourceReady}
           lastTeamSyncAt={lastTeamSyncAt}
+          onlineMemberCount={onlineMemberCount}
           onOpen={onOpenDataMode}
         />
         <span className="loginVersion">CrewFlow v{appVersion}</span>
@@ -5686,8 +5896,8 @@ function Projects({
   workflowOptions,
   selectedProject,
   setSelectedProjectId,
+  canEditProject,
   canEditTaskBoard,
-  canEditArchivedProjects,
   canDeleteProject,
   onEditProject,
   onDeleteProject,
@@ -5703,8 +5913,8 @@ function Projects({
   workflowOptions: WorkflowOptions
   selectedProject: Project | null
   setSelectedProjectId: (id: string) => void
-  canEditTaskBoard: boolean
-  canEditArchivedProjects: boolean
+  canEditProject: (project: Project) => boolean
+  canEditTaskBoard: (project: Project) => boolean
   canDeleteProject: (project: Project) => boolean
   onEditProject: (project: Project) => void
   onDeleteProject: (project: Project) => void
@@ -5718,9 +5928,11 @@ function Projects({
   const selectedDepartedNames = selectedProject ? departedPeopleForProject(selectedProject, allTasks, allCalendarItems, departedStaff) : []
   const selectedProjectProgress = selectedProject ? progressForProject(selectedProject, workflowOptions.workflowStages) : 0
   const canDeleteSelectedProject = selectedProject ? canDeleteProject(selectedProject) : false
+  const canEditSelectedProject = selectedProject ? canEditProject(selectedProject) : false
+  const canEditSelectedTaskBoard = selectedProject ? canEditTaskBoard(selectedProject) : false
 
   async function selectTaskEvidenceFolder(task: Task) {
-    if (!canEditTaskBoard) return
+    if (!canEditSelectedTaskBoard) return
     const selectedPath = await window.desktopBridge?.selectProjectFolder()
     if (selectedPath) onUpdateTask({ ...task, evidencePath: selectedPath })
   }
@@ -5776,7 +5988,7 @@ function Projects({
             <span className={`pill ${statusTone[projectDisplayStatus(selectedProject, new Date(), allCalendarItems)]}`}>
               {statusLabel[projectDisplayStatus(selectedProject, new Date(), allCalendarItems)]}
             </span>
-            {(!isArchivedProject(selectedProject) || canEditArchivedProjects) && (
+            {canEditSelectedProject && (
               <button type="button" onClick={() => onEditProject(selectedProject)}>
                 编辑项目
               </button>
@@ -5855,7 +6067,7 @@ function Projects({
 
               return (
                 <div key={task.id} className="assignmentItem">
-                  {canEditTaskBoard ? (
+                  {canEditSelectedTaskBoard ? (
                     <select
                       value={workType}
                       onChange={(event) => {
@@ -5877,7 +6089,7 @@ function Projects({
                     <span className="readonlyValue">{workType}</span>
                   )}
                   {externalTask ? (
-                    canEditTaskBoard ? (
+                    canEditSelectedTaskBoard ? (
                       <input
                         value={externalAssigneeName(task)}
                         onChange={(event) =>
@@ -5892,7 +6104,7 @@ function Projects({
                     ) : (
                       <span className="readonlyValue">{externalAssigneeName(task)}</span>
                     )
-                  ) : canEditTaskBoard ? (
+                  ) : canEditSelectedTaskBoard ? (
                     <select
                       value={staffNameInOptions(task.assignee, assignableStaff)}
                       onChange={(event) => onUpdateTask({ ...task, assignmentMode: 'internal', assignee: event.target.value })}
@@ -5909,7 +6121,7 @@ function Projects({
                   ) : (
                     <span className="readonlyValue">{task.assignee}</span>
                   )}
-                  {canEditTaskBoard ? (
+                  {canEditSelectedTaskBoard ? (
                     <select value={task.status} onChange={(event) => onUpdateTaskStatus(task.id, event.target.value as TaskStatus)}>
                       {taskStatusOptions.map((status) => (
                         <option key={status} value={status}>
@@ -5924,19 +6136,19 @@ function Projects({
                     <span className="taskEvidenceLabel">完成实证资料</span>
                     <div className="taskEvidenceControls">
                       <button
-                        className={`taskEvidencePath${!task.evidencePath && canEditTaskBoard ? ' empty' : ''}`}
+                        className={`taskEvidencePath${!task.evidencePath && canEditSelectedTaskBoard ? ' empty' : ''}`}
                         type="button"
-                        disabled={!task.evidencePath && !canEditTaskBoard}
+                        disabled={!task.evidencePath && !canEditSelectedTaskBoard}
                         onClick={() =>
-                          task.evidencePath ? openProjectPath(task.evidencePath) : canEditTaskBoard ? selectTaskEvidenceFolder(task) : undefined
+                          task.evidencePath ? openProjectPath(task.evidencePath) : canEditSelectedTaskBoard ? selectTaskEvidenceFolder(task) : undefined
                         }
                         title={task.evidencePath || '选择完成资料文件夹'}
                       >
                         <FolderOpen size={15} />
                         <span>{task.evidencePath || '选择完成资料文件夹'}</span>
-                        {!task.evidencePath && canEditTaskBoard && <Plus size={15} />}
+                        {!task.evidencePath && canEditSelectedTaskBoard && <Plus size={15} />}
                       </button>
-                      {canEditTaskBoard && task.evidencePath && (
+                      {canEditSelectedTaskBoard && task.evidencePath && (
                         <button
                           className="taskEvidenceAction"
                           type="button"
@@ -5946,7 +6158,7 @@ function Projects({
                           <Pencil size={15} />
                         </button>
                       )}
-                      {canEditTaskBoard && task.evidencePath && (
+                      {canEditSelectedTaskBoard && task.evidencePath && (
                         <button
                           className="taskEvidenceAction dangerPathButton"
                           type="button"
@@ -5991,13 +6203,15 @@ function ArchiveView({
   projects,
   allTasks,
   financeRecords,
-  canEditArchivedProjects,
+  canEditArchivedProject,
+  canEditAllArchivedProjects,
   onEditProject,
 }: {
   projects: Project[]
   allTasks: Task[]
   financeRecords: FinanceRecord[]
-  canEditArchivedProjects: boolean
+  canEditArchivedProject: (project: Project) => boolean
+  canEditAllArchivedProjects: boolean
   onEditProject: (project: Project) => void
 }) {
   return (
@@ -6041,9 +6255,9 @@ function ArchiveView({
                       {index === 0 ? '打开主路径' : `打开路径 ${index + 1}`}
                     </button>
                   ))}
-                  {canEditArchivedProjects && (
+                  {canEditArchivedProject(project) && (
                     <button type="button" onClick={() => onEditProject(project)}>
-                      编辑项目
+                      {canEditAllArchivedProjects ? '编辑项目' : '编辑状态'}
                     </button>
                   )}
                 </div>
@@ -6620,6 +6834,7 @@ function ProjectEditModal({
   workflowOptions,
   canDelete,
   canEditTaskBoard,
+  editScope,
   draft,
   onClose,
   onSave,
@@ -6631,11 +6846,13 @@ function ProjectEditModal({
   workflowOptions: WorkflowOptions
   canDelete: boolean
   canEditTaskBoard: boolean
+  editScope: 'full' | 'status'
   draft?: AssistantProjectEditDraft
   onClose: () => void
   onSave: (project: Project, tasks: Task[]) => void
   onDelete: (project: Project) => void
 }) {
+  const statusOnly = editScope === 'status'
   const projectManagers = useMemo(() => staffMembers.filter(canManageProject), [staffMembers])
   const assignableStaff = useMemo(() => staffMembers.filter((member) => member.status === '在职'), [staffMembers])
   const initialManager = staffNameInOptions(project.manager, projectManagers) || projectManagers[0]?.name || ''
@@ -6775,8 +6992,8 @@ function ProjectEditModal({
         <header>
           <div>
             <span className="eyebrow">项目维护</span>
-            <h2>{draft ? '确认助理修改' : '编辑项目'}</h2>
-            <p>用于修正项目名称、客户、项目经理、流程节点、最终交付和 NAS 路径。</p>
+            <h2>{draft ? '确认助理修改' : statusOnly ? '编辑归档项目状态' : '编辑项目'}</h2>
+            <p>{statusOnly ? '可调整本人负责项目的状态、流程节点和最终交付日期。' : '用于修正项目名称、客户、项目经理、流程节点、最终交付和 NAS 路径。'}</p>
           </div>
           <button type="button" onClick={onClose} title="关闭">
             <X size={18} />
@@ -6784,42 +7001,50 @@ function ProjectEditModal({
         </header>
 
         <div className="structuredForm">
-          <label className="textField">
-            <span>项目名称</span>
-            <input value={name} onChange={(event) => setName(event.target.value)} />
-          </label>
-          <label className="textField">
-            <span>{workflowOptions.customerFieldLabels.secondary}</span>
-            <input value={client} onChange={(event) => setClient(event.target.value)} />
-          </label>
-          <label className="textField">
-            <span>甲方对接人</span>
-            <input value={clientContact} onChange={(event) => setClientContact(event.target.value)} placeholder="例如：张主任 / 李老师" />
-          </label>
+          {!statusOnly && (
+            <>
+              <label className="textField">
+                <span>项目名称</span>
+                <input value={name} onChange={(event) => setName(event.target.value)} />
+              </label>
+              <label className="textField">
+                <span>{workflowOptions.customerFieldLabels.secondary}</span>
+                <input value={client} onChange={(event) => setClient(event.target.value)} />
+              </label>
+              <label className="textField">
+                <span>甲方对接人</span>
+                <input value={clientContact} onChange={(event) => setClientContact(event.target.value)} placeholder="例如：张主任 / 李老师" />
+              </label>
+            </>
+          )}
           <div className="setupGrid">
-            <label className="textField">
-              <span>项目类型</span>
-              <select value={type} onChange={(event) => setType(event.target.value)}>
-                {optionsWithCurrent(workflowOptions.projectTypes, type).map((item) => (
-                  <option key={item} value={item}>
-                    {item}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label className="textField">
-              <span>项目经理</span>
-              <select value={manager} onChange={(event) => setManager(event.target.value)}>
-                <option value="" disabled>
-                  选择项目经理
-                </option>
-                {projectManagers.map((member) => (
-                  <option key={member.name} value={member.name}>
-                    {member.name}
-                  </option>
-                ))}
-              </select>
-            </label>
+            {!statusOnly && (
+              <>
+                <label className="textField">
+                  <span>项目类型</span>
+                  <select value={type} onChange={(event) => setType(event.target.value)}>
+                    {optionsWithCurrent(workflowOptions.projectTypes, type).map((item) => (
+                      <option key={item} value={item}>
+                        {item}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label className="textField">
+                  <span>项目经理</span>
+                  <select value={manager} onChange={(event) => setManager(event.target.value)}>
+                    <option value="" disabled>
+                      选择项目经理
+                    </option>
+                    {projectManagers.map((member) => (
+                      <option key={member.name} value={member.name}>
+                        {member.name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              </>
+            )}
             <label className="textField">
               <span>项目健康度</span>
               <select value={projectStatus} onChange={(event) => setProjectStatus(event.target.value as ProjectHealthStatus)}>
@@ -6859,7 +7084,7 @@ function ProjectEditModal({
               <input value={calendarTitle} onChange={(event) => setCalendarTitle(event.target.value)} placeholder="例如：需求对接、脚本初稿、成片交付" />
             </label>
           </div>
-          <div className="assignmentEditor">
+          {!statusOnly && <div className="assignmentEditor">
             <div className="assignmentEditorHeader">
               <div>
                 <h3>执行任务人员</h3>
@@ -6955,8 +7180,8 @@ function ProjectEditModal({
                 </article>
               )
             })}
-          </div>
-          <div className="textField projectPathEditor">
+          </div>}
+          {!statusOnly && <div className="textField projectPathEditor">
             <span>项目文件夹路径</span>
             <div className="pathField pathFieldWithActions">
               <HardDrive size={17} />
@@ -6989,7 +7214,7 @@ function ProjectEditModal({
                 </button>
               </div>
             ))}
-          </div>
+          </div>}
         </div>
 
         <footer>
@@ -9862,21 +10087,23 @@ function FinanceProjectDetail({
           <p>报价、合同、开票、收款进度</p>
         </div>
         <div className="businessFieldGrid">
-          <EditableTextLine
-            label="合同名称"
-            value={record.contractName}
-            placeholder="填写合同上的正式名称"
-            onChange={(value) => onUpdateRecord({ contractName: value })}
-          />
-          <div className="editableLine financeContractLine" title={record.contractFile || '尚未选择合同文件'}>
-            <span>合同文件路径</span>
-            <span className="financeContractPath">{record.contractFile ? compactFileName(record.contractFile) : '尚未选择合同文件'}</span>
-            <button type="button" onClick={selectContractFile}>
-              选择文件
-            </button>
-            <button type="button" onClick={openContractFile} disabled={!record.contractFile}>
-              打开
-            </button>
+          <div className="financeContractFields">
+            <EditableTextLine
+              label="合同名称"
+              value={record.contractName}
+              placeholder="填写合同上的正式名称"
+              onChange={(value) => onUpdateRecord({ contractName: value })}
+            />
+            <div className="editableLine financeContractLine" title={record.contractFile || '尚未选择合同文件'}>
+              <span>合同文件路径</span>
+              <button className="financeContractPicker" type="button" onClick={selectContractFile}>
+                <FolderOpen size={15} />
+                <span>{record.contractFile ? compactFileName(record.contractFile) : '选择合同文件'}</span>
+              </button>
+              <button className="financeContractOpen" type="button" onClick={openContractFile} disabled={!record.contractFile}>
+                打开
+              </button>
+            </div>
           </div>
           <EditableSelectLine
             label="报价是否制作"
@@ -10717,9 +10944,14 @@ function CrewFlowAssistant({
 
   if (!open) {
     return (
-      <button className="assistantFab" type="button" onClick={() => setOpen(true)}>
-        <MessageSquareText size={20} />
-        <span>CrewFlow 助理</span>
+      <button
+        className="assistantFab"
+        type="button"
+        aria-label="打开 CrewFlow 助理"
+        title="打开 CrewFlow 助理"
+        onClick={() => setOpen(true)}
+      >
+        <MessageSquareText size={21} />
       </button>
     )
   }
@@ -12383,6 +12615,11 @@ function normalizeStaffMember(member: StaffMember): StaffMember {
 
 function canManageProject(member: StaffMember) {
   return member.tags.includes('项目负责人') || member.tags.includes('项目经理')
+}
+
+function isProjectLead(project: Project, personName: string | null | undefined) {
+  const cleanName = personName?.trim()
+  return Boolean(cleanName && (project.manager === cleanName || project.owner === cleanName))
 }
 
 function isAssignableStaff(member: StaffMember) {

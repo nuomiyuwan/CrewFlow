@@ -290,6 +290,14 @@ label {
   white-space: nowrap;
 }
 
+.dataModeStatusMeta .teamOnlineCount {
+  color: #9ff0c7;
+  font-size: 11px;
+  font-weight: 800;
+  line-height: 1.4;
+  white-space: nowrap;
+}
+
 .dataModeStatus.connected {
   border-color: rgba(35, 154, 96, 0.34);
   background: rgba(27, 83, 68, 0.28);
@@ -3789,32 +3797,59 @@ h1 {
   padding: 0 10px;
 }
 
-.financeContractLine {
+.financeContractFields {
   grid-column: 1 / -1;
-  grid-template-columns: minmax(86px, 0.8fr) minmax(0, 1fr) auto auto;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 10px;
+  min-width: 0;
+  margin-bottom: 2px;
 }
 
-.financeContractPath {
+.financeContractLine {
+  grid-template-columns: minmax(86px, 0.8fr) minmax(0, 1.2fr) auto;
+}
+
+.financeContractLine .financeContractPicker {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 7px;
+  min-width: 0;
+  min-height: 30px;
+  border: 0;
+  overflow: hidden;
+  color: rgba(224, 233, 244, 0.72);
+  background: transparent;
+  cursor: pointer;
+  padding: 0 4px;
+}
+
+.financeContractPicker svg {
+  flex: 0 0 auto;
+  color: #80e9f7;
+}
+
+.financeContractLine .financeContractPicker span {
   min-width: 0;
   overflow: hidden;
-  color: rgba(224, 233, 244, 0.72) !important;
-  text-align: right;
+  color: inherit;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.financeContractLine button {
+.financeContractLine .financeContractOpen {
   min-height: 30px;
   border: 1px solid rgba(128, 233, 247, 0.24);
   border-radius: 9px;
   color: #91f3fb;
   background: rgba(129, 237, 247, 0.08);
   cursor: pointer;
-  padding: 0 9px;
+  padding: 0 11px;
   white-space: nowrap;
 }
 
-.financeContractLine button:disabled {
+.financeContractLine .financeContractOpen:disabled {
   cursor: not-allowed;
   opacity: 0.42;
 }
@@ -3939,19 +3974,34 @@ h1 {
   right: 26px;
   bottom: 24px;
   z-index: 20;
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  min-height: 46px;
+  display: grid;
+  width: 46px;
+  height: 46px;
+  place-items: center;
   border: 1px solid rgba(142, 238, 251, 0.42);
-  border-radius: 999px;
+  border-radius: 50%;
   color: #07111a;
   background: linear-gradient(135deg, #8df1f3, #f4dd8f);
   box-shadow:
-    0 20px 48px rgba(21, 228, 242, 0.2),
-    0 12px 32px rgba(0, 0, 0, 0.34);
+    0 14px 34px rgba(21, 228, 242, 0.18),
+    0 10px 26px rgba(0, 0, 0, 0.32);
   cursor: pointer;
-  padding: 0 16px;
+  padding: 0;
+  transition:
+    transform 150ms ease,
+    box-shadow 150ms ease;
+}
+
+.assistantFab:hover {
+  box-shadow:
+    0 16px 38px rgba(21, 228, 242, 0.24),
+    0 12px 30px rgba(0, 0, 0, 0.36);
+  transform: translateY(-2px);
+}
+
+.assistantFab:focus-visible {
+  outline: 2px solid rgba(145, 243, 251, 0.88);
+  outline-offset: 3px;
 }
 
 .assistantWindow {
@@ -4908,6 +4958,84 @@ h1 {
     rgba(3, 8, 15, 0.68);
   backdrop-filter: blur(16px);
   -webkit-app-region: no-drag;
+}
+
+.teamReconnectGate {
+  position: fixed;
+  inset: 0;
+  z-index: 55;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(3, 8, 15, 0.62);
+  backdrop-filter: blur(10px);
+  -webkit-app-region: no-drag;
+}
+
+.teamReconnectGate section {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 16px;
+  width: min(620px, calc(100vw - 48px));
+  border: 1px solid rgba(128, 233, 247, 0.3);
+  border-radius: 12px;
+  color: rgba(244, 248, 255, 0.92);
+  background: rgba(18, 29, 43, 0.97);
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.48);
+  padding: 20px;
+}
+
+.teamReconnectGate section > svg {
+  color: #80e9f7;
+}
+
+.teamReconnectGate section > div {
+  display: grid;
+  min-width: 0;
+  gap: 5px;
+}
+
+.teamReconnectGate strong,
+.teamReconnectGate span,
+.teamReconnectGate p {
+  margin: 0;
+}
+
+.teamReconnectGate strong {
+  font-size: 16px;
+}
+
+.teamReconnectGate span {
+  color: rgba(210, 222, 235, 0.78);
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+.teamReconnectGate p {
+  color: rgba(210, 222, 235, 0.56);
+  font-size: 12px;
+}
+
+.teamReconnectGate button {
+  min-height: 38px;
+  border: 1px solid rgba(128, 233, 247, 0.3);
+  border-radius: 8px;
+  color: #80e9f7;
+  background: rgba(128, 233, 247, 0.08);
+  padding: 0 14px;
+  cursor: pointer;
+}
+
+@media (max-width: 720px) {
+  .teamReconnectGate section {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .teamReconnectGate button {
+    grid-column: 1 / -1;
+    width: 100%;
+  }
 }
 
 .versionUpdateBackdrop {
@@ -6446,6 +6574,120 @@ h1 {
 .dataModeConnection.error {
   border-color: rgba(236, 95, 95, 0.42);
   color: #ffb4b4;
+}
+
+.teamPresencePanel {
+  margin: 0 20px 18px;
+  border: 1px solid rgba(180, 202, 216, 0.14);
+  border-radius: 14px;
+  background: rgba(6, 12, 22, 0.22);
+  overflow: hidden;
+}
+
+.teamPresenceHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 44px;
+  padding: 0 13px;
+}
+
+.teamPresenceHeader > div {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  color: #f7fbff;
+}
+
+.teamPresenceHeader > div svg {
+  flex: 0 0 auto;
+  color: #80e9f7;
+}
+
+.teamPresenceHeader strong {
+  font-size: 14px;
+}
+
+.teamPresenceHeader > span {
+  flex: 0 0 auto;
+  color: #9ff0c7;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.teamPresenceList {
+  max-height: 190px;
+  overflow-y: auto;
+  border-top: 1px solid rgba(180, 202, 216, 0.11);
+  scrollbar-color: rgba(128, 233, 247, 0.32) transparent;
+  scrollbar-width: thin;
+}
+
+.teamPresenceMember {
+  display: grid;
+  grid-template-columns: 32px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  min-height: 52px;
+  padding: 7px 13px;
+}
+
+.teamPresenceMember + .teamPresenceMember {
+  border-top: 1px solid rgba(180, 202, 216, 0.09);
+}
+
+.teamPresenceMember > i {
+  display: grid;
+  width: 32px;
+  height: 32px;
+  place-items: center;
+  border: 1px solid rgba(128, 233, 247, 0.28);
+  border-radius: 50%;
+  color: #a7f3f7;
+  background: rgba(128, 233, 247, 0.08);
+  font-size: 13px;
+  font-style: normal;
+  font-weight: 800;
+}
+
+.teamPresenceMember > div {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.teamPresenceMember > div strong,
+.teamPresenceMember > div span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.teamPresenceMember > div strong {
+  color: rgba(244, 248, 255, 0.9);
+  font-size: 13px;
+}
+
+.teamPresenceMember > div span {
+  color: rgba(210, 222, 235, 0.58);
+  font-size: 11px;
+}
+
+.teamPresenceMember > em {
+  color: #9ff0c7;
+  font-size: 11px;
+  font-style: normal;
+  white-space: nowrap;
+}
+
+.teamPresenceEmpty {
+  margin: 0;
+  border-top: 1px solid rgba(180, 202, 216, 0.11);
+  color: rgba(210, 222, 235, 0.56);
+  font-size: 12px;
+  padding: 14px 13px;
 }
 
 .teamHostPanel {
