@@ -924,6 +924,7 @@ async function installApplicationUpdate() {
 }
 
 async function createWindow() {
+  const isWindows = process.platform === 'win32'
   mainWindow = new BrowserWindow({
     width: 1440,
     height: 930,
@@ -931,13 +932,16 @@ async function createWindow() {
     minHeight: 760,
     title: 'CrewFlow',
     backgroundColor: '#080d18',
-    titleBarStyle: 'hiddenInset',
+    autoHideMenuBar: true,
+    ...(isWindows ? { frame: false } : process.platform === 'darwin' ? { titleBarStyle: 'hiddenInset' } : {}),
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
       preload: path.join(__dirname, 'preload.cjs'),
     },
   })
+
+  if (isWindows) mainWindow.setMenuBarVisibility(false)
 
   if (isDev) {
     mainWindow.loadURL('http://127.0.0.1:5173')
@@ -963,6 +967,28 @@ if (isTeamServerMode) {
 } else {
   app.whenReady().then(() => {
     configureWindowsUpdater()
+
+    ipcMain.handle('window-control:minimize', (event) => {
+      const window = BrowserWindow.fromWebContents(event.sender)
+      if (!window || window.isDestroyed()) return false
+      window.minimize()
+      return true
+    })
+
+    ipcMain.handle('window-control:toggle-maximize', (event) => {
+      const window = BrowserWindow.fromWebContents(event.sender)
+      if (!window || window.isDestroyed()) return false
+      if (window.isMaximized()) window.unmaximize()
+      else window.maximize()
+      return window.isMaximized()
+    })
+
+    ipcMain.handle('window-control:close', (event) => {
+      const window = BrowserWindow.fromWebContents(event.sender)
+      if (!window || window.isDestroyed()) return false
+      window.close()
+      return true
+    })
 
     ipcMain.handle('project-folder:select', async () => {
       const result = await dialog.showOpenDialog({

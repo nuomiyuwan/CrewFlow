@@ -93,4 +93,13 @@ test('latest release check prefers GitCode and falls back to GitHub', async () =
   const fallback = await fetchLatestCrewFlowRelease({ fetchImpl: fallbackFetch, platform: 'darwin' })
   assert.equal(fallback.source, 'github')
   assert.equal(fallback.version, '1.4.7')
+  const fallbackDmg = fallback.assets.find((asset) => asset.name.endsWith('.dmg'))
+  assert.equal(
+    fallbackDmg.url,
+    'https://gitcode.com/nuomiyuwan/CrewFlow/releases/download/v1.4.7/CrewFlow-v1.4.7-macOS-universal.dmg',
+  )
+  assert.equal(
+    fallbackDmg.fallbackUrl,
+    'https://github.com/nuomiyuwan/CrewFlow/releases/download/v1.4.7/CrewFlow-v1.4.7-macOS-universal.dmg',
+  )
 })

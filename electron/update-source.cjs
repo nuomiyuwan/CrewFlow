@@ -83,7 +83,7 @@ function parseGitCodeRelease(payload, checksumText = '') {
   }
 }
 
-function parseGitHubRelease(payload) {
+function parseGitHubRelease(payload, { preferGitCodeAssets = false } = {}) {
   if (!payload || typeof payload !== 'object') throw new Error('GitHub 版本信息无效')
   const version = cleanReleaseVersion(payload.tag_name)
   if (!version) throw new Error('GitHub 未找到正式版本号')
@@ -92,9 +92,11 @@ function parseGitHubRelease(payload) {
     .map((asset) => {
       const name = cleanAssetName(asset?.name)
       if (!name) return null
+      const githubUrl = gitHubReleaseAssetUrl(version, name)
       return {
         name,
-        url: gitHubReleaseAssetUrl(version, name),
+        url: preferGitCodeAssets ? gitCodeReleaseAssetUrl(version, name) : githubUrl,
+        fallbackUrl: preferGitCodeAssets ? githubUrl : undefined,
         digest: typeof asset?.digest === 'string' && /^sha256:[a-f\d]{64}$/i.test(asset.digest.trim())
           ? asset.digest.trim().toLowerCase()
           : undefined,
@@ -158,14 +160,19 @@ async function fetchGitCodeLatestRelease({ fetchImpl = fetch, platform = process
   return assertReleaseComplete(parseGitCodeRelease(payload, checksumText), platform)
 }
 
-async function fetchGitHubLatestRelease({ fetchImpl = fetch, platform = process.platform, timeoutMs = 8000 } = {}) {
+async function fetchGitHubLatestRelease({
+  fetchImpl = fetch,
+  platform = process.platform,
+  timeoutMs = 8000,
+  preferGitCodeAssets = false,
+} = {}) {
   const payload = await fetchJson(
     fetchImpl,
     GITHUB_LATEST_RELEASE_URL,
     { headers: { Accept: 'application/vnd.github+json', 'User-Agent': 'CrewFlow-Updater' } },
     timeoutMs,
   )
-  return assertReleaseComplete(parseGitHubRelease(payload), platform)
+  return assertReleaseComplete(parseGitHubRelease(payload, { preferGitCodeAssets }), platform)
 }
 
 async function fetchLatestCrewFlowRelease(options = {}) {
@@ -173,7 +180,7 @@ async function fetchLatestCrewFlowRelease(options = {}) {
     return await fetchGitCodeLatestRelease(options)
   } catch (gitCodeError) {
     try {
-      return await fetchGitHubLatestRelease(options)
+      return await fetchGitHubLatestRelease({ ...options, preferGitCodeAssets: true })
     } catch (gitHubError) {
       const primaryMessage = gitCodeError instanceof Error ? gitCodeError.message : 'GitCode 不可用'
       const fallbackMessage = gitHubError instanceof Error ? gitHubError.message : 'GitHub 不可用'

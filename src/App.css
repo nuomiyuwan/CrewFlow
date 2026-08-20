@@ -12,6 +12,41 @@
   user-select: none;
 }
 
+.windowsWindowControls {
+  position: fixed;
+  top: 0;
+  right: 0;
+  z-index: 500;
+  display: grid;
+  grid-template-columns: repeat(3, 46px);
+  height: 32px;
+  -webkit-app-region: no-drag;
+}
+
+.windowsWindowControls button {
+  display: grid;
+  width: 46px;
+  height: 32px;
+  min-height: 32px;
+  border: 0;
+  border-radius: 0;
+  color: rgba(231, 239, 248, 0.82);
+  background: transparent;
+  cursor: default;
+  padding: 0;
+  place-items: center;
+  -webkit-app-region: no-drag;
+}
+
+.windowsWindowControls button:hover {
+  color: #ffffff;
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.windowsWindowControls button.close:hover {
+  background: #c42b1c;
+}
+
 input,
 textarea {
   -webkit-user-select: text;

@@ -2,6 +2,17 @@
 
 All notable changes to CrewFlow are documented in this file.
 
+## 1.4.11 - 2026-08-20
+
+### 优化
+
+- Windows 版改为无边框窗口，并加入最小化、最大化和关闭按钮。
+- Windows 安装时可以自行选择安装位置。
+
+### 修复
+
+- 修复部分网络环境下应用更新未能正确切换下载源的问题。
+
 ## 1.4.10 - 2026-08-20
 
 ### 新增

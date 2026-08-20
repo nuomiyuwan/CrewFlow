@@ -33,6 +33,7 @@ import {
   LayoutDashboard,
   ListChecks,
   MessageSquareText,
+  Minus,
   Minimize2,
   Pencil,
   Plus,
@@ -41,6 +42,7 @@ import {
   Archive,
   Search,
   Send,
+  Square,
   RefreshCw,
   Trash2,
   Users,
@@ -320,6 +322,9 @@ type AssistantRequestPayload = {
 type DesktopBridge = {
   platform: string
   arch: string
+  minimizeWindow: () => Promise<boolean>
+  toggleMaximizeWindow: () => Promise<boolean>
+  closeWindow: () => Promise<boolean>
   selectProjectFolder: () => Promise<string | null>
   openProjectFolder: (folderPath: string) => Promise<boolean>
   selectProjectFile: (title: string) => Promise<string | null>
@@ -3749,6 +3754,7 @@ function App() {
   if (!currentAccount) {
     return (
       <>
+        <WindowsWindowControls />
         <LoginScreen
           accountId={loginAccountId}
           password={loginPassword}
@@ -3794,6 +3800,7 @@ function App() {
 
   return (
     <div className="appShell">
+      <WindowsWindowControls />
       <aside className="sidebar">
         <div className="brand">
           <div className="brandMark">
@@ -4720,7 +4727,14 @@ function updateStatusText(status: UpdateCheckStatus, availableVersion?: string) 
   return '检查更新'
 }
 
-function updateReleaseSourceLabel(source?: UpdateRelease['source']) {
+function updateReleaseSourceLabel(source?: UpdateRelease['source'], assetUrl?: string) {
+  try {
+    if (assetUrl && new URL(assetUrl).hostname.toLowerCase() === 'gitcode.com') {
+      return source === 'github' ? 'GitCode 国内下载 · GitHub 版本信息' : 'GitCode 国内源'
+    }
+  } catch {
+    // Use the metadata source label when a preview URL is malformed.
+  }
   return source === 'gitcode' ? 'GitCode 国内源' : 'GitHub 备用源'
 }
 
@@ -4749,6 +4763,25 @@ function BrandVersionStatus({
         {status === 'checking' && <RefreshCw size={10} className="spinning" />}
         <span>v{version}</span>
         {status === 'available' && <i aria-hidden="true" />}
+      </button>
+    </div>
+  )
+}
+
+function WindowsWindowControls() {
+  const bridge = window.desktopBridge
+  if (bridge?.platform !== 'win32') return null
+
+  return (
+    <div className="windowsWindowControls" aria-label="窗口控制">
+      <button type="button" title="最小化" aria-label="最小化" onClick={() => void bridge.minimizeWindow()}>
+        <Minus size={15} strokeWidth={1.8} />
+      </button>
+      <button type="button" title="最大化或还原" aria-label="最大化或还原" onClick={() => void bridge.toggleMaximizeWindow()}>
+        <Square size={12} strokeWidth={1.8} />
+      </button>
+      <button className="close" type="button" title="关闭" aria-label="关闭" onClick={() => void bridge.closeWindow()}>
+        <X size={15} strokeWidth={1.8} />
       </button>
     </div>
   )
@@ -4987,7 +5020,7 @@ function VersionUpdateModal({
                 <div className="versionUpdateSectionTitle">
                   <h3>安装与更新</h3>
                   <span>
-                    {updateReleaseSourceLabel(release.source)} · {guide.platformLabel} · {matchingAsset?.name ?? guide.packageLabel}
+                    {updateReleaseSourceLabel(release.source, matchingAsset?.url)} · {guide.platformLabel} · {matchingAsset?.name ?? guide.packageLabel}
                   </span>
                 </div>
                 <ol>

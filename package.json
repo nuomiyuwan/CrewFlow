@@ -1,7 +1,7 @@
 {
   "name": "crewflow",
   "private": true,
-  "version": "1.4.10",
+  "version": "1.4.11",
   "description": "CrewFlow project management desktop app",
   "author": "nuomiyuwan",
   "repository": "https://github.com/nuomiyuwan/CrewFlow.git",
@@ -83,7 +83,7 @@
       "oneClick": false,
       "perMachine": false,
       "allowElevation": true,
-      "allowToChangeInstallationDirectory": false,
+      "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
       "shortcutName": "CrewFlow",

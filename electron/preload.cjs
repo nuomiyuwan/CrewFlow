@@ -3,6 +3,9 @@ const { contextBridge, ipcRenderer } = require('electron')
 contextBridge.exposeInMainWorld('desktopBridge', {
   platform: process.platform,
   arch: process.arch,
+  minimizeWindow: () => ipcRenderer.invoke('window-control:minimize'),
+  toggleMaximizeWindow: () => ipcRenderer.invoke('window-control:toggle-maximize'),
+  closeWindow: () => ipcRenderer.invoke('window-control:close'),
   selectProjectFolder: () => ipcRenderer.invoke('project-folder:select'),
   openProjectFolder: (folderPath) => ipcRenderer.invoke('project-folder:open', folderPath),
   selectProjectFile: (title) => ipcRenderer.invoke('project-file:select', title),
