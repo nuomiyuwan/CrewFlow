@@ -26,6 +26,7 @@ const isDev = !app.isPackaged
 const isTeamServerMode = process.argv.includes('--team-server')
 let saveQueue = Promise.resolve()
 let mainWindow = null
+let showMainWindowWhenReady = false
 let windowsUpdaterConfigured = false
 let windowsUpdateDownloaded = false
 let windowsUpdaterSuppressErrors = false
@@ -45,6 +46,23 @@ let appUpdateState = {
 
 app.setName('CrewFlow')
 app.setPath('userData', path.join(app.getPath('appData'), 'CrewFlow'))
+
+const hasPrimaryInstanceLock = isTeamServerMode || process.platform !== 'win32' || app.requestSingleInstanceLock()
+
+function showPrimaryWindow() {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    showMainWindowWhenReady = true
+    return
+  }
+
+  if (mainWindow.isMinimized()) mainWindow.restore()
+  if (!mainWindow.isVisible()) mainWindow.show()
+  mainWindow.focus()
+}
+
+if (hasPrimaryInstanceLock && process.platform === 'win32' && !isTeamServerMode) {
+  app.on('second-instance', showPrimaryWindow)
+}
 
 function appDataPath() {
   return path.join(app.getPath('userData'), 'crewflow-data.json')
@@ -933,7 +951,18 @@ async function createWindow() {
     title: 'CrewFlow',
     backgroundColor: '#080d18',
     autoHideMenuBar: true,
-    ...(isWindows ? { frame: false } : process.platform === 'darwin' ? { titleBarStyle: 'hiddenInset' } : {}),
+    ...(isWindows
+      ? {
+          titleBarStyle: 'hidden',
+          titleBarOverlay: {
+            color: '#080d18',
+            symbolColor: '#dbe7f4',
+            height: 32,
+          },
+        }
+      : process.platform === 'darwin'
+        ? { titleBarStyle: 'hiddenInset' }
+        : {}),
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
@@ -957,9 +986,16 @@ async function createWindow() {
   mainWindow.on('closed', () => {
     mainWindow = null
   })
+
+  if (showMainWindowWhenReady) {
+    showMainWindowWhenReady = false
+    showPrimaryWindow()
+  }
 }
 
-if (isTeamServerMode) {
+if (!hasPrimaryInstanceLock) {
+  app.quit()
+} else if (isTeamServerMode) {
   startTeamServerMode().catch((error) => {
     console.error(error)
     app.quit()

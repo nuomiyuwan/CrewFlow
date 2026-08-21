@@ -33,7 +33,6 @@ import {
   LayoutDashboard,
   ListChecks,
   MessageSquareText,
-  Minus,
   Minimize2,
   Pencil,
   Plus,
@@ -42,7 +41,6 @@ import {
   Archive,
   Search,
   Send,
-  Square,
   RefreshCw,
   Trash2,
   Users,
@@ -1646,6 +1644,7 @@ function clearLegacyLocalStorage() {
 }
 
 function App() {
+  const isWindowsDesktop = window.desktopBridge?.platform === 'win32'
   const [dataMode, setDataMode] = useState<DataMode>(() => loadStoredDataMode())
   const [teamServerUrl, setTeamServerUrl] = useState(() => loadStoredTeamServerUrl())
   const [teamAccessKey, setTeamAccessKey] = useState(() => loadStoredTeamAccessKey())
@@ -2506,7 +2505,10 @@ function App() {
     () => filterProjects(roleVisibleProjects, searchQuery, filterStatus, filterType, searchMatchedProjectIds, now, roleVisibleCalendarItems),
     [filterStatus, filterType, now, roleVisibleCalendarItems, roleVisibleProjects, searchMatchedProjectIds, searchQuery],
   )
-  const activeProjects = useMemo(() => filteredProjects.filter((project) => !isArchivedProject(project)), [filteredProjects])
+  const activeProjects = useMemo(
+    () => filteredProjects.filter((project) => !isArchivedProject(project)).sort(compareProjectsByFinalDelivery),
+    [filteredProjects],
+  )
   const archivedProjects = useMemo(() => filteredProjects.filter(isArchivedProject), [filteredProjects])
   const activeProjectIds = useMemo(() => new Set(activeProjects.map((project) => project.id)), [activeProjects])
   const filteredProjectIds = useMemo(() => new Set(filteredProjects.map((project) => project.id)), [filteredProjects])
@@ -3754,7 +3756,6 @@ function App() {
   if (!currentAccount) {
     return (
       <>
-        <WindowsWindowControls />
         <LoginScreen
           accountId={loginAccountId}
           password={loginPassword}
@@ -3799,8 +3800,7 @@ function App() {
   }
 
   return (
-    <div className="appShell">
-      <WindowsWindowControls />
+    <div className={isWindowsDesktop ? 'appShell windowsDesktop' : 'appShell'}>
       <aside className="sidebar">
         <div className="brand">
           <div className="brandMark">
@@ -3880,7 +3880,7 @@ function App() {
         </div>
       </aside>
 
-      <main ref={workspaceRef} className="workspace">
+      <div className="workspaceViewport">
         <header className="topbar">
           <div className="topbarTitle">
             <div className="eyebrow">{formatFullDate(now)}</div>
@@ -3946,6 +3946,7 @@ function App() {
           </div>
         </header>
 
+        <main ref={workspaceRef} className="workspace">
         {section === 'dashboard' && (
           <Dashboard
             riskCount={riskCount}
@@ -4058,7 +4059,8 @@ function App() {
             onRecordsChange={setAppFinanceRecords}
           />
         )}
-      </main>
+        </main>
+      </div>
 
       <CrewFlowAssistant
         role={role}
@@ -4763,25 +4765,6 @@ function BrandVersionStatus({
         {status === 'checking' && <RefreshCw size={10} className="spinning" />}
         <span>v{version}</span>
         {status === 'available' && <i aria-hidden="true" />}
-      </button>
-    </div>
-  )
-}
-
-function WindowsWindowControls() {
-  const bridge = window.desktopBridge
-  if (bridge?.platform !== 'win32') return null
-
-  return (
-    <div className="windowsWindowControls" aria-label="窗口控制">
-      <button type="button" title="最小化" aria-label="最小化" onClick={() => void bridge.minimizeWindow()}>
-        <Minus size={15} strokeWidth={1.8} />
-      </button>
-      <button type="button" title="最大化或还原" aria-label="最大化或还原" onClick={() => void bridge.toggleMaximizeWindow()}>
-        <Square size={12} strokeWidth={1.8} />
-      </button>
-      <button className="close" type="button" title="关闭" aria-label="关闭" onClick={() => void bridge.closeWindow()}>
-        <X size={15} strokeWidth={1.8} />
       </button>
     </div>
   )
@@ -5956,8 +5939,46 @@ function Projects({
   onOpenHandoff: (handoff: { project: Project; personName: string }) => void
 }) {
   const selectedProjectTasks = selectedProject ? allTasks.filter((task) => task.projectId === selectedProject.id) : []
-  const departedStaff = staffMembers.filter((member) => member.status === '离职')
+  const departedStaff = useMemo(() => staffMembers.filter((member) => member.status === '离职'), [staffMembers])
   const assignableStaff = useMemo(() => staffMembers.filter(isAssignableStaff), [staffMembers])
+  const projectRowMetadata = useMemo(() => {
+    const displayedProjectIds = new Set(projects.map((project) => project.id))
+    const activeAssigneesByProject = new Map<string, Set<string>>()
+    const relatedNamesByProject = new Map<string, Set<string>>()
+
+    projects.forEach((project) => {
+      relatedNamesByProject.set(project.id, new Set([project.manager, project.owner]))
+    })
+
+    allTasks.forEach((task) => {
+      if (!displayedProjectIds.has(task.projectId)) return
+      relatedNamesByProject.get(task.projectId)?.add(task.assignee)
+      if (task.status === '已完成') return
+
+      const assignees = activeAssigneesByProject.get(task.projectId) ?? new Set<string>()
+      assignees.add(task.assignee)
+      activeAssigneesByProject.set(task.projectId, assignees)
+    })
+
+    allCalendarItems.forEach((item) => {
+      if (displayedProjectIds.has(item.projectId)) relatedNamesByProject.get(item.projectId)?.add(item.owner)
+    })
+
+    return new Map(
+      projects.map((project) => {
+        const activeAssignees = activeAssigneesByProject.get(project.id)
+        const relatedNames = relatedNamesByProject.get(project.id) ?? new Set<string>()
+
+        return [
+          project.id,
+          {
+            executor: activeAssignees?.size ? Array.from(activeAssignees).join('、') : project.owner || '待指派',
+            departedNames: departedStaff.filter((person) => relatedNames.has(person.name)).map((person) => person.name),
+          },
+        ] as const
+      }),
+    )
+  }, [allCalendarItems, allTasks, departedStaff, projects])
   const selectedDepartedNames = selectedProject ? departedPeopleForProject(selectedProject, allTasks, allCalendarItems, departedStaff) : []
   const selectedProjectProgress = selectedProject ? progressForProject(selectedProject, workflowOptions.workflowStages) : 0
   const canDeleteSelectedProject = selectedProject ? canDeleteProject(selectedProject) : false
@@ -5982,7 +6003,8 @@ function Projects({
         <div className="projectTable projectTableViewport">
           {projects.length === 0 && <EmptyState title="项目中心暂无项目" note="从右上角新建项目开始，项目会进入任务、日历和财务。" />}
           {projects.map((project) => {
-            const departedNames = departedPeopleForProject(project, allTasks, allCalendarItems, departedStaff)
+            const rowMetadata = projectRowMetadata.get(project.id)
+            const departedNames = rowMetadata?.departedNames ?? []
 
             return (
               <button
@@ -5994,7 +6016,7 @@ function Projects({
                 <div>
                   <strong>{project.name}</strong>
                   <span>
-                    {project.type} · {project.client || '客户未填写'} · 执行：{currentExecutorForProject(project.id, allTasks, allProjects)}
+                    {project.type} · {project.client || '客户未填写'} · 执行：{rowMetadata?.executor ?? project.owner ?? '待指派'}
                   </span>
                   {departedNames.length > 0 && <em className="handoffInline">人员离职待处理：{departedNames.join('、')}</em>}
                 </div>
@@ -12193,6 +12215,18 @@ function filterProjects(
   })
 }
 
+function compareProjectsByFinalDelivery(left: Project, right: Project) {
+  const leftDue = left.due.match(/^\d{4}-\d{2}-\d{2}/)?.[0] ?? ''
+  const rightDue = right.due.match(/^\d{4}-\d{2}-\d{2}/)?.[0] ?? ''
+
+  if (leftDue && rightDue && leftDue !== rightDue) return leftDue.localeCompare(rightDue)
+  if (leftDue) return -1
+  if (rightDue) return 1
+
+  const nameOrder = left.name.localeCompare(right.name, 'zh-CN')
+  return nameOrder || left.id.localeCompare(right.id)
+}
+
 function projectMatchesSearch(project: Project, query: string) {
   const cleanQuery = query.trim().toLowerCase()
   if (!cleanQuery) return true
@@ -12840,10 +12874,18 @@ function Timeline({ calendarItems }: { calendarItems: CalendarItem[] }) {
       {calendarItems.length === 0 && <EmptyState title="暂无交付节点" note="新建项目后设置交付日历，这里会显示具体项目和流程节点。" />}
       {calendarItems.map((item) => (
         <div key={calendarItemKey(item)} className="timelineItem">
-          <span>{item.time}</span>
-          <div>
-            <strong>{item.title}</strong>
-            <p>{item.project ? `${item.project} · ${item.type}` : item.type}</p>
+          <div className="timelineDate">
+            <span>{item.time}</span>
+            <small title={item.type || '交付节点'}>{item.type || '交付节点'}</small>
+          </div>
+          <div className="timelineContent">
+            <div className="timelineTitleRow">
+              <strong title={item.title}>{item.title}</strong>
+              <span className="timelineOwner" title={`负责人：${item.owner || '未分配'}`}>
+                负责人 · {item.owner || '未分配'}
+              </span>
+            </div>
+            <p title={item.project}>{item.project || '未命名项目'}</p>
           </div>
         </div>
       ))}
