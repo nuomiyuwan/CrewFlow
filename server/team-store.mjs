@@ -16,6 +16,8 @@ export const arrayTeamDataCollections = [
   'staffMembers',
   'accounts',
   'holidayItems',
+  'libraryCollections',
+  'libraryItems',
 ]
 
 export const mapTeamDataCollections = ['financeLedger']
@@ -52,6 +54,8 @@ export function emptyTeamData() {
       },
     ],
     holidayItems: [],
+    libraryCollections: [],
+    libraryItems: [],
     workflowOptions: {
       projectTypes: [],
       customerGroups: {},
@@ -142,6 +146,8 @@ export function normalizeTeamData(data) {
     staffMembers: Array.isArray(data?.staffMembers) ? data.staffMembers : fallback.staffMembers,
     accounts: Array.isArray(data?.accounts) && data.accounts.length > 0 ? data.accounts : fallback.accounts,
     holidayItems: Array.isArray(data?.holidayItems) ? data.holidayItems : fallback.holidayItems,
+    libraryCollections: Array.isArray(data?.libraryCollections) ? data.libraryCollections : fallback.libraryCollections,
+    libraryItems: Array.isArray(data?.libraryItems) ? data.libraryItems : fallback.libraryItems,
     workflowOptions: {
       ...fallback.workflowOptions,
       ...workflowOptions,
@@ -777,6 +783,7 @@ function createSqliteTeamStore({ dataDir, autoBackup = true }) {
   }
 
   return {
+    dataDir,
     storageEngine: 'sqlite',
     supportsIncrementalSync: true,
     dataFile,
@@ -858,6 +865,7 @@ function createLegacyJsonTeamStore({ dataDir, migrationError = '' }) {
   }
 
   return {
+    dataDir,
     storageEngine: 'json',
     supportsIncrementalSync: false,
     dataFile,

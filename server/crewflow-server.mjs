@@ -2,6 +2,11 @@ import http from 'node:http'
 import os from 'node:os'
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
+import {
+  LibraryFileTooLargeError,
+  createLibraryFileStore,
+  maxLibraryFileBytes,
+} from './library-file-store.mjs'
 import { StaleTeamDataError, UnsafeTeamDataMutationError, createTeamStore } from './team-store.mjs'
 
 const defaultPort = Number(process.env.CREWFLOW_PORT || 8787)
@@ -24,7 +29,8 @@ function sendJson(response, statusCode, payload) {
   response.writeHead(statusCode, {
     'Access-Control-Allow-Origin': '*',
     'Access-Control-Allow-Methods': 'GET, PUT, DELETE, OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type, X-CrewFlow-Key',
+    'Access-Control-Allow-Headers': 'Content-Type, X-CrewFlow-Key, X-CrewFlow-File-Name, X-CrewFlow-Mime-Type',
+    'Access-Control-Expose-Headers': 'Content-Disposition, Content-Length, Content-Type',
     'Content-Type': 'application/json; charset=utf-8',
   })
   response.end(JSON.stringify(payload))
@@ -50,12 +56,39 @@ async function readRequestJson(request) {
   return JSON.parse(Buffer.concat(chunks).toString('utf8'))
 }
 
+async function readRequestBytes(request, maxBytes = maxLibraryFileBytes) {
+  const declaredLength = Number(request.headers['content-length']) || 0
+  if (declaredLength > maxBytes) throw new LibraryFileTooLargeError()
+
+  const chunks = []
+  let size = 0
+  for await (const chunk of request) {
+    size += chunk.length
+    if (size > maxBytes) throw new LibraryFileTooLargeError()
+    chunks.push(chunk)
+  }
+  return Buffer.concat(chunks)
+}
+
+function requestHeaderText(request, name, maxLength) {
+  const value = request.headers[name]
+  return typeof value === 'string' ? decodeURIComponent(value).trim().slice(0, maxLength) : ''
+}
+
+function libraryFileIdFromPath(pathname) {
+  const match = /^\/api\/library-files\/([A-Za-z0-9_-]{1,120})$/.exec(pathname)
+  return match?.[1] ?? ''
+}
+
 function cleanPresenceText(value, maxLength) {
   return typeof value === 'string' ? value.trim().slice(0, maxLength) : ''
 }
 
-export function createCrewFlowServer({ store, accessKey = defaultAccessKey, presenceTtlMs = 25_000 } = {}) {
+export function createCrewFlowServer({ store, accessKey = defaultAccessKey, presenceTtlMs = 25_000, libraryFilesDir = '' } = {}) {
   const presenceConnections = new Map()
+  const libraryFileStore = createLibraryFileStore({
+    directory: libraryFilesDir || path.join(store?.dataDir || path.dirname(store?.dataFile || defaultDataDir), 'library-files'),
+  })
 
   const presenceSnapshot = () => {
     const now = Date.now()
@@ -99,6 +132,59 @@ export function createCrewFlowServer({ store, accessKey = defaultAccessKey, pres
       }
 
       const url = new URL(request.url || '/', 'http://localhost')
+
+      const libraryFileId = libraryFileIdFromPath(url.pathname)
+      if (libraryFileId) {
+        if (!hasValidAccessKey(request, url, accessKey)) {
+          sendJson(response, 401, { ok: false, error: 'Invalid CrewFlow access key' })
+          return
+        }
+
+        if (request.method === 'PUT') {
+          try {
+            const data = await readRequestBytes(request)
+            const metadata = await libraryFileStore.write(libraryFileId, data, {
+              fileName: requestHeaderText(request, 'x-crewflow-file-name', 240),
+              mimeType: requestHeaderText(request, 'x-crewflow-mime-type', 160),
+            })
+            sendJson(response, 200, { ok: true, ...metadata })
+          } catch (error) {
+            if (error instanceof LibraryFileTooLargeError) {
+              sendJson(response, 413, { ok: false, error: '资料文件不能超过 200MB' })
+              return
+            }
+            throw error
+          }
+          return
+        }
+
+        if (request.method === 'GET') {
+          try {
+            const { data, metadata } = await libraryFileStore.read(libraryFileId)
+            response.writeHead(200, {
+              'Access-Control-Allow-Origin': '*',
+              'Access-Control-Expose-Headers': 'Content-Disposition, Content-Length, Content-Type',
+              'Content-Type': metadata.mimeType || 'application/octet-stream',
+              'Content-Length': data.byteLength,
+              'Content-Disposition': `inline; filename*=UTF-8''${encodeURIComponent(metadata.fileName)}`,
+            })
+            response.end(data)
+          } catch (error) {
+            if (error?.code === 'ENOENT') {
+              sendJson(response, 404, { ok: false, error: '资料文件不存在' })
+              return
+            }
+            throw error
+          }
+          return
+        }
+
+        if (request.method === 'DELETE') {
+          await libraryFileStore.remove(libraryFileId)
+          sendJson(response, 200, { ok: true })
+          return
+        }
+      }
 
       if (request.method === 'GET' && url.pathname === '/health') {
         const storage = store.info ? await store.info() : await store.read()

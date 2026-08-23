@@ -1,7 +1,7 @@
 {
   "name": "crewflow",
   "private": true,
-  "version": "1.4.13",
+  "version": "1.5.0",
   "description": "CrewFlow project management desktop app",
   "author": "nuomiyuwan",
   "repository": "https://github.com/nuomiyuwan/CrewFlow.git",
@@ -91,11 +91,17 @@
     }
   },
   "dependencies": {
+    "docx-preview": "^0.4.0",
     "electron-updater": "^6.8.9",
+    "exceljs": "^4.4.0",
     "lucide-react": "^1.21.0",
+    "mammoth": "^1.12.1",
     "react": "^19.2.7",
     "react-dom": "^19.2.7",
     "react-markdown": "^10.1.0"
+  },
+  "overrides": {
+    "uuid": "11.1.1"
   },
   "devDependencies": {
     "@playwright/test": "^1.61.1",

@@ -4857,6 +4857,1015 @@ h1 {
   }
 }
 
+/* Library */
+.libraryPage {
+  display: grid;
+  grid-template-columns: 280px minmax(0, 1fr);
+  gap: 18px;
+  min-height: calc(100vh - 150px);
+  padding-bottom: 26px;
+}
+
+.libraryCollectionsPanel,
+.libraryResourcesPanel {
+  min-width: 0;
+  border: 1px solid rgba(166, 191, 211, 0.23);
+  border-radius: 8px;
+  background: linear-gradient(145deg, rgba(49, 59, 75, 0.88), rgba(31, 41, 55, 0.82));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+}
+
+.libraryCollectionsPanel {
+  display: flex;
+  flex-direction: column;
+  min-height: 560px;
+  overflow: hidden;
+}
+
+.libraryPanelHeading,
+.libraryResourcesHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  border-bottom: 1px solid rgba(166, 191, 211, 0.17);
+}
+
+.libraryPanelHeading {
+  padding: 20px;
+}
+
+.libraryPanelHeading > div,
+.libraryResourcesHeader > div {
+  min-width: 0;
+}
+
+.libraryPanelHeading strong,
+.libraryPanelHeading span {
+  display: block;
+}
+
+.libraryPanelHeading strong {
+  color: #f4f8ff;
+  font-size: 18px;
+}
+
+.libraryPanelHeading span,
+.libraryResourcesHeader p {
+  margin-top: 4px;
+  color: rgba(204, 216, 231, 0.58);
+  font-size: 13px;
+}
+
+.libraryPanelHeading button,
+.libraryCollectionMenuTrigger,
+.libraryResourceActions button,
+.libraryModal header button,
+.libraryPreviewModal header button {
+  display: grid;
+  place-items: center;
+  border: 1px solid rgba(132, 224, 236, 0.24);
+  border-radius: 7px;
+  color: #7fe7f3;
+  background: rgba(27, 55, 68, 0.48);
+  cursor: pointer;
+}
+
+.libraryPanelHeading button {
+  width: 36px;
+  height: 36px;
+}
+
+.libraryPanelHeading button:hover,
+.libraryCollectionMenuTrigger:hover,
+.libraryResourceActions button:hover:not(:disabled),
+.libraryModal header button:hover,
+.libraryPreviewModal header button:hover {
+  border-color: rgba(132, 224, 236, 0.5);
+  background: rgba(60, 109, 122, 0.42);
+}
+
+.libraryCollectionList {
+  min-height: 0;
+  flex: 1;
+  overflow-y: auto;
+  padding: 10px;
+  scrollbar-color: rgba(128, 233, 247, 0.28) transparent;
+  scrollbar-width: thin;
+}
+
+.libraryCollectionRow {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 6px;
+  min-height: 58px;
+  border-left: 3px solid transparent;
+  border-radius: 7px;
+  padding: 6px 7px 6px 9px;
+}
+
+.libraryCollectionRow:hover {
+  background: rgba(255, 255, 255, 0.035);
+}
+
+.libraryCollectionRow.active {
+  border-left-color: #7fe7f3;
+  background: rgba(59, 123, 139, 0.22);
+}
+
+.libraryCollectionSelect {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-width: 0;
+  border: 0;
+  color: #eef5ff;
+  background: transparent;
+  cursor: pointer;
+  padding: 8px 6px;
+  text-align: left;
+}
+
+.libraryCollectionSelect span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.libraryCollectionSelect small {
+  min-width: 24px;
+  border-radius: 999px;
+  color: rgba(211, 223, 237, 0.7);
+  background: rgba(255, 255, 255, 0.06);
+  padding: 2px 6px;
+  text-align: center;
+}
+
+.libraryCollectionMenuTrigger,
+.libraryResourceActions button {
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  line-height: 0;
+}
+
+.libraryCollectionMenuTrigger {
+  opacity: 0;
+  transition: opacity 140ms ease, border-color 140ms ease, background-color 140ms ease;
+}
+
+.libraryCollectionMenuTrigger svg,
+.libraryResourceActions button svg {
+  display: block;
+}
+
+.libraryCollectionRow:hover .libraryCollectionMenuTrigger,
+.libraryCollectionRow:focus-within .libraryCollectionMenuTrigger,
+.libraryCollectionRow.active .libraryCollectionMenuTrigger,
+.libraryCollectionMenuTrigger[aria-expanded='true'] {
+  opacity: 1;
+}
+
+.libraryCollectionMenuLayer {
+  position: fixed;
+  z-index: 205;
+  inset: 0;
+  -webkit-app-region: no-drag;
+}
+
+.libraryCollectionMenu {
+  position: fixed;
+  display: grid;
+  width: 176px;
+  overflow: hidden;
+  border: 1px solid rgba(166, 191, 211, 0.28);
+  border-radius: 7px;
+  background: rgba(27, 37, 51, 0.98);
+  box-shadow: 0 18px 46px rgba(0, 0, 0, 0.38);
+  padding: 5px;
+}
+
+.libraryCollectionMenu button {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 36px;
+  border: 0;
+  border-radius: 5px;
+  color: rgba(230, 238, 248, 0.86);
+  background: transparent;
+  cursor: pointer;
+  padding: 0 10px;
+  text-align: left;
+}
+
+.libraryCollectionMenu button:hover:not(:disabled) {
+  color: #f5f8fd;
+  background: rgba(126, 225, 237, 0.1);
+}
+
+.libraryCollectionMenu button.danger {
+  color: #f49aac;
+}
+
+.libraryCollectionMenu button:disabled,
+.libraryResourceActions button:disabled {
+  cursor: default;
+  opacity: 0.28;
+}
+
+.libraryCollectionEmpty,
+.libraryResourcesEmpty {
+  display: grid;
+  place-items: center;
+  align-content: center;
+  color: rgba(205, 216, 231, 0.52);
+  text-align: center;
+}
+
+.libraryCollectionEmpty {
+  min-height: 220px;
+  gap: 10px;
+  font-size: 13px;
+}
+
+.libraryResourcesPanel {
+  display: flex;
+  flex-direction: column;
+  min-height: 560px;
+  overflow: hidden;
+}
+
+.libraryResourcesHeader {
+  min-height: 108px;
+  padding: 20px 24px;
+}
+
+.libraryEyebrow {
+  color: #77dce9;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.libraryResourcesHeader h2 {
+  margin-top: 5px;
+  overflow: hidden;
+  color: #f4f8ff;
+  font-size: 24px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.libraryAddButton {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 42px;
+  border: 1px solid rgba(130, 230, 241, 0.36);
+  border-radius: 7px;
+  color: #0d2028;
+  background: linear-gradient(135deg, #86ecf2, #f0df93);
+  cursor: pointer;
+  font-weight: 700;
+  padding: 0 15px;
+}
+
+.libraryNotice,
+.librarySearchState {
+  margin: 12px 20px 0;
+  border: 1px solid rgba(126, 225, 237, 0.2);
+  border-radius: 7px;
+  color: rgba(222, 234, 247, 0.82);
+  background: rgba(21, 53, 66, 0.38);
+  font-size: 13px;
+  padding: 9px 12px;
+}
+
+.librarySearchState {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.libraryResourceList {
+  min-height: 0;
+  flex: 1;
+  overflow-y: auto;
+  padding: 12px 20px 20px;
+  scrollbar-color: rgba(128, 233, 247, 0.28) transparent;
+  scrollbar-width: thin;
+}
+
+.libraryResourceRow {
+  display: grid;
+  grid-template-columns: minmax(260px, 1fr) minmax(150px, 220px) auto;
+  align-items: center;
+  gap: 14px;
+  min-height: 78px;
+  border-bottom: 1px solid rgba(166, 191, 211, 0.14);
+  padding: 9px 5px;
+}
+
+.libraryResourceRow:hover {
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.libraryResourceMain {
+  display: flex;
+  align-items: center;
+  gap: 13px;
+  min-width: 0;
+  border: 0;
+  color: inherit;
+  background: transparent;
+  cursor: pointer;
+  padding: 5px 0;
+  text-align: left;
+}
+
+.libraryResourceIcon {
+  display: grid;
+  flex: 0 0 42px;
+  width: 42px;
+  height: 42px;
+  place-items: center;
+  border: 1px solid rgba(126, 225, 237, 0.22);
+  border-radius: 7px;
+  color: #7fe7f3;
+  background: rgba(28, 65, 78, 0.36);
+}
+
+.libraryResourceText {
+  display: block;
+  min-width: 0;
+}
+
+.libraryResourceText strong,
+.libraryResourceText span {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.libraryResourceText strong {
+  color: #f3f7ff;
+  font-size: 15px;
+}
+
+.libraryResourceText span {
+  margin-top: 6px;
+  color: rgba(203, 215, 229, 0.58);
+  font-size: 12px;
+}
+
+.libraryResourceMeta {
+  min-width: 0;
+  text-align: right;
+}
+
+.libraryResourceMeta span,
+.libraryResourceMeta small {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.libraryResourceMeta span {
+  color: #77dce9;
+  font-size: 12px;
+}
+
+.libraryResourceMeta small {
+  margin-top: 5px;
+  color: rgba(203, 215, 229, 0.48);
+  font-size: 11px;
+}
+
+.libraryResourceActions {
+  display: flex;
+  gap: 6px;
+}
+
+.libraryResourceActions button.danger {
+  border-color: rgba(244, 117, 136, 0.3);
+  color: #f48c9d;
+  background: rgba(87, 35, 49, 0.28);
+}
+
+.libraryResourcesEmpty {
+  min-height: 360px;
+  gap: 8px;
+}
+
+.libraryResourcesEmpty strong {
+  margin-top: 8px;
+  color: rgba(235, 241, 250, 0.75);
+}
+
+.libraryResourcesEmpty span {
+  font-size: 13px;
+}
+
+.libraryModalBackdrop {
+  position: fixed;
+  z-index: 180;
+  display: grid;
+  inset: 0;
+  place-items: center;
+  background: rgba(3, 7, 14, 0.68);
+  backdrop-filter: blur(10px);
+  padding: 24px;
+  -webkit-app-region: no-drag;
+}
+
+.libraryModal,
+.libraryPreviewModal {
+  width: min(720px, calc(100vw - 48px));
+  max-height: calc(100vh - 48px);
+  overflow: auto;
+  border: 1px solid rgba(166, 191, 211, 0.3);
+  border-radius: 8px;
+  color: #f3f7ff;
+  background: linear-gradient(145deg, rgba(47, 58, 74, 0.98), rgba(26, 36, 50, 0.98));
+  box-shadow: 0 28px 80px rgba(0, 0, 0, 0.46);
+}
+
+.libraryCollectionModal {
+  width: min(480px, calc(100vw - 48px));
+}
+
+.libraryModal > header,
+.libraryPreviewModal > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  border-bottom: 1px solid rgba(166, 191, 211, 0.18);
+  padding: 18px 20px;
+}
+
+.libraryModal > header span,
+.libraryModal > header h2 {
+  display: block;
+}
+
+.libraryModal > header span {
+  color: #77dce9;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.libraryModal > header h2 {
+  margin-top: 3px;
+  color: #f4f8ff;
+  font-size: 20px;
+}
+
+.libraryModal header button,
+.libraryPreviewModal header button {
+  width: 36px;
+  height: 36px;
+}
+
+.libraryModal > footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  border-top: 1px solid rgba(166, 191, 211, 0.18);
+  padding: 16px 20px;
+}
+
+.libraryModal > footer button {
+  min-height: 40px;
+  border: 1px solid rgba(166, 191, 211, 0.27);
+  border-radius: 7px;
+  color: #e6edf7;
+  background: rgba(255, 255, 255, 0.045);
+  cursor: pointer;
+  padding: 0 17px;
+}
+
+.libraryModal > footer button.primary {
+  border-color: rgba(130, 230, 241, 0.4);
+  color: #10202a;
+  background: linear-gradient(135deg, #86ecf2, #f0df93);
+  font-weight: 700;
+}
+
+.libraryModal > footer button:disabled {
+  cursor: wait;
+  opacity: 0.48;
+}
+
+.libraryField {
+  display: grid;
+  gap: 8px;
+  margin: 18px 20px;
+}
+
+.libraryField > span {
+  color: #77dce9;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.libraryField input,
+.libraryField select,
+.libraryField textarea {
+  width: 100%;
+  border: 1px solid rgba(166, 191, 211, 0.27);
+  border-radius: 7px;
+  outline: 0;
+  color: #eef5ff;
+  background: rgba(15, 25, 39, 0.5);
+  padding: 11px 12px;
+}
+
+.libraryField input:focus,
+.libraryField select:focus,
+.libraryField textarea:focus {
+  border-color: rgba(126, 225, 237, 0.62);
+  box-shadow: 0 0 0 3px rgba(77, 207, 224, 0.1);
+}
+
+.libraryField textarea {
+  resize: vertical;
+}
+
+.libraryFormGrid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.3fr) minmax(180px, 0.7fr);
+}
+
+.librarySourceTabs {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin: 18px 20px 0;
+}
+
+.librarySourceTabs button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  min-height: 42px;
+  border: 1px solid rgba(166, 191, 211, 0.24);
+  border-radius: 7px;
+  color: rgba(222, 232, 244, 0.72);
+  background: rgba(255, 255, 255, 0.035);
+  cursor: pointer;
+}
+
+.librarySourceTabs button.active {
+  border-color: rgba(126, 225, 237, 0.55);
+  color: #8debf3;
+  background: rgba(35, 94, 109, 0.38);
+}
+
+.libraryFilePicker {
+  display: flex;
+  align-items: center;
+  gap: 13px;
+  width: calc(100% - 40px);
+  min-height: 72px;
+  margin: 0 20px 18px;
+  border: 1px dashed rgba(126, 225, 237, 0.38);
+  border-radius: 7px;
+  color: #7fe7f3;
+  background: rgba(23, 57, 70, 0.28);
+  cursor: pointer;
+  padding: 12px 14px;
+  text-align: left;
+}
+
+.libraryFilePicker > span {
+  display: block;
+  min-width: 0;
+}
+
+.libraryFilePicker strong,
+.libraryFilePicker small {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.libraryFilePicker strong {
+  color: #eaf2fb;
+}
+
+.libraryFilePicker small {
+  margin-top: 5px;
+  color: rgba(204, 216, 231, 0.55);
+  font-size: 11px;
+}
+
+.libraryModal .libraryNotice {
+  margin-bottom: 18px;
+}
+
+.libraryPreviewBackdrop {
+  z-index: 190;
+}
+
+.libraryPreviewModal {
+  display: flex;
+  flex-direction: column;
+  width: min(1040px, calc(100vw - 48px));
+  height: min(760px, calc(100vh - 48px));
+  overflow: hidden;
+}
+
+.libraryPreviewModal > header strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.libraryPreviewHeaderActions {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 8px;
+}
+
+.libraryPreviewModal header .libraryPreviewSystemOpen {
+  display: inline-flex;
+  width: auto;
+  min-width: 0;
+  gap: 7px;
+  padding: 0 11px;
+}
+
+.libraryPreviewBody {
+  min-height: 0;
+  flex: 1;
+  overflow: auto;
+  background: rgba(7, 13, 22, 0.58);
+}
+
+.libraryPreviewBody.table {
+  overflow: hidden;
+  background: #e5e9ee;
+}
+
+.libraryPreviewBody.document {
+  overflow: hidden;
+  background: #e5e9ee;
+}
+
+.libraryPreviewBody.paper {
+  background: #e5e9ee;
+  padding: 24px;
+}
+
+.libraryPreviewBody iframe,
+.libraryPreviewBody img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  object-fit: contain;
+}
+
+.libraryPreviewBody pre {
+  margin: 0;
+  min-height: 100%;
+  color: #1d2733;
+  background: #fff;
+  font: 14px/1.7 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  padding: 44px 52px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  -webkit-user-select: text;
+  user-select: text;
+}
+
+.libraryPreviewBody.paper > pre {
+  width: min(900px, 100%);
+  min-height: calc(100% - 2px);
+  margin: 0 auto;
+  border: 1px solid rgba(75, 86, 100, 0.16);
+  box-shadow: 0 8px 24px rgba(40, 48, 58, 0.14);
+}
+
+.libraryDocxPreview {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  overflow: auto;
+  background: #e5e9ee;
+  color: #1d2733;
+  scrollbar-color: rgba(86, 103, 119, 0.42) transparent;
+  scrollbar-width: thin;
+}
+
+.libraryDocxRender {
+  min-height: 100%;
+}
+
+.libraryDocxRender .crewflow-docx-wrapper {
+  min-width: min-content;
+  min-height: 100%;
+  background: #e5e9ee !important;
+  padding: 24px 24px 1px !important;
+}
+
+.libraryDocxRender .crewflow-docx-wrapper > section.crewflow-docx {
+  margin: 0 auto 24px !important;
+  color: #111827;
+  background: #fff !important;
+  box-shadow: 0 8px 24px rgba(40, 48, 58, 0.18) !important;
+}
+
+.libraryDocumentStatus {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  color: #5b6876;
+  background: #e5e9ee;
+}
+
+.libraryDocumentStatus.error {
+  color: #b44258;
+}
+
+.libraryDocumentFallback {
+  width: min(900px, calc(100% - 48px));
+  min-height: calc(100% - 48px);
+  margin: 24px auto;
+  background: #fff;
+  box-shadow: 0 8px 24px rgba(40, 48, 58, 0.14);
+}
+
+.libraryDocumentFallback pre {
+  min-height: 0;
+}
+
+.libraryDocumentFallback > span {
+  display: block;
+  border-top: 1px solid rgba(75, 86, 100, 0.14);
+  color: #667280;
+  font-size: 12px;
+  padding: 12px 52px 16px;
+}
+
+.libraryPreviewState {
+  display: grid;
+  min-height: 100%;
+  place-items: center;
+  color: rgba(219, 229, 241, 0.66);
+}
+
+.libraryPreviewState.error {
+  color: #f49aac;
+}
+
+.libraryPreviewModal > footer {
+  border-top: 1px solid rgba(166, 191, 211, 0.18);
+  color: rgba(211, 222, 235, 0.62);
+  font-size: 12px;
+  padding: 10px 18px;
+}
+
+.librarySpreadsheetPreview {
+  display: flex;
+  min-width: 0;
+  height: 100%;
+  flex-direction: column;
+}
+
+.librarySpreadsheetToolbar {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 12px;
+  min-height: 52px;
+  border-bottom: 1px solid rgba(75, 86, 100, 0.2);
+  background: #f5f7f9;
+  padding: 8px 14px;
+}
+
+.librarySpreadsheetToolbar label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.librarySpreadsheetToolbar label > span,
+.librarySpreadsheetRange {
+  color: #667280;
+  font-size: 12px;
+}
+
+.librarySpreadsheetToolbar select {
+  max-width: 240px;
+  height: 34px;
+  border: 1px solid rgba(75, 86, 100, 0.24);
+  border-radius: 6px;
+  outline: 0;
+  color: #1f2a36;
+  background: #fff;
+  padding: 0 28px 0 10px;
+}
+
+.librarySpreadsheetRange {
+  margin-left: auto;
+  white-space: nowrap;
+}
+
+.librarySpreadsheetPager {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.librarySpreadsheetPager button {
+  display: grid;
+  width: 32px;
+  height: 32px;
+  place-items: center;
+  border: 1px solid rgba(75, 86, 100, 0.22);
+  border-radius: 6px;
+  color: #2b7480;
+  background: #fff;
+  cursor: pointer;
+}
+
+.librarySpreadsheetPager button:disabled {
+  cursor: default;
+  opacity: 0.3;
+}
+
+.librarySpreadsheetPager span {
+  min-width: 58px;
+  color: #596674;
+  font-size: 12px;
+  text-align: center;
+}
+
+.libraryTableViewport {
+  min-width: 0;
+  min-height: 0;
+  flex: 1;
+  overflow: auto;
+  background: #fff;
+  scrollbar-color: rgba(86, 103, 119, 0.42) transparent;
+  scrollbar-width: thin;
+}
+
+.libraryTablePreview {
+  width: max-content;
+  min-width: 100%;
+  border-collapse: collapse;
+  color: #1f2a36;
+  background: #fff;
+  font-size: 12px;
+  table-layout: fixed;
+}
+
+.libraryTableRowNumberColumn {
+  width: 52px;
+}
+
+.libraryTablePreview th,
+.libraryTablePreview td {
+  border: 1px solid rgba(75, 86, 100, 0.22);
+  overflow: hidden;
+  padding: 7px 9px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.libraryTablePreview thead th {
+  position: sticky;
+  z-index: 3;
+  top: 0;
+  height: 32px;
+  color: #536171;
+  background: #e9edf1;
+  font-weight: 600;
+  text-align: center;
+}
+
+.libraryTablePreview tbody th {
+  position: sticky;
+  z-index: 2;
+  left: 0;
+  width: 52px;
+  min-width: 52px;
+  max-width: 52px;
+  color: #667482;
+  background: #f2f4f6;
+  font-weight: 500;
+  text-align: center;
+}
+
+.libraryTablePreview .libraryTableCorner {
+  z-index: 4;
+  left: 0;
+}
+
+.libraryTablePreview td {
+  color: #1f2a36;
+  background-color: #fff;
+}
+
+.libraryTablePreview td.hasImages {
+  padding: 5px;
+}
+
+.libraryTableCellContent {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.libraryTableCellText {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.libraryTableCellImages {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px;
+}
+
+.libraryTableCellImage {
+  display: block;
+  width: auto;
+  max-width: 100%;
+  max-height: 140px;
+  border-radius: 3px;
+  background: #fff;
+  object-fit: contain;
+}
+
+@media (max-width: 1100px) {
+  .libraryPage {
+    grid-template-columns: 230px minmax(0, 1fr);
+  }
+
+  .libraryResourceRow {
+    grid-template-columns: minmax(220px, 1fr) auto;
+  }
+
+  .libraryResourceMeta {
+    display: none;
+  }
+
+  .librarySpreadsheetRange {
+    display: none;
+  }
+}
+
+@media (max-width: 760px) {
+  .libraryPage {
+    grid-template-columns: 1fr;
+  }
+
+  .libraryCollectionsPanel {
+    min-height: 230px;
+    max-height: 300px;
+  }
+
+  .libraryResourcesPanel {
+    min-height: 520px;
+  }
+
+  .libraryFormGrid,
+  .librarySourceTabs {
+    grid-template-columns: 1fr;
+  }
+
+  .libraryResourceRow {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+
+  .librarySpreadsheetToolbar {
+    flex-wrap: wrap;
+  }
+
+  .librarySpreadsheetPager {
+    margin-left: auto;
+  }
+}
+
 .taskSource > span {
   color: #80e9f7;
   font-weight: 700;

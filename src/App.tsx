@@ -48,6 +48,14 @@ import {
 } from 'lucide-react'
 import './App.css'
 import userGuideMarkdown from '../docs/USER_GUIDE.zh-CN.md?raw'
+import LibraryView from './LibraryView'
+import {
+  normalizeLibraryCollection,
+  normalizeLibraryItem,
+  type LibraryCollection,
+  type LibraryFileSelection,
+  type LibraryItem,
+} from './library-model'
 import {
   bundledChinaHolidayItems,
   chinaHolidayProjectUrl,
@@ -67,6 +75,7 @@ type Section =
   | 'team'
   | 'people'
   | 'archive'
+  | 'library'
   | 'finance'
 
 type ProjectStatus = 'normal' | 'risk' | 'late' | 'waiting'
@@ -327,6 +336,15 @@ type DesktopBridge = {
   openProjectFolder: (folderPath: string) => Promise<boolean>
   selectProjectFile: (title: string) => Promise<string | null>
   openProjectFile: (filePath: string) => Promise<boolean>
+  selectLibraryFile: (purpose: 'upload' | 'reference') => Promise<LibraryFileSelection | null>
+  importLibraryFile: (payload: Record<string, unknown>) => Promise<Record<string, unknown>>
+  readLibraryFile: (payload: Record<string, unknown>) => Promise<{
+    data: unknown
+    metadata?: { fileName?: string; mimeType?: string; size?: number }
+  }>
+  deleteLibraryFile: (payload: Record<string, unknown>) => Promise<boolean>
+  openLibraryFile: (payload: Record<string, unknown>) => Promise<boolean>
+  previewLibraryResource: (payload: Record<string, unknown>) => Promise<boolean>
   loadAppData: () => Promise<AppData | null>
   saveAppData: (data: Partial<AppData>) => Promise<boolean>
   getTeamServiceInfo: () => Promise<TeamServiceInfo>
@@ -542,6 +560,8 @@ type AppData = {
   staffMembers?: StaffMember[]
   accounts?: Account[]
   holidayItems?: HolidayItem[]
+  libraryCollections: LibraryCollection[]
+  libraryItems: LibraryItem[]
   workflowOptions?: WorkflowOptions
   updatedAt?: string
 }
@@ -567,7 +587,7 @@ type WorkflowOptionRename = {
 }
 type AppDataLoader = () => Promise<AppData | null>
 type AppDataSaver = (data: Partial<AppData>) => Promise<boolean>
-type AppDataSliceKey = 'projects' | 'tasks' | 'calendarItems' | 'financeRecords' | 'staffMembers' | 'accounts' | 'holidayItems' | 'workflowOptions'
+type AppDataSliceKey = 'projects' | 'tasks' | 'calendarItems' | 'financeRecords' | 'staffMembers' | 'accounts' | 'holidayItems' | 'libraryCollections' | 'libraryItems' | 'workflowOptions'
 type TeamDataArrayCollection = Exclude<AppDataSliceKey, 'workflowOptions'>
 type TeamDataCollection = AppDataSliceKey | 'financeLedger'
 type TeamDataMutation = {
@@ -710,6 +730,8 @@ const teamServerUrlStorageKey = 'crewflow-team-server-url'
 const teamAccessKeyStorageKey = 'crewflow-team-access-key'
 const teamPresenceClientIdStorageKey = 'crewflow-team-presence-client-id-v1'
 const workflowOptionsStorageKey = 'crewflow-workflow-options'
+const libraryCollectionsStorageKey = 'crewflow-library-collections-v1'
+const libraryItemsStorageKey = 'crewflow-library-items-v1'
 const defaultTeamServerUrl = 'http://127.0.0.1:8787'
 const appVersion = import.meta.env.VITE_APP_VERSION || '0.0.0'
 const crewFlowGitHubLatestReleaseUrl = 'https://api.github.com/repos/nuomiyuwan/CrewFlow/releases/latest'
@@ -808,6 +830,7 @@ const welcomeGuides: Record<Role, WelcomeGuideContent> = {
         items: [
           '在“人员管理”添加团队成员、设置标签，并到“账号管理”创建成员账号。',
           '在“选项管理”维护项目类型、任务工种、流程节点、人员标签。',
+          '在“资料库”建立需要共享的资料集；小型文稿可上传，视频和大型资料使用“视频/共享文件”。',
           '完成基础设置后，可在右上角“新建项目”，再进入项目设置交付节点和任务负责人。',
         ],
       },
@@ -833,6 +856,7 @@ const welcomeGuides: Record<Role, WelcomeGuideContent> = {
           '在“项目中心”新建项目、查看项目详情、维护任务和流程进度。',
           '在“人员管理”维护团队成员、人员标签和账号关联。',
           '在“选项管理”维护项目类型、任务工种、流程节点、人员标签。',
+          '在“资料库”维护资料集和团队常用文稿。',
         ],
       },
     ],
@@ -855,6 +879,7 @@ const welcomeGuides: Record<Role, WelcomeGuideContent> = {
         items: [
           '在“项目中心”查看自己负责的项目详情，跟进任务状态和交付进度。',
           '在“交付日历”查看项目节点，安排当天和本周需要处理的事项。',
+          '在“资料库”查阅或添加项目需要的通用资料。',
           '在“项目归档”查看已经完成和归档的项目。',
         ],
       },
@@ -877,6 +902,7 @@ const welcomeGuides: Record<Role, WelcomeGuideContent> = {
         title: '查看节点',
         items: [
           '在“交付日历”查看和自己任务相关的项目节点。',
+          '在“资料库”查阅团队共享的文稿、路径和在线资料。',
           '在“项目归档”查看已经完成的项目资料。',
         ],
       },
@@ -900,6 +926,7 @@ const welcomeGuides: Record<Role, WelcomeGuideContent> = {
         items: [
           '在“项目中心”查看项目基础信息和客户信息。',
           '在“交付日历”查看项目交付时间，辅助安排收款和开票节点。',
+          '在“资料库”查阅团队共享的合同模板和通用文档。',
         ],
       },
     ],
@@ -941,6 +968,7 @@ const navItems: Array<{ id: Section; label: string; icon: typeof LayoutDashboard
   { id: 'calendar', label: '交付日历', icon: CalendarDays },
   { id: 'team', label: '团队负载', icon: Users },
   { id: 'people', label: '人员管理', icon: Users },
+  { id: 'library', label: '资料库', icon: BookOpen },
   { id: 'archive', label: '项目归档', icon: Archive },
   { id: 'finance', label: '财务结算', icon: DollarSign },
 ]
@@ -949,6 +977,7 @@ const financeNavItems: Array<{ id: Section; label: string; icon: typeof LayoutDa
   { id: 'finance', label: '财务结算', icon: DollarSign },
   { id: 'projects', label: '项目中心', icon: FolderKanban },
   { id: 'calendar', label: '交付日历', icon: CalendarDays },
+  { id: 'library', label: '资料库', icon: BookOpen },
   { id: 'archive', label: '项目归档', icon: Archive },
 ]
 
@@ -1437,6 +1466,8 @@ const teamArrayCollections: TeamDataArrayCollection[] = [
   'staffMembers',
   'accounts',
   'holidayItems',
+  'libraryCollections',
+  'libraryItems',
 ]
 
 function normalizeTeamAppData(savedData: AppData): AppData {
@@ -1454,6 +1485,8 @@ function normalizeTeamAppData(savedData: AppData): AppData {
     staffMembers: (savedData.staffMembers ?? []).map(normalizeStaffMember),
     accounts: mergeStoredAccounts(savedData.accounts ?? loginAccounts),
     holidayItems: (savedData.holidayItems ?? []).map(normalizeHolidayItem),
+    libraryCollections: (savedData.libraryCollections ?? []).map(normalizeLibraryCollection),
+    libraryItems: (savedData.libraryItems ?? []).map(normalizeLibraryItem),
     workflowOptions: normalizeWorkflowOptions(savedData.workflowOptions),
   }
 }
@@ -1667,6 +1700,8 @@ function App() {
   const [appStaffMembers, setAppStaffMembers] = useState<StaffMember[]>(() => loadStoredStaffMembers())
   const [appAccounts, setAppAccounts] = useState<Account[]>(() => loadStoredAccounts())
   const [appHolidayItems, setAppHolidayItems] = useState<HolidayItem[]>(() => loadStoredHolidayItems())
+  const [appLibraryCollections, setAppLibraryCollections] = useState<LibraryCollection[]>(() => loadStoredLibraryCollections())
+  const [appLibraryItems, setAppLibraryItems] = useState<LibraryItem[]>(() => loadStoredLibraryItems())
   const [chinaHolidayItems, setChinaHolidayItems] = useState<HolidayItem[]>(() => {
     const today = new Date()
     return bundledChinaHolidayItems(chinaHolidayYearsForRange(today, addDays(today, maxCalendarRangeDays)))
@@ -1746,6 +1781,8 @@ function App() {
       staffMembers: JSON.stringify(normalizedData.staffMembers),
       accounts: JSON.stringify(normalizedData.accounts),
       holidayItems: JSON.stringify(normalizedData.holidayItems),
+      libraryCollections: JSON.stringify(normalizedData.libraryCollections),
+      libraryItems: JSON.stringify(normalizedData.libraryItems),
       workflowOptions: JSON.stringify(normalizedData.workflowOptions),
     }
     teamDataRevisionRef.current = typeof normalizedData.revision === 'number' ? normalizedData.revision : null
@@ -1901,6 +1938,8 @@ function App() {
       setAppStaffMembers(normalizedData.staffMembers ?? [])
       setAppAccounts(normalizedData.accounts ?? loginAccounts)
       setAppHolidayItems(normalizedData.holidayItems ?? [])
+      setAppLibraryCollections(normalizedData.libraryCollections)
+      setAppLibraryItems(normalizedData.libraryItems)
       setAppWorkflowOptions(normalizedData.workflowOptions ?? defaultWorkflowOptions)
     },
     [rememberRemoteSlices],
@@ -2039,9 +2078,11 @@ function App() {
       staffMembers: appStaffMembers,
       accounts: appAccounts,
       holidayItems: appHolidayItems,
+      libraryCollections: appLibraryCollections,
+      libraryItems: appLibraryItems,
       workflowOptions: appWorkflowOptions,
     }),
-    [appAccounts, appCalendarItems, appFinanceRecords, appHolidayItems, appProjects, appStaffMembers, appTasks, appWorkflowOptions],
+    [appAccounts, appCalendarItems, appFinanceRecords, appHolidayItems, appLibraryCollections, appLibraryItems, appProjects, appStaffMembers, appTasks, appWorkflowOptions],
   )
   const currentAppDataSnapshotRef = useRef(currentAppDataSnapshot)
   currentAppDataSnapshotRef.current = currentAppDataSnapshot
@@ -2070,6 +2111,8 @@ function App() {
         staffMembers: latestData.staffMembers,
         accounts: latestData.accounts,
         holidayItems: latestData.holidayItems,
+        libraryCollections: latestData.libraryCollections,
+        libraryItems: latestData.libraryItems,
         workflowOptions: latestData.workflowOptions,
       })
       if (!saved) throw new Error('当前修改尚未保存，已取消更新。请确认团队连接后重试。')
@@ -2298,6 +2341,26 @@ function App() {
       holidayItems: appHolidayItems,
     }).catch(() => undefined)
   }, [appHolidayItems, dataSourceReady, saveCurrentAppData, shouldSaveSlice])
+
+  useEffect(() => {
+    if (!dataSourceReady) return
+    localStorage.setItem(libraryCollectionsStorageKey, JSON.stringify(appLibraryCollections))
+    if (!shouldSaveSlice('libraryCollections', appLibraryCollections)) return
+    saveCurrentAppData({
+      version: projectDataStorageVersion,
+      libraryCollections: appLibraryCollections,
+    }).catch(() => undefined)
+  }, [appLibraryCollections, dataSourceReady, saveCurrentAppData, shouldSaveSlice])
+
+  useEffect(() => {
+    if (!dataSourceReady) return
+    localStorage.setItem(libraryItemsStorageKey, JSON.stringify(appLibraryItems))
+    if (!shouldSaveSlice('libraryItems', appLibraryItems)) return
+    saveCurrentAppData({
+      version: projectDataStorageVersion,
+      libraryItems: appLibraryItems,
+    }).catch(() => undefined)
+  }, [appLibraryItems, dataSourceReady, saveCurrentAppData, shouldSaveSlice])
 
   useEffect(() => {
     if (!dataSourceReady) return
@@ -3890,7 +3953,11 @@ function App() {
           <div className="topActions">
             <div className="search">
               <Search size={18} />
-              <input value={searchQuery} onChange={(event) => setSearchQuery(event.target.value)} placeholder="搜索项目、客户、NAS 路径" />
+              <input
+                value={searchQuery}
+                onChange={(event) => setSearchQuery(event.target.value)}
+                placeholder={section === 'library' ? '搜索资料名称、文件或备注' : '搜索项目、客户、NAS 路径'}
+              />
             </div>
             <button className={showFilterPanel ? 'iconButton active' : 'iconButton'} type="button" title="筛选" onClick={() => setShowFilterPanel((value) => !value)}>
               <Filter size={18} />
@@ -4038,6 +4105,21 @@ function App() {
             onDeleteAccount={handleDeleteAccount}
           />
         )}
+        {section === 'library' && (
+          <LibraryView
+            collections={appLibraryCollections}
+            items={appLibraryItems}
+            role={role}
+            currentAccountId={currentAccountId}
+            currentAccountName={presenceAccountName}
+            dataMode={dataMode}
+            teamServerUrl={teamServerUrl}
+            teamAccessKey={teamAccessKey}
+            searchQuery={searchQuery}
+            onCollectionsChange={setAppLibraryCollections}
+            onItemsChange={setAppLibraryItems}
+          />
+        )}
         {section === 'archive' && (
           <ArchiveView
             projects={archivedProjects}
@@ -4068,6 +4150,8 @@ function App() {
         projects={assistantProjects}
         tasks={assistantTasks}
         calendarItems={assistantCalendarItems}
+        libraryCollections={appLibraryCollections}
+        libraryItems={appLibraryItems}
         financeRecords={
           role === 'controller' || role === 'admin' || role === 'finance'
             ? appFinanceRecords.filter((record) => assistantProjectIds.has(record.projectId))
@@ -10518,6 +10602,8 @@ function CrewFlowAssistant({
   projects,
   tasks,
   calendarItems,
+  libraryCollections,
+  libraryItems,
   financeRecords,
   calendarProjects,
   staffMembers,
@@ -10538,6 +10624,8 @@ function CrewFlowAssistant({
   projects: Project[]
   tasks: Task[]
   calendarItems: CalendarItem[]
+  libraryCollections: LibraryCollection[]
+  libraryItems: LibraryItem[]
   financeRecords: FinanceRecord[]
   calendarProjects: Project[]
   staffMembers: StaffMember[]
@@ -10575,10 +10663,10 @@ function CrewFlowAssistant({
   const [messages, setMessages] = useState<AssistantMessage[]>([
     {
       from: 'assistant',
-      text: '我可以帮你整理项目、任务、交付节点和工作提醒。',
+      text: '我可以帮你整理项目、任务、交付节点、资料和工作提醒。',
     },
   ])
-  const suggestions = assistantSuggestions(role, section, projects, tasks, calendarItems, financeRecords)
+  const suggestions = assistantSuggestions(role, section, projects, tasks, calendarItems, financeRecords, libraryCollections, libraryItems)
   const modeLabel = assistantModeLabel(settings.mode)
   const onlineProfiles = settings.onlineProfiles ?? []
   const selectedOnlineProfile = onlineProfiles.find((profile) => profile.id === settingsDraft.activeOnlineProfileId)
@@ -10741,7 +10829,18 @@ function CrewFlowAssistant({
         ...current,
         {
           from: 'assistant',
-          text: assistantReply(messageText, role, section, projects, tasks, calendarItems, financeRecords, canCreateProject),
+          text: assistantReply(
+            messageText,
+            role,
+            section,
+            projects,
+            tasks,
+            calendarItems,
+            financeRecords,
+            libraryCollections,
+            libraryItems,
+            canCreateProject,
+          ),
         },
       ])
       return
@@ -10770,6 +10869,8 @@ function CrewFlowAssistant({
             calendarItems,
             financeRecords,
             staffMembers,
+            libraryCollections,
+            libraryItems,
           ),
           workflowOptions,
           usageGuide: userGuideMarkdown,
@@ -10848,7 +10949,18 @@ function CrewFlowAssistant({
         setMessages((current) => [...current, { from: 'assistant', text: response.message }])
       }
     } catch (error) {
-      const fallback = assistantReply(messageText, role, section, projects, tasks, calendarItems, financeRecords, canCreateProject)
+      const fallback = assistantReply(
+        messageText,
+        role,
+        section,
+        projects,
+        tasks,
+        calendarItems,
+        financeRecords,
+        libraryCollections,
+        libraryItems,
+        canCreateProject,
+      )
       setMessages((current) => [
         ...current,
         {
@@ -11533,6 +11645,8 @@ function assistantContext(
   calendarItems: CalendarItem[],
   financeRecords: FinanceRecord[],
   staffMembers: StaffMember[],
+  libraryCollections: LibraryCollection[],
+  libraryItems: LibraryItem[],
 ) {
   const context: Record<string, unknown> = {
     today: localDateKey(new Date()),
@@ -11576,6 +11690,30 @@ function assistantContext(
       completed: item.completed === true,
     }))
     context.staff = staffMembers.slice(0, 150).map((member) => ({ name: member.name, tags: member.tags }))
+    const libraryCollectionNames = new Map(libraryCollections.map((collection) => [collection.id, collection.name]))
+    const libraryCollectionCounts = new Map<string, number>()
+    libraryItems.forEach((item) => libraryCollectionCounts.set(item.collectionId, (libraryCollectionCounts.get(item.collectionId) ?? 0) + 1))
+    context.library = {
+      collections: libraryCollections.slice(0, 120).map((collection) => ({
+        id: collection.id,
+        name: collection.name,
+        itemCount: libraryCollectionCounts.get(collection.id) ?? 0,
+      })),
+      items: [...libraryItems]
+        .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
+        .slice(0, 240)
+        .map((item) => ({
+          id: item.id,
+          collectionId: item.collectionId,
+          collection: libraryCollectionNames.get(item.collectionId) ?? '',
+          title: item.title,
+          sourceType: item.sourceType,
+          fileName: item.fileName ?? '',
+          note: item.note ?? '',
+          createdByName: item.createdByName,
+          updatedAt: item.updatedAt,
+        })),
+    }
   }
   if (settings.includeFinanceContext && (role === 'controller' || role === 'admin' || role === 'finance')) {
     context.finance = financeRecords.slice(0, 300).map((record) => ({
@@ -11669,6 +11807,8 @@ function assistantSuggestions(
   tasks: Task[],
   calendarItems: CalendarItem[],
   financeRecords: FinanceRecord[],
+  libraryCollections: LibraryCollection[],
+  libraryItems: LibraryItem[],
 ): AssistantSuggestion[] {
   const now = new Date()
   const riskCount = projects.filter((project) => isProjectAtRisk(project, now, calendarItems)).length
@@ -11730,6 +11870,13 @@ function assistantSuggestions(
       { label: '经验总结', prompt: '帮我整理一份适用于已完成项目的经验总结提纲。' },
     ]
   }
+  if (section === 'library') {
+    return [
+      { label: `资料集 ${libraryCollections.length}`, prompt: '当前资料库里有哪些资料集？' },
+      { label: `资料 ${libraryItems.length}`, prompt: '概括当前资料库中已经保存的资料。' },
+      { label: '如何添加', prompt: '资料库怎么使用，上传文稿、视频/共享文件和在线链接有什么区别？' },
+    ]
+  }
 
   return [
     {
@@ -11749,6 +11896,8 @@ function assistantReply(
   tasks: Task[],
   calendarItems: CalendarItem[],
   financeRecords: FinanceRecord[],
+  libraryCollections: LibraryCollection[],
+  libraryItems: LibraryItem[],
   canCreateProject: boolean,
 ) {
   const riskProjects = projects.filter((project) => isProjectAtRisk(project, new Date(), calendarItems))
@@ -11757,12 +11906,12 @@ function assistantReply(
   const activeTasks = tasks.filter((task) => task.status === '制作中' || task.status === '未开始')
   const financeRisks = financeRecords.filter((record) => record.settlementStatus === '逾期' || record.invoiceStatus !== '已开票')
   const lowerPrompt = prompt.toLowerCase()
-  const canAnswerLocally = /新建项目|创建项目|立项|录入项目|款|开票|财务|交付|日程|撞期|任务|项目|风险|反馈|优先|今天|安排|进度|状态|延期|归档|负责人|项目经理|拍摄|素材|收款|合同|怎么用|如何使用|使用说明|单人模式|团队模式|数据保存|权限|账号管理|人员管理|选项管理|软件更新/.test(prompt)
+  const canAnswerLocally = /新建项目|创建项目|立项|录入项目|款|开票|财务|交付|日程|撞期|任务|项目|风险|反馈|优先|今天|安排|进度|状态|延期|归档|负责人|项目经理|拍摄|素材|收款|合同|资料库|资料集|上传文稿|引用路径|共享文件|视频|在线链接|表格预览|怎么用|如何使用|使用说明|单人模式|团队模式|数据保存|权限|账号管理|人员管理|选项管理|软件更新/.test(prompt)
 
   if (/智障|傻|乱答|不对|驴唇不对马嘴/.test(prompt)) {
     return [
       '这个问题我现在答得不够准。',
-      '我可以整理项目、任务、交付日历、财务提醒，或打开新建项目窗口。',
+      '我可以整理项目、任务、交付日历、资料库和财务提醒，或打开新建项目窗口。',
       '其他问题我会尽量明确说明，避免给出没把握的回答。',
     ].join('\n')
   }
@@ -11775,9 +11924,20 @@ function assistantReply(
     ].join('\n')
   }
 
+  if (/资料库|资料集|上传文稿|引用路径|共享文件|视频|在线链接|表格预览/.test(prompt) || section === 'library') {
+    const collectionNames = libraryCollections.slice(0, 6).map((collection) => collection.name)
+    return [
+      `当前资料库有 ${libraryCollections.length} 个资料集、${libraryItems.length} 项资料。`,
+      collectionNames.length > 0 ? `资料集包括：${collectionNames.join('、')}${libraryCollections.length > collectionNames.length ? '等' : ''}。` : '总控或管理员可以先新建资料集。',
+      '小型文稿、表格、PDF 和图片可用“上传文稿”复制进 CrewFlow，单个最大 200MB；视频、大文件和 NAS 资料使用“视频/共享文件”，网页资料使用“在线链接”。',
+      '团队模式中的路径记录所有人都能看到，但文件本体不会同步；本地路径只在原电脑可用，NAS 或共享盘路径需要每台电脑都具备访问权限。视频会在专用播放窗口中打开，不支持的编码可改用系统播放器。',
+      'PDF、图片、文本、Word 和 Excel 可在软件内预览；Word 使用白色分页视图，Excel 使用白色工作表视图并支持切换工作表、分页查看、常见样式和内嵌图片。超过 80MB 或含复杂图表、宏、嵌入对象时请使用“系统打开”。',
+    ].join('\n')
+  }
+
   if (/怎么用|如何使用|使用说明|单人模式|团队模式|数据保存|权限|账号管理|人员管理|选项管理|软件更新/.test(prompt)) {
     return [
-      'CrewFlow 的常用顺序是：选择单人或团队模式，登录后配置人员与账号，再新建项目、设置任务和交付节点，最后在任务面板、交付日历、团队负载和财务页面持续更新。',
+      'CrewFlow 的常用顺序是：选择单人或团队模式，登录后配置人员与账号，再新建项目、设置任务和交付节点，最后在任务面板、交付日历、团队负载、资料库和财务页面持续更新。',
       '单人模式的数据只保存在当前电脑；团队模式由一台常驻电脑开启 CrewFlow Server，其他电脑填写服务地址连接。',
       '左侧底部可以随时打开“使用说明”，里面有安装、角色权限、数据备份、团队部署和更新方法。',
     ].join('\n')
@@ -12581,6 +12741,26 @@ function loadStoredHolidayItems() {
     return (JSON.parse(saved) as HolidayItem[]).map(normalizeHolidayItem)
   } catch {
     return holidayItems
+  }
+}
+
+function loadStoredLibraryCollections() {
+  try {
+    const saved = localStorage.getItem(libraryCollectionsStorageKey)
+    if (!saved) return []
+    return (JSON.parse(saved) as unknown[]).map(normalizeLibraryCollection)
+  } catch {
+    return []
+  }
+}
+
+function loadStoredLibraryItems() {
+  try {
+    const saved = localStorage.getItem(libraryItemsStorageKey)
+    if (!saved) return []
+    return (JSON.parse(saved) as unknown[]).map(normalizeLibraryItem)
+  } catch {
+    return []
   }
 }
 

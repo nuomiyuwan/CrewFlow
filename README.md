@@ -1,10 +1,10 @@
 # CrewFlow
 
-CrewFlow is a desktop command center for project intake, task assignment, delivery calendars, team workload, user accounts, archive management, and finance tracking.
+CrewFlow is a desktop command center for project intake, task assignment, delivery calendars, team workload, shared reference materials, user accounts, archive management, and finance tracking.
 
 It is built with Electron, React, and Vite, and supports both single-user local data and LAN team mode through a lightweight CrewFlow Server.
 
-Current stable version: **v1.4.13**. See [CHANGELOG.md](CHANGELOG.md) for release details.
+Current stable version: **v1.5.0**. See [CHANGELOG.md](CHANGELOG.md) for release details.
 
 中文使用说明：[CrewFlow 用户使用说明](docs/USER_GUIDE.zh-CN.md)
 
@@ -28,6 +28,7 @@ Current stable version: **v1.4.13**. See [CHANGELOG.md](CHANGELOG.md) for releas
 - Team workload overview
 - Staff, account, and option management
 - Project archive
+- General-purpose resource library with renameable collections, uploaded documents, path references, online links, and in-app previews
 - Finance tracking for contracts, payments, invoices, and settlement status
 - CrewFlow Assistant with local rules, OpenAI-compatible online models, and local Ollama models
 - Permission-aware natural-language form prefilling and chat-record extraction

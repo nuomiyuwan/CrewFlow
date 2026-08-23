@@ -110,6 +110,42 @@ test('server accepts app data access with the configured access key', async (t) 
   })
 })
 
+test('server stores, reads and deletes secured library files outside app data', async (t) => {
+  await withSecuredServer(t, async (baseUrl) => {
+    const fileUrl = `${baseUrl}/api/library-files/library-item-1`
+    const source = Buffer.from('CrewFlow library document', 'utf8')
+
+    assert.equal((await fetch(fileUrl)).status, 401)
+
+    const uploadResponse = await fetch(fileUrl, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/octet-stream',
+        'X-CrewFlow-Key': 'team-secret',
+        'X-CrewFlow-File-Name': encodeURIComponent('使用说明.txt'),
+        'X-CrewFlow-Mime-Type': encodeURIComponent('text/plain'),
+      },
+      body: source,
+    })
+    const uploaded = await uploadResponse.json()
+    assert.equal(uploadResponse.status, 200)
+    assert.equal(uploaded.fileName, '使用说明.txt')
+    assert.equal(uploaded.size, source.byteLength)
+
+    const readResponse = await fetch(fileUrl, { headers: { 'X-CrewFlow-Key': 'team-secret' } })
+    assert.equal(readResponse.status, 200)
+    assert.equal(readResponse.headers.get('content-type'), 'text/plain')
+    assert.deepEqual(Buffer.from(await readResponse.arrayBuffer()), source)
+
+    const dataResponse = await fetch(`${baseUrl}/api/app-data`, { headers: { 'X-CrewFlow-Key': 'team-secret' } })
+    const data = await dataResponse.json()
+    assert.equal(Object.prototype.hasOwnProperty.call(data, 'libraryFileBodies'), false)
+
+    assert.equal((await fetch(fileUrl, { method: 'DELETE', headers: { 'X-CrewFlow-Key': 'team-secret' } })).status, 200)
+    assert.equal((await fetch(fileUrl, { headers: { 'X-CrewFlow-Key': 'team-secret' } })).status, 404)
+  })
+})
+
 test('server tracks online team members and merges multiple devices for one account', async (t) => {
   await withSecuredServer(t, async (baseUrl) => {
     const headers = { 'Content-Type': 'application/json', 'X-CrewFlow-Key': 'team-secret' }

@@ -1,5 +1,6 @@
 const { app, BrowserWindow, clipboard, dialog, ipcMain, safeStorage, shell } = require('electron')
 const { autoUpdater } = require('electron-updater')
+const { spawn } = require('child_process')
 const { createHash } = require('crypto')
 const fs = require('fs')
 const path = require('path')
@@ -32,7 +33,9 @@ let windowsUpdateDownloaded = false
 let windowsUpdaterSuppressErrors = false
 let windowsUpdateSource = 'gitcode'
 let downloadedMacUpdatePath = ''
+let downloadedWindowsUpdatePath = ''
 let appUpdateInstallPending = false
+let localLibraryFileStorePromise = null
 let appUpdateState = {
   status: 'idle',
   percent: 0,
@@ -70,6 +73,23 @@ function appDataPath() {
 
 function assistantSettingsPath() {
   return path.join(app.getPath('userData'), 'assistant-settings.json')
+}
+
+function libraryFilesPath() {
+  return path.join(app.getPath('userData'), 'library-files')
+}
+
+function libraryOpenCachePath() {
+  return path.join(app.getPath('temp'), 'CrewFlow Library')
+}
+
+function escapeLibraryPreviewHtml(value) {
+  return String(value ?? '')
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#39;')
 }
 
 function updateRecoveryMarkerPath() {
@@ -141,6 +161,74 @@ async function fetchDownloadResponse(url, timeoutMs = 12000) {
     return await fetch(url, { redirect: 'follow', signal: controller.signal })
   } finally {
     clearTimeout(timer)
+  }
+}
+
+async function downloadWindowsUpdateDirect(asset, candidate) {
+  const pendingDirectory = windowsUpdaterPendingDirectory()
+  const targetPath = path.join(pendingDirectory, asset.fileName)
+  const temporaryPath = `${targetPath}.${process.pid}.download`
+  const expectedDigest = asset.digest.startsWith('sha256:') ? asset.digest.slice('sha256:'.length) : ''
+  let fileHandle = null
+
+  if (!expectedDigest) throw new Error('Windows 更新缺少校验信息')
+
+  try {
+    await fs.promises.mkdir(pendingDirectory, { recursive: true })
+    await fs.promises.rm(temporaryPath, { force: true })
+    publishAppUpdateState({
+      status: 'downloading',
+      percent: 0,
+      transferred: 0,
+      total: 0,
+      version: asset.version,
+      fileName: asset.fileName,
+      message: `正在从${updateSourceLabel(candidate.source)}下载 Windows 更新`,
+      canAutoInstall: true,
+    })
+
+    const response = await fetchDownloadResponse(candidate.url)
+    if (!response.ok || !response.body) throw new Error(`更新下载失败：${response.status}`)
+
+    const total = Number(response.headers.get('content-length')) || 0
+    const hash = createHash('sha256')
+    let transferred = 0
+    fileHandle = await fs.promises.open(temporaryPath, 'w')
+
+    for await (const value of response.body) {
+      const chunk = Buffer.from(value)
+      await fileHandle.write(chunk)
+      hash.update(chunk)
+      transferred += chunk.length
+      publishAppUpdateState({
+        status: 'downloading',
+        percent: total > 0 ? Math.min(100, Math.round((transferred / total) * 100)) : 0,
+        transferred,
+        total,
+      })
+    }
+
+    await fileHandle.close()
+    fileHandle = null
+
+    if (hash.digest('hex') !== expectedDigest) throw new Error('更新文件校验失败，请重新下载')
+
+    await fs.promises.rm(targetPath, { force: true })
+    await fs.promises.rename(temporaryPath, targetPath)
+    downloadedWindowsUpdatePath = targetPath
+    windowsUpdateDownloaded = true
+    return publishAppUpdateState({
+      status: 'downloaded',
+      percent: 100,
+      transferred,
+      total: total || transferred,
+      message: `更新已从${updateSourceLabel(candidate.source)}下载，可以安装并重启`,
+      canAutoInstall: true,
+    })
+  } catch (error) {
+    if (fileHandle) await fileHandle.close().catch(() => {})
+    await fs.promises.rm(temporaryPath, { force: true }).catch(() => {})
+    throw error
   }
 }
 
@@ -314,6 +402,7 @@ async function downloadWindowsUpdate(payload = {}) {
   ]
   let lastError = null
   windowsUpdateDownloaded = false
+  downloadedWindowsUpdatePath = ''
   windowsUpdaterSuppressErrors = true
 
   try {
@@ -321,6 +410,10 @@ async function downloadWindowsUpdate(payload = {}) {
       const candidate = candidates[index]
       windowsUpdateSource = candidate.source
       try {
+        if (candidate.source === 'gitcode') {
+          return await downloadWindowsUpdateDirect(asset, candidate)
+        }
+
         autoUpdater.setFeedURL({ provider: 'generic', url: releaseFeedUrl(candidate.url) })
         const result = await autoUpdater.checkForUpdates()
         if (!result?.isUpdateAvailable) throw new Error(`${updateSourceLabel(candidate.source)}暂未提供该版本安装包`)
@@ -597,6 +690,306 @@ async function waitForPendingAppDataSaves() {
 
 function serverModuleUrl(fileName) {
   return pathToFileURL(path.join(__dirname, '../server', fileName)).href
+}
+
+async function localLibraryFileStore() {
+  if (!localLibraryFileStorePromise) {
+    localLibraryFileStorePromise = import(serverModuleUrl('library-file-store.mjs')).then(({ createLibraryFileStore }) =>
+      createLibraryFileStore({ directory: libraryFilesPath() }),
+    )
+  }
+  return localLibraryFileStorePromise
+}
+
+const libraryUploadExtensions = new Set([
+  'pdf', 'doc', 'docx', 'xls', 'xlsx', 'csv', 'ppt', 'pptx', 'txt', 'md', 'rtf', 'json',
+  'pages', 'numbers', 'key', 'png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp',
+])
+const maxLibraryUploadBytes = 200 * 1024 * 1024
+const libraryMimeTypes = {
+  pdf: 'application/pdf',
+  doc: 'application/msword',
+  docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  xls: 'application/vnd.ms-excel',
+  xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  csv: 'text/csv',
+  ppt: 'application/vnd.ms-powerpoint',
+  pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+  txt: 'text/plain',
+  md: 'text/markdown',
+  rtf: 'application/rtf',
+  json: 'application/json',
+  png: 'image/png',
+  jpg: 'image/jpeg',
+  jpeg: 'image/jpeg',
+  gif: 'image/gif',
+  webp: 'image/webp',
+  bmp: 'image/bmp',
+  mp4: 'video/mp4',
+  webm: 'video/webm',
+  mov: 'video/quicktime',
+  m4v: 'video/x-m4v',
+  mp3: 'audio/mpeg',
+  wav: 'audio/wav',
+  m4a: 'audio/mp4',
+}
+
+function libraryFileExtension(filePath) {
+  return path.extname(filePath).slice(1).toLowerCase()
+}
+
+function libraryMimeType(filePath) {
+  return libraryMimeTypes[libraryFileExtension(filePath)] || 'application/octet-stream'
+}
+
+function cleanLibraryFileName(value) {
+  return path.basename(typeof value === 'string' ? value.trim() : '').slice(0, 240)
+}
+
+function libraryTeamFileUrl(serverUrl, id) {
+  if (!/^[A-Za-z0-9_-]{1,120}$/.test(typeof id === 'string' ? id : '')) throw new Error('资料文件标识无效')
+  const value = /^https?:\/\//i.test(serverUrl || '') ? serverUrl : `http://${serverUrl || ''}`
+  const url = new URL(value)
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') throw new Error('团队服务地址无效')
+  url.pathname = `${url.pathname.replace(/\/+$/, '')}/api/library-files/${id}`
+  url.search = ''
+  return url.toString()
+}
+
+async function selectedLibraryFile(purpose = 'reference') {
+  const upload = purpose === 'upload'
+  const result = await dialog.showOpenDialog({
+    title: upload ? '选择要上传的文稿' : '选择视频、本地或共享文件',
+    properties: ['openFile'],
+    filters: upload
+      ? [
+          { name: '文稿、表格和图片', extensions: [...libraryUploadExtensions] },
+          { name: '所有文件', extensions: ['*'] },
+        ]
+      : [{ name: '所有文件', extensions: ['*'] }],
+  })
+  if (result.canceled || result.filePaths.length === 0) return null
+
+  const sourcePath = result.filePaths[0]
+  const fileInfo = await fs.promises.stat(sourcePath)
+  if (!fileInfo.isFile()) throw new Error('请选择一个文件')
+  const extension = libraryFileExtension(sourcePath)
+  return {
+    path: sourcePath,
+    fileName: path.basename(sourcePath),
+    extension,
+    mimeType: libraryMimeType(sourcePath),
+    size: fileInfo.size,
+    uploadable: libraryUploadExtensions.has(extension) && fileInfo.size <= maxLibraryUploadBytes,
+  }
+}
+
+async function readLibrarySource(payload = {}) {
+  if (payload.sourceType === 'path') {
+    const sourcePath = typeof payload.path === 'string' ? payload.path : ''
+    const fileInfo = await fs.promises.stat(sourcePath)
+    if (!fileInfo.isFile()) throw new Error('资料路径不是文件')
+    if (fileInfo.size > maxLibraryUploadBytes) throw new Error('这个文件超过 200MB，请使用系统应用打开')
+    return {
+      data: await fs.promises.readFile(sourcePath),
+      metadata: {
+        fileName: path.basename(sourcePath),
+        mimeType: libraryMimeType(sourcePath),
+        size: fileInfo.size,
+      },
+    }
+  }
+
+  if (payload.dataMode === 'team') {
+    const response = await fetch(libraryTeamFileUrl(payload.serverUrl, payload.id), {
+      headers: payload.accessKey ? { 'X-CrewFlow-Key': payload.accessKey } : {},
+    })
+    if (response.status === 404) throw new Error('资料文件不存在，或团队主机尚未更新资料库服务')
+    if (!response.ok) throw new Error(`资料文件读取失败：${response.status}`)
+    const data = Buffer.from(await response.arrayBuffer())
+    if (data.byteLength > maxLibraryUploadBytes) throw new Error('资料文件超过 200MB，无法在软件内读取')
+    return {
+      data,
+      metadata: {
+        fileName: cleanLibraryFileName(payload.fileName) || '资料文件',
+        mimeType: response.headers.get('content-type') || payload.mimeType || 'application/octet-stream',
+        size: data.byteLength,
+      },
+    }
+  }
+
+  const store = await localLibraryFileStore()
+  return store.read(payload.id)
+}
+
+async function importLibraryFile(payload = {}) {
+  const sourcePath = typeof payload.sourcePath === 'string' ? payload.sourcePath : ''
+  const fileInfo = await fs.promises.stat(sourcePath)
+  if (!fileInfo.isFile()) throw new Error('请选择一个文件')
+  const extension = libraryFileExtension(sourcePath)
+  if (!libraryUploadExtensions.has(extension)) throw new Error('视频和大文件请使用“视频/共享文件”或“在线链接”')
+  if (fileInfo.size > maxLibraryUploadBytes) throw new Error('上传文件不能超过 200MB')
+
+  const fileName = cleanLibraryFileName(payload.fileName) || path.basename(sourcePath)
+  const mimeType = typeof payload.mimeType === 'string' && payload.mimeType ? payload.mimeType : libraryMimeType(sourcePath)
+  const data = await fs.promises.readFile(sourcePath)
+
+  if (payload.dataMode === 'team') {
+    const response = await fetch(libraryTeamFileUrl(payload.serverUrl, payload.id), {
+      method: 'PUT',
+      headers: {
+        ...(payload.accessKey ? { 'X-CrewFlow-Key': payload.accessKey } : {}),
+        'Content-Type': 'application/octet-stream',
+        'X-CrewFlow-File-Name': encodeURIComponent(fileName),
+        'X-CrewFlow-Mime-Type': encodeURIComponent(mimeType),
+      },
+      body: data,
+    })
+    if (response.status === 404) throw new Error('团队主机尚未支持资料上传，请更新并重启主机服务')
+    if (!response.ok) {
+      const error = await response.json().catch(() => null)
+      throw new Error(error?.error || `资料上传失败：${response.status}`)
+    }
+    return response.json()
+  }
+
+  const store = await localLibraryFileStore()
+  return store.write(payload.id, data, { fileName, mimeType })
+}
+
+async function deleteLibraryFile(payload = {}) {
+  if (payload.dataMode === 'team') {
+    const response = await fetch(libraryTeamFileUrl(payload.serverUrl, payload.id), {
+      method: 'DELETE',
+      headers: payload.accessKey ? { 'X-CrewFlow-Key': payload.accessKey } : {},
+    })
+    if (response.status !== 404 && !response.ok) throw new Error(`资料文件删除失败：${response.status}`)
+    return true
+  }
+  const store = await localLibraryFileStore()
+  return store.remove(payload.id)
+}
+
+async function openLibraryBytes(payload = {}) {
+  const { data, metadata } = await readLibrarySource(payload)
+  const id = /^[A-Za-z0-9_-]{1,120}$/.test(payload.id || '') ? payload.id : `item-${Date.now()}`
+  const directory = path.join(libraryOpenCachePath(), id)
+  const targetPath = path.join(directory, cleanLibraryFileName(payload.fileName) || metadata.fileName || '资料文件')
+  await fs.promises.mkdir(directory, { recursive: true })
+  await fs.promises.writeFile(targetPath, data)
+  const error = await shell.openPath(targetPath)
+  if (error) throw new Error(error)
+  return true
+}
+
+async function previewLibraryResource(payload = {}) {
+  let targetUrl = ''
+  let sourcePath = ''
+  if (payload.sourceType === 'url') {
+    const url = new URL(typeof payload.url === 'string' ? payload.url : '')
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') throw new Error('只支持 http 或 https 链接')
+    targetUrl = url.toString()
+  } else {
+    sourcePath = typeof payload.path === 'string' ? payload.path : ''
+    let fileInfo
+    try {
+      fileInfo = await fs.promises.stat(sourcePath)
+    } catch (error) {
+      if (error?.code === 'ENOENT' || error?.code === 'EACCES') {
+        throw new Error(
+          payload.dataMode === 'team'
+            ? '当前电脑无法访问这个文件。团队模式只同步路径记录，请使用所有成员都能访问的 NAS 或共享盘路径。'
+            : '当前电脑无法访问这个文件，请确认文件没有被移动或删除。',
+        )
+      }
+      throw error
+    }
+    if (!fileInfo.isFile()) throw new Error('资料路径不是文件')
+    targetUrl = pathToFileURL(sourcePath).href
+  }
+
+  const previewWindow = new BrowserWindow({
+    width: 1080,
+    height: 720,
+    minWidth: 720,
+    minHeight: 500,
+    parent: mainWindow && !mainWindow.isDestroyed() ? mainWindow : undefined,
+    title: typeof payload.title === 'string' && payload.title ? payload.title : '资料预览',
+    backgroundColor: '#111827',
+    autoHideMenuBar: true,
+    webPreferences: {
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+    },
+  })
+  previewWindow.webContents.setWindowOpenHandler(({ url }) => {
+    if (sourcePath && url === 'https://crewflow.local/open-system') {
+      shell.openPath(sourcePath).catch(() => {})
+      return { action: 'deny' }
+    }
+    shell.openExternal(url)
+    return { action: 'deny' }
+  })
+
+  if (sourcePath && /^(video|audio)\//i.test(libraryMimeType(sourcePath))) {
+    const mediaType = libraryMimeType(sourcePath).startsWith('audio/') ? 'audio' : 'video'
+    const previewDirectory = path.join(libraryOpenCachePath(), 'media-preview')
+    const previewPagePath = path.join(
+      previewDirectory,
+      `${createHash('sha1').update(sourcePath).digest('hex').slice(0, 20)}.html`,
+    )
+    const title = escapeLibraryPreviewHtml(payload.title || path.basename(sourcePath))
+    const fileName = escapeLibraryPreviewHtml(path.basename(sourcePath))
+    const mediaUrl = escapeLibraryPreviewHtml(targetUrl)
+    const page = `<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; media-src file:">
+  <title>${title}</title>
+  <style>
+    * { box-sizing: border-box; }
+    html, body { width: 100%; height: 100%; margin: 0; background: #080d18; color: #edf3fb; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    body { display: grid; grid-template-rows: auto minmax(0, 1fr); }
+    header { min-width: 0; padding: 16px 20px; border-bottom: 1px solid rgba(166, 191, 211, .2); background: #111927; }
+    strong, small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    strong { font-size: 16px; }
+    small { margin-top: 5px; color: rgba(210, 220, 233, .58); }
+    main { min-height: 0; display: grid; place-items: center; padding: 18px; }
+    .player { display: block; width: 100%; height: 100%; max-width: 100%; max-height: 100%; background: #000; outline: none; }
+    audio.player { height: 56px; background: transparent; }
+    .fallback { display: none; max-width: 520px; text-align: center; color: rgba(225, 234, 245, .72); }
+    .fallback strong { color: #f4f7fb; }
+    .fallback p { line-height: 1.7; }
+    .fallback a { display: inline-flex; margin-top: 8px; padding: 10px 16px; border: 1px solid rgba(106, 220, 235, .45); border-radius: 7px; color: #7de2ee; text-decoration: none; }
+    body.failed .player { display: none; }
+    body.failed .fallback { display: block; }
+  </style>
+</head>
+<body>
+  <header><strong>${title}</strong><small>${fileName}</small></header>
+  <main>
+    <${mediaType} class="player" controls preload="metadata" src="${mediaUrl}" onerror="document.body.classList.add('failed')"></${mediaType}>
+    <section class="fallback"><strong>软件内无法播放这个文件</strong><p>文件可能使用了当前播放器不支持的编码，可以改用系统播放器打开。</p><a href="https://crewflow.local/open-system" target="_blank">用系统播放器打开</a></section>
+  </main>
+</body>
+</html>`
+    await fs.promises.mkdir(previewDirectory, { recursive: true })
+    await fs.promises.writeFile(previewPagePath, page, 'utf8')
+    try {
+      await previewWindow.loadFile(previewPagePath)
+    } catch {
+      if (!previewWindow.isDestroyed()) previewWindow.destroy()
+      const error = await shell.openPath(sourcePath)
+      if (error) throw new Error(`视频打开失败：${error}`)
+    }
+    return true
+  }
+
+  await previewWindow.loadURL(targetUrl)
+  return true
 }
 
 async function startTeamServerMode() {
@@ -910,6 +1303,16 @@ async function installApplicationUpdate() {
       return publishAppUpdateState({ status: 'error', message: '请先下载完整更新' })
     }
 
+    if (downloadedWindowsUpdatePath) {
+      try {
+        await fs.promises.access(downloadedWindowsUpdatePath, fs.constants.R_OK)
+      } catch {
+        downloadedWindowsUpdatePath = ''
+        windowsUpdateDownloaded = false
+        return publishAppUpdateState({ status: 'error', message: '安装程序已被移动或删除，请重新下载', canAutoInstall: true })
+      }
+    }
+
     const isTeamHost = Boolean(await fetchLocalTeamHealth())
     if (!(await confirmApplicationUpdate({ isTeamHost, platform: process.platform }))) {
       return publishAppUpdateState({
@@ -927,6 +1330,26 @@ async function installApplicationUpdate() {
     await waitForPendingAppDataSaves()
     await writeUpdateDownloadCleanupMarker({ version: appUpdateState.version, platform: 'win32' })
     if (isTeamHost) await prepareLocalTeamServiceForUpdate()
+
+    if (downloadedWindowsUpdatePath) {
+      const installer = spawn(downloadedWindowsUpdatePath, ['--updated', '--force-run'], {
+        detached: true,
+        stdio: 'ignore',
+      })
+      await new Promise((resolve, reject) => {
+        installer.once('spawn', resolve)
+        installer.once('error', reject)
+      })
+      installer.unref()
+      const state = publishAppUpdateState({
+        status: 'installing',
+        message: isTeamHost ? '安装程序已启动，团队服务已停止，CrewFlow 正在退出' : '安装程序已启动，CrewFlow 正在退出',
+        canAutoInstall: true,
+      })
+      setTimeout(() => app.quit(), 350)
+      return state
+    }
+
     setTimeout(() => autoUpdater.quitAndInstall(false, true), 150)
     return appUpdateState
   } catch (error) {
@@ -1064,6 +1487,40 @@ if (!hasPrimaryInstanceLock) {
 
       const error = await shell.openPath(filePath)
       return error === ''
+    })
+
+    ipcMain.handle('library-file:select', async (_event, purpose) => {
+      return selectedLibraryFile(purpose)
+    })
+
+    ipcMain.handle('library-file:import', async (_event, payload) => {
+      return importLibraryFile(payload)
+    })
+
+    ipcMain.handle('library-file:read', async (_event, payload) => {
+      const result = await readLibrarySource(payload)
+      return {
+        data: result.data,
+        metadata: result.metadata,
+      }
+    })
+
+    ipcMain.handle('library-file:delete', async (_event, payload) => {
+      return deleteLibraryFile(payload)
+    })
+
+    ipcMain.handle('library-file:open', async (_event, payload) => {
+      if (payload?.sourceType === 'path') {
+        const error = await shell.openPath(typeof payload.path === 'string' ? payload.path : '')
+        if (error) throw new Error(error)
+        return true
+      }
+      if (payload?.sourceType === 'url') return previewLibraryResource(payload)
+      return openLibraryBytes(payload)
+    })
+
+    ipcMain.handle('library-resource:preview', async (_event, payload) => {
+      return previewLibraryResource(payload)
     })
 
     ipcMain.handle('app-data:load', async () => {
