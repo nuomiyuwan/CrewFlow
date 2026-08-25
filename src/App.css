@@ -476,7 +476,7 @@ h2 {
 .search {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 7px;
   width: 310px;
   height: 44px;
   border: 1px solid rgba(206, 216, 222, 0.92);
@@ -3111,6 +3111,98 @@ h1 {
   color: rgba(244, 221, 143, 0.72);
 }
 
+.monthlyProjectOverviewPopover {
+  position: fixed;
+  z-index: 65;
+  display: grid;
+  width: min(328px, calc(100vw - 32px));
+  box-sizing: border-box;
+  gap: 8px;
+  border: 1px solid rgba(180, 202, 216, 0.18);
+  border-radius: 12px;
+  color: #f7fbff;
+  background:
+    linear-gradient(145deg, rgba(255, 255, 255, 0.105), rgba(255, 255, 255, 0.045)),
+    rgba(18, 26, 39, 0.94);
+  backdrop-filter: blur(24px);
+  box-shadow:
+    0 24px 70px rgba(0, 0, 0, 0.3),
+    inset 0 1px 0 rgba(255, 255, 255, 0.12);
+  padding: 13px 14px 14px;
+  pointer-events: none;
+  animation: monthlyProjectOverviewIn 220ms ease-out both;
+  -webkit-app-region: no-drag;
+}
+
+.monthlyProjectOverviewPopover.isLeaving {
+  animation: monthlyProjectOverviewOut 180ms ease-in both;
+}
+
+.monthlyProjectOverviewName {
+  overflow: hidden;
+  color: #f7fbff;
+  font-size: 17px;
+  line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.monthlyProjectOverviewMeta {
+  overflow: hidden;
+  color: rgba(210, 222, 235, 0.62);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.monthlyProjectOverviewOwner {
+  overflow: hidden;
+  color: rgba(210, 222, 235, 0.62);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.monthlyProjectOverviewProgress {
+  gap: 5px;
+  border-top: 1px solid rgba(180, 202, 216, 0.13);
+  padding-top: 8px;
+}
+
+.monthlyProjectOverviewProgress .progressLabel {
+  color: rgba(128, 233, 247, 0.86);
+  font-size: 10px;
+}
+
+.monthlyProjectOverviewProgress .progressLabel strong {
+  color: #80e9f7;
+  font-size: 12px;
+}
+
+.monthlyProjectOverviewProgress .progressBar {
+  height: 7px;
+}
+
+@keyframes monthlyProjectOverviewIn {
+  from {
+    opacity: 0;
+  }
+
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes monthlyProjectOverviewOut {
+  from {
+    opacity: 1;
+  }
+
+  to {
+    opacity: 0;
+  }
+}
+
 .monthlyShowAllButton {
   width: 100%;
   min-height: 34px;
@@ -4861,24 +4953,33 @@ h1 {
 .libraryPage {
   display: grid;
   grid-template-columns: 280px minmax(0, 1fr);
-  gap: 18px;
-  min-height: calc(100vh - 150px);
-  padding-bottom: 26px;
+  gap: 0;
+  min-height: calc(100vh - 112px);
+  overflow: hidden;
+  margin: -22px -34px -34px;
+  padding-bottom: 0;
 }
 
 .libraryCollectionsPanel,
 .libraryResourcesPanel {
   min-width: 0;
-  border: 1px solid rgba(166, 191, 211, 0.23);
-  border-radius: 8px;
-  background: linear-gradient(145deg, rgba(49, 59, 75, 0.88), rgba(31, 41, 55, 0.82));
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+  border: 0;
+  border-radius: 0;
+  background: rgba(18, 28, 42, 0.28);
+  box-shadow: none;
 }
 
 .libraryCollectionsPanel {
   display: flex;
   flex-direction: column;
   min-height: 560px;
+  border-right: 1px solid rgba(166, 191, 211, 0.14);
+  background: linear-gradient(
+    180deg,
+    rgba(14, 23, 36, 0) 0,
+    rgba(14, 23, 36, 0.16) 34px,
+    rgba(14, 23, 36, 0.3) 84px
+  );
   overflow: hidden;
 }
 
@@ -4888,36 +4989,25 @@ h1 {
   align-items: center;
   justify-content: space-between;
   gap: 16px;
-  border-bottom: 1px solid rgba(166, 191, 211, 0.17);
 }
 
 .libraryPanelHeading {
-  padding: 20px;
+  align-items: stretch;
+  flex-direction: column;
+  gap: 18px;
+  padding: 26px 24px 20px;
 }
 
-.libraryPanelHeading > div,
 .libraryResourcesHeader > div {
   min-width: 0;
 }
 
-.libraryPanelHeading strong,
-.libraryPanelHeading span {
-  display: block;
-}
-
-.libraryPanelHeading strong {
-  color: #f4f8ff;
-  font-size: 18px;
-}
-
-.libraryPanelHeading span,
 .libraryResourcesHeader p {
   margin-top: 4px;
   color: rgba(204, 216, 231, 0.58);
   font-size: 13px;
 }
 
-.libraryPanelHeading button,
 .libraryCollectionMenuTrigger,
 .libraryResourceActions button,
 .libraryModal header button,
@@ -4931,12 +5021,17 @@ h1 {
   cursor: pointer;
 }
 
-.libraryPanelHeading button {
-  width: 36px;
-  height: 36px;
+.libraryPanelHeading button.libraryCreateCollectionButton {
+  width: min(210px, 100%);
+  align-self: center;
 }
 
-.libraryPanelHeading button:hover,
+.libraryPanelHeading button .libraryNewCollectionLabel {
+  display: inline;
+  margin: 0;
+  color: inherit;
+}
+
 .libraryCollectionMenuTrigger:hover,
 .libraryResourceActions button:hover:not(:disabled),
 .libraryModal header button:hover,
@@ -4946,6 +5041,8 @@ h1 {
 }
 
 .libraryCollectionList {
+  display: flex;
+  flex-direction: column;
   min-height: 0;
   flex: 1;
   overflow-y: auto;
@@ -5087,31 +5184,58 @@ h1 {
 }
 
 .libraryCollectionEmpty {
+  flex: 1;
   min-height: 220px;
-  gap: 10px;
+  gap: 8px;
   font-size: 13px;
+}
+
+.libraryCollectionEmpty svg {
+  margin-bottom: 8px;
+  color: #748092;
+  opacity: 1;
+  stroke-opacity: 1;
+}
+
+.libraryCollectionEmpty strong {
+  color: rgba(234, 241, 250, 0.7);
+  font-size: 14px;
+}
+
+.libraryCollectionEmpty span {
+  max-width: 190px;
+  color: rgba(203, 216, 231, 0.46);
+  font-size: 12px;
+  line-height: 1.6;
 }
 
 .libraryResourcesPanel {
   display: flex;
   flex-direction: column;
   min-height: 560px;
+  background: linear-gradient(
+    180deg,
+    rgba(18, 29, 43, 0) 0,
+    rgba(18, 29, 43, 0.08) 34px,
+    rgba(18, 29, 43, 0.17) 84px
+  );
   overflow: hidden;
 }
 
 .libraryResourcesHeader {
-  min-height: 108px;
-  padding: 20px 24px;
+  min-height: 92px;
+  border-bottom: 1px solid rgba(166, 191, 211, 0.14);
+  padding: 20px 28px;
 }
 
-.libraryEyebrow {
-  color: #77dce9;
-  font-size: 12px;
-  font-weight: 700;
+.libraryPage.empty .libraryResourcesHeader {
+  min-height: 82px;
+  border-bottom: 0;
+  padding: 26px 38px 12px;
 }
 
 .libraryResourcesHeader h2 {
-  margin-top: 5px;
+  margin-top: 0;
   overflow: hidden;
   color: #f4f8ff;
   font-size: 24px;
@@ -5123,14 +5247,6 @@ h1 {
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  min-height: 42px;
-  border: 1px solid rgba(130, 230, 241, 0.36);
-  border-radius: 7px;
-  color: #0d2028;
-  background: linear-gradient(135deg, #86ecf2, #f0df93);
-  cursor: pointer;
-  font-weight: 700;
-  padding: 0 15px;
 }
 
 .libraryNotice,
@@ -5157,6 +5273,14 @@ h1 {
   padding: 12px 20px 20px;
   scrollbar-color: rgba(128, 233, 247, 0.28) transparent;
   scrollbar-width: thin;
+}
+
+.libraryPage.empty .libraryResourceList {
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  overflow: hidden;
+  padding: clamp(86px, 12vh, 138px) 46px 38px;
 }
 
 .libraryResourceRow {
@@ -5262,6 +5386,12 @@ h1 {
   gap: 8px;
 }
 
+.libraryResourcesEmpty svg {
+  color: #748092;
+  opacity: 1;
+  stroke-opacity: 1;
+}
+
 .libraryResourcesEmpty strong {
   margin-top: 8px;
   color: rgba(235, 241, 250, 0.75);
@@ -5269,6 +5399,65 @@ h1 {
 
 .libraryResourcesEmpty span {
   font-size: 13px;
+}
+
+.libraryOnboarding {
+  display: grid;
+  width: min(680px, 100%);
+  place-items: center;
+  color: rgba(216, 226, 238, 0.64);
+  text-align: center;
+}
+
+.libraryOnboardingIcon {
+  margin-bottom: 22px;
+  color: #748092;
+  opacity: 1;
+  stroke-opacity: 1;
+}
+
+.libraryOnboarding > strong {
+  color: #f3f7ff;
+  font-size: 24px;
+  line-height: 1.3;
+}
+
+.libraryOnboarding > span {
+  margin-top: 10px;
+  font-size: 14px;
+}
+
+.libraryOnboardingCreateButton {
+  min-width: 210px;
+  margin-top: 28px;
+}
+
+.libraryOnboardingTypes {
+  display: grid;
+  width: 100%;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin-top: 36px;
+  border-top: 1px solid rgba(166, 191, 211, 0.14);
+  padding-top: 28px;
+}
+
+.libraryOnboardingTypes > span {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  min-width: 0;
+  color: rgba(226, 235, 245, 0.78);
+  font-size: 13px;
+}
+
+.libraryOnboardingTypes > span + span {
+  border-left: 1px solid rgba(166, 191, 211, 0.12);
+}
+
+.libraryOnboardingTypes svg {
+  flex: 0 0 auto;
+  color: rgba(205, 218, 234, 0.72);
 }
 
 .libraryModalBackdrop {
@@ -5836,11 +6025,15 @@ h1 {
 @media (max-width: 760px) {
   .libraryPage {
     grid-template-columns: 1fr;
+    margin-right: -34px;
+    margin-left: -34px;
   }
 
   .libraryCollectionsPanel {
     min-height: 230px;
     max-height: 300px;
+    border-right: 0;
+    border-bottom: 1px solid rgba(166, 191, 211, 0.14);
   }
 
   .libraryResourcesPanel {
@@ -5854,6 +6047,19 @@ h1 {
 
   .libraryResourceRow {
     grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .libraryPage.empty .libraryResourceList {
+    padding: 58px 24px 34px;
+  }
+
+  .libraryOnboardingTypes {
+    gap: 18px;
+    grid-template-columns: 1fr;
+  }
+
+  .libraryOnboardingTypes > span + span {
+    border-left: 0;
   }
 
 

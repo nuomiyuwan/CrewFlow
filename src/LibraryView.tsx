@@ -7,6 +7,7 @@ import {
   ChevronRight,
   ExternalLink,
   File,
+  Folder,
   FileSpreadsheet,
   FileText,
   Image as ImageIcon,
@@ -916,19 +917,15 @@ export default function LibraryView({
   }
 
   return (
-    <section className="libraryPage">
+    <section className={`libraryPage${selectedCollection ? '' : ' empty'}`}>
       <aside className="libraryCollectionsPanel">
-        <div className="libraryPanelHeading">
-          <div>
-            <strong>资料集</strong>
-            <span>{collections.length} 个分类</span>
-          </div>
-          {canManageCollections && (
-            <button type="button" title="新建资料集" onClick={openNewCollection}>
-              <Plus size={18} />
+        {canManageCollections && selectedCollection && (
+          <div className="libraryPanelHeading">
+            <button className="primaryButton libraryCreateCollectionButton" type="button" title="新建资料集" onClick={openNewCollection}>
+              <span className="libraryNewCollectionLabel">新建资料集</span>
             </button>
-          )}
-        </div>
+          </div>
+        )}
         <div className="libraryCollectionList">
           {sortedCollections.map((collection) => (
             <div className={collection.id === selectedCollection?.id ? 'libraryCollectionRow active' : 'libraryCollectionRow'} key={collection.id}>
@@ -952,8 +949,9 @@ export default function LibraryView({
           ))}
           {sortedCollections.length === 0 && (
             <div className="libraryCollectionEmpty">
-              <FileText size={24} />
-              <span>{canManageCollections ? '先新建一个资料集' : '等待管理员创建资料集'}</span>
+              <Folder size={32} />
+              <strong>{canManageCollections ? '暂无资料集' : '等待管理员创建资料集'}</strong>
+              <span>{canManageCollections ? '创建资料集以整理和查找资料' : '创建后即可在这里查看资料'}</span>
             </div>
           )}
         </div>
@@ -961,16 +959,17 @@ export default function LibraryView({
 
       <div className="libraryResourcesPanel">
         <header className="libraryResourcesHeader">
-          <div>
-            <span className="libraryEyebrow">当前资料集</span>
-            <h2>{selectedCollection?.name ?? '资料库'}</h2>
-            <p>{selectedCollection ? `${visibleItems.length} 项资料` : '创建资料集后即可添加内容'}</p>
-          </div>
           {selectedCollection && (
-            <button className="libraryAddButton" type="button" onClick={openNewItem}>
-              <Plus size={18} />
-              添加资料
-            </button>
+            <>
+              <div>
+                <h2>{selectedCollection.name}</h2>
+                <p>{visibleItems.length} 项资料</p>
+              </div>
+              <button className="primaryButton libraryAddButton" type="button" onClick={openNewItem}>
+                <Plus size={18} />
+                添加资料
+              </button>
+            </>
           )}
         </header>
 
@@ -1008,6 +1007,23 @@ export default function LibraryView({
               <FileText size={32} />
               <strong>{searchQuery.trim() ? '没有匹配的资料' : '这个资料集还是空的'}</strong>
               {!searchQuery.trim() && <span>可添加文稿本体、文件路径或在线链接</span>}
+            </div>
+          )}
+          {!selectedCollection && (
+            <div className="libraryOnboarding">
+              <FileText className="libraryOnboardingIcon" size={48} strokeWidth={1.45} />
+              <strong>{canManageCollections ? '创建第一个资料集' : '暂时还没有资料集'}</strong>
+              <span>{canManageCollections ? '按项目、客户或用途整理常用资料' : '等待管理员创建后即可查看和添加资料'}</span>
+              {canManageCollections && (
+                <button className="primaryButton libraryOnboardingCreateButton" type="button" onClick={openNewCollection}>
+                  新建资料集
+                </button>
+              )}
+              <div className="libraryOnboardingTypes" aria-label="资料库支持的资料类型">
+                <span><Upload size={19} />上传文稿</span>
+                <span><Video size={19} />视频/共享文件</span>
+                <span><Link size={19} />在线链接</span>
+              </div>
             </div>
           )}
         </div>

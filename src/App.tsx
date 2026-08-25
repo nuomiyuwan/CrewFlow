@@ -835,10 +835,9 @@ const welcomeGuides: Record<Role, WelcomeGuideContent> = {
         ],
       },
     ],
-    note: '团队模式常用地址格式：http://常驻电脑局域网IP:8787。',
   },
   admin: {
-    eyebrow: '使用说明',
+    eyebrow: '快速上手',
     title: '管理员使用说明',
     intro: '管理员负责日常项目推进、团队排期和基础资料维护。',
     sections: [
@@ -862,7 +861,7 @@ const welcomeGuides: Record<Role, WelcomeGuideContent> = {
     ],
   },
   manager: {
-    eyebrow: '使用说明',
+    eyebrow: '快速上手',
     title: '项目经理使用说明',
     intro: '项目经理负责自己项目的录入、任务拆分和交付跟进。',
     sections: [
@@ -886,7 +885,7 @@ const welcomeGuides: Record<Role, WelcomeGuideContent> = {
     ],
   },
   member: {
-    eyebrow: '使用说明',
+    eyebrow: '快速上手',
     title: '成员使用说明',
     intro: '成员主要查看和更新分配给自己的工作。',
     sections: [
@@ -909,7 +908,7 @@ const welcomeGuides: Record<Role, WelcomeGuideContent> = {
     ],
   },
   finance: {
-    eyebrow: '使用说明',
+    eyebrow: '快速上手',
     title: '财务使用说明',
     intro: '财务主要维护项目商务信息、收款、开票和结算状态。',
     sections: [
@@ -4136,6 +4135,7 @@ function App() {
             projects={roleVisibleProjects}
             displayProjects={filteredProjects}
             tasks={appTasks}
+            workflowStages={appWorkflowOptions.workflowStages}
             loadAppData={loadCurrentAppData}
             saveAppData={saveCurrentAppData}
             onRecordsChange={setAppFinanceRecords}
@@ -9331,6 +9331,7 @@ function FinanceView({
   projects,
   displayProjects = projects,
   tasks,
+  workflowStages,
   loadAppData,
   saveAppData,
   onRecordsChange,
@@ -9339,6 +9340,7 @@ function FinanceView({
   projects: Project[]
   displayProjects?: Project[]
   tasks: Task[]
+  workflowStages: string[]
   loadAppData: AppDataLoader
   saveAppData: AppDataSaver
   onRecordsChange?: (records: FinanceRecord[]) => void
@@ -9528,7 +9530,7 @@ function FinanceView({
       )}
 
       {showParticipationView ? (
-        <MonthlyProjectParticipation projects={projects} tasks={tasks} records={syncedRecords} />
+        <MonthlyProjectParticipation projects={projects} tasks={tasks} records={syncedRecords} workflowStages={workflowStages} />
       ) : (
         <>
           <FinanceMetric icon={DollarSign} label="合同总额" value={formatMoney(totalContract)} tone="cyan" />
@@ -9635,7 +9637,12 @@ type MonthlyParticipantKind = 'internal' | 'external'
 type MonthlyProjectSummary = {
   id: string
   name: string
+  type: string
+  client: string
+  clientContact: string
+  manager: string
   due: string
+  progress: number
   contractAmount: number
   amountRecorded: boolean
 }
@@ -9653,14 +9660,25 @@ type MonthlyParticipant = {
   pendingAmountCount: number
 }
 
+type MonthlyProjectOverviewState = {
+  projectId: string
+  left: number
+  top: number
+  phase: 'visible' | 'leaving'
+}
+
+const monthlyProjectOverviewExitMs = 180
+
 function MonthlyProjectParticipation({
   projects,
   tasks,
   records,
+  workflowStages,
 }: {
   projects: Project[]
   tasks: Task[]
   records: FinanceRecord[]
+  workflowStages: string[]
 }) {
   const [monthKey, setMonthKey] = useState(() => previousMonthKey())
   const [selectedParticipantKey, setSelectedParticipantKey] = useState('')
@@ -9668,9 +9686,13 @@ function MonthlyProjectParticipation({
   const [showAllProjectBars, setShowAllProjectBars] = useState(false)
   const [showAllParticipantBars, setShowAllParticipantBars] = useState(false)
   const [showAllRelationshipProjects, setShowAllRelationshipProjects] = useState(false)
+  const [projectOverview, setProjectOverview] = useState<MonthlyProjectOverviewState | null>(null)
+  const projectOverviewAnchorRef = useRef<HTMLElement | null>(null)
+  const projectOverviewHideTimerRef = useRef<number | null>(null)
+  const projectOverviewInteractionRef = useRef(0)
   const report = useMemo(
-    () => buildMonthlyParticipationReport(projects, tasks, records, monthKey),
-    [monthKey, projects, records, tasks],
+    () => buildMonthlyParticipationReport(projects, tasks, records, monthKey, workflowStages),
+    [monthKey, projects, records, tasks, workflowStages],
   )
   const projectBars = useMemo(
     () =>
@@ -9712,6 +9734,9 @@ function MonthlyProjectParticipation({
   const visibleRelationshipProjects = showAllRelationshipProjects ? relationshipProjects : relationshipProjects.slice(0, 8)
   const maxProjectAmount = Math.max(1, ...projectBars.map((project) => project.contractAmount))
   const maxParticipantProjects = Math.max(1, ...participantBars.map((participant) => participant.projects.length))
+  const overviewProject = projectOverview
+    ? report.projects.find((project) => project.id === projectOverview.projectId) ?? null
+    : null
 
   useEffect(() => {
     setSelectedParticipantKey((current) =>
@@ -9724,7 +9749,92 @@ function MonthlyProjectParticipation({
     setShowAllProjectBars(false)
     setShowAllParticipantBars(false)
     setShowAllRelationshipProjects(false)
+    clearProjectOverviewTimers()
+    projectOverviewInteractionRef.current += 1
+    projectOverviewAnchorRef.current = null
+    setProjectOverview(null)
   }, [monthKey])
+
+  useEffect(() => {
+    const closeProjectOverview = () => hideProjectOverview()
+    const closeProjectOverviewOutside = (event: PointerEvent) => {
+      const target = event.target
+      if (target instanceof Element && target.closest('.monthlyBarRow.project')) return
+      hideProjectOverview()
+    }
+
+    window.addEventListener('resize', closeProjectOverview)
+    window.addEventListener('wheel', closeProjectOverview, { capture: true, passive: true })
+    document.addEventListener('scroll', closeProjectOverview, true)
+    document.addEventListener('pointerdown', closeProjectOverviewOutside)
+    return () => {
+      window.removeEventListener('resize', closeProjectOverview)
+      window.removeEventListener('wheel', closeProjectOverview, true)
+      document.removeEventListener('scroll', closeProjectOverview, true)
+      document.removeEventListener('pointerdown', closeProjectOverviewOutside)
+      clearProjectOverviewTimers()
+      projectOverviewAnchorRef.current = null
+    }
+  }, [])
+
+  function clearProjectOverviewTimers() {
+    if (projectOverviewHideTimerRef.current !== null) {
+      window.clearTimeout(projectOverviewHideTimerRef.current)
+      projectOverviewHideTimerRef.current = null
+    }
+  }
+
+  function projectOverviewPosition(projectRow: HTMLElement) {
+    const viewportPadding = 16
+    const popoverWidth = Math.min(328, window.innerWidth - viewportPadding * 2)
+    const estimatedPopoverHeight = 140
+    const rowBounds = projectRow.getBoundingClientRect()
+    const preferredLeft = rowBounds.right + 12
+    const preferredTop = rowBounds.top + (rowBounds.height - estimatedPopoverHeight) / 2
+    const maximumLeft = Math.max(viewportPadding, window.innerWidth - popoverWidth - viewportPadding)
+    const maximumTop = Math.max(viewportPadding, window.innerHeight - estimatedPopoverHeight - viewportPadding)
+
+    return {
+      left: Math.min(maximumLeft, Math.max(viewportPadding, preferredLeft)),
+      top: Math.min(maximumTop, Math.max(viewportPadding, preferredTop)),
+    }
+  }
+
+  function showProjectOverview(projectId: string, projectRow: HTMLElement) {
+    clearProjectOverviewTimers()
+    projectOverviewInteractionRef.current += 1
+    projectOverviewAnchorRef.current = projectRow
+    setProjectOverview({ projectId, ...projectOverviewPosition(projectRow), phase: 'visible' })
+  }
+
+  function hideProjectOverview() {
+    if (!projectOverviewAnchorRef.current) return
+    clearProjectOverviewTimers()
+    const interaction = projectOverviewInteractionRef.current + 1
+    projectOverviewInteractionRef.current = interaction
+    projectOverviewAnchorRef.current = null
+    setProjectOverview((current) => {
+      if (!current) return current
+      return { ...current, phase: 'leaving' }
+    })
+    projectOverviewHideTimerRef.current = window.setTimeout(() => {
+      if (projectOverviewInteractionRef.current !== interaction) return
+      setProjectOverview((current) => {
+        if (!current || current.phase !== 'leaving') return current
+        return null
+      })
+      projectOverviewHideTimerRef.current = null
+    }, monthlyProjectOverviewExitMs)
+  }
+
+  function toggleProjectOverview(projectId: string, projectRow: HTMLElement) {
+    if (projectOverview?.projectId === projectId && projectOverview.phase === 'visible') {
+      hideProjectOverview()
+      return
+    }
+
+    showProjectOverview(projectId, projectRow)
+  }
 
   function selectProject(projectId: string) {
     const nextProjectId = selectedProjectId === projectId ? '' : projectId
@@ -9822,8 +9932,17 @@ function MonthlyProjectParticipation({
                     className={`monthlyBarRow project ${selectedProjectId === project.id ? 'selected' : ''} ${isRelated ? '' : 'muted'}`}
                     key={project.id}
                     type="button"
+                    title="点击查看项目概览"
                     aria-pressed={selectedProjectId === project.id}
-                    onClick={() => selectProject(project.id)}
+                    aria-expanded={projectOverview?.projectId === project.id && projectOverview.phase === 'visible'}
+                    aria-describedby={projectOverview?.projectId === project.id ? `monthly-project-overview-${project.id}` : undefined}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Escape') hideProjectOverview()
+                    }}
+                    onClick={(event) => {
+                      toggleProjectOverview(project.id, event.currentTarget)
+                      selectProject(project.id)
+                    }}
                   >
                     <span className="monthlyBarLabel">
                       <strong>{project.name}</strong>
@@ -9992,11 +10111,51 @@ function MonthlyProjectParticipation({
           </section>
         </>
       )}
+
+      {projectOverview && overviewProject && createPortal(
+        <div
+          key={projectOverview.projectId}
+          className={`monthlyProjectOverviewPopover ${projectOverview.phase === 'leaving' ? 'isLeaving' : ''}`}
+          id={`monthly-project-overview-${overviewProject.id}`}
+          role="tooltip"
+          style={{ left: projectOverview.left, top: projectOverview.top }}
+        >
+          <strong className="monthlyProjectOverviewName" title={overviewProject.name}>
+            {overviewProject.name || '项目名称未填写'}
+          </strong>
+          <span
+            className="monthlyProjectOverviewMeta"
+            title={`${overviewProject.type || '类型未填写'} · ${overviewProject.client || '公司未填写'} · 对接：${overviewProject.clientContact || '未填写'}`}
+          >
+            {overviewProject.type || '类型未填写'} · {overviewProject.client || '公司未填写'} · 对接：
+            {overviewProject.clientContact || '未填写'}
+          </span>
+          <span className="monthlyProjectOverviewOwner" title={overviewProject.manager}>
+            项目负责人：{overviewProject.manager || '未分配'}
+          </span>
+          <div className="progressBlock monthlyProjectOverviewProgress">
+            <div className="progressLabel">
+              <span>当前进度</span>
+              <strong>{overviewProject.progress}%</strong>
+            </div>
+            <div className="progressBar" aria-hidden="true">
+              <span style={{ width: `${overviewProject.progress}%` }} />
+            </div>
+          </div>
+        </div>,
+        document.body,
+      )}
     </>
   )
 }
 
-function buildMonthlyParticipationReport(projects: Project[], tasks: Task[], records: FinanceRecord[], monthKey: string) {
+function buildMonthlyParticipationReport(
+  projects: Project[],
+  tasks: Task[],
+  records: FinanceRecord[],
+  monthKey: string,
+  workflowStages: string[],
+) {
   const recordByProjectId = new Map(records.map((record) => [record.projectId, record]))
   const tasksByProjectId = new Map<string, Task[]>()
   tasks.forEach((task) => {
@@ -10010,10 +10169,16 @@ function buildMonthlyParticipationReport(projects: Project[], tasks: Task[], rec
     .sort((left, right) => left.due.localeCompare(right.due) || left.name.localeCompare(right.name, 'zh-CN'))
   const projectSummaries: MonthlyProjectSummary[] = monthProjects.map((project) => {
     const contractAmount = Math.max(0, Number(recordByProjectId.get(project.id)?.contractAmount) || 0)
+    const progress = progressForProject(project, workflowStages)
     return {
       id: project.id,
       name: project.name,
+      type: project.type ?? '',
+      client: project.client ?? '',
+      clientContact: project.clientContact ?? '',
+      manager: project.manager || project.owner || '',
       due: project.due,
+      progress: Number.isFinite(progress) ? Math.min(100, Math.max(0, progress)) : 0,
       contractAmount,
       amountRecorded: contractAmount > 0,
     }
@@ -10031,9 +10196,6 @@ function buildMonthlyParticipationReport(projects: Project[], tasks: Task[], rec
   const unassignedProjects: Project[] = []
 
   monthProjects.forEach((project) => {
-    const record = recordByProjectId.get(project.id)
-    const contractAmount = Math.max(0, Number(record?.contractAmount) || 0)
-    const amountRecorded = contractAmount > 0
     let participantAdded = false
 
     function addParticipant(kind: MonthlyParticipantKind, name: string, workType: string, keyOverride?: string) {
@@ -10052,14 +10214,12 @@ function buildMonthlyParticipationReport(projects: Project[], tasks: Task[], rec
       if (currentProject) {
         currentProject.workTypeSet.add(workType)
       } else {
+        const projectSummary = projectSummaryById.get(project.id)
+        if (!projectSummary) return
         participant.projects.set(project.id, {
-          id: project.id,
-          name: project.name,
-          due: project.due,
+          ...projectSummary,
           workTypes: [],
           workTypeSet: new Set([workType]),
-          contractAmount,
-          amountRecorded,
         })
       }
       participants.set(participantKey, participant)
