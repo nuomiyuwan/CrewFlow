@@ -36,6 +36,7 @@ let downloadedMacUpdatePath = ''
 let downloadedWindowsUpdatePath = ''
 let appUpdateInstallPending = false
 let localLibraryFileStorePromise = null
+const libraryPreviewWindows = new Map()
 let appUpdateState = {
   status: 'idle',
   percent: 0,
@@ -908,12 +909,23 @@ async function previewLibraryResource(payload = {}) {
     targetUrl = pathToFileURL(sourcePath).href
   }
 
+  const previewKey = `${payload.dataMode === 'team' ? 'team' : 'single'}:${
+    typeof payload.id === 'string' && payload.id.trim() ? payload.id.trim() : targetUrl
+  }`
+  const existingWindow = libraryPreviewWindows.get(previewKey)
+  if (existingWindow && !existingWindow.isDestroyed()) {
+    if (existingWindow.isMinimized()) existingWindow.restore()
+    if (!existingWindow.isVisible()) existingWindow.show()
+    existingWindow.focus()
+    return true
+  }
+  libraryPreviewWindows.delete(previewKey)
+
   const previewWindow = new BrowserWindow({
     width: 1080,
     height: 720,
     minWidth: 720,
     minHeight: 500,
-    parent: mainWindow && !mainWindow.isDestroyed() ? mainWindow : undefined,
     title: typeof payload.title === 'string' && payload.title ? payload.title : '资料预览',
     backgroundColor: '#111827',
     autoHideMenuBar: true,
@@ -922,6 +934,10 @@ async function previewLibraryResource(payload = {}) {
       nodeIntegration: false,
       sandbox: true,
     },
+  })
+  libraryPreviewWindows.set(previewKey, previewWindow)
+  previewWindow.on('closed', () => {
+    if (libraryPreviewWindows.get(previewKey) === previewWindow) libraryPreviewWindows.delete(previewKey)
   })
   previewWindow.webContents.setWindowOpenHandler(({ url }) => {
     if (sourcePath && url === 'https://crewflow.local/open-system') {
@@ -1408,6 +1424,10 @@ async function createWindow() {
 
   mainWindow.on('closed', () => {
     mainWindow = null
+    libraryPreviewWindows.forEach((previewWindow) => {
+      if (!previewWindow.isDestroyed()) previewWindow.close()
+    })
+    libraryPreviewWindows.clear()
   })
 
   if (showMainWindowWhenReady) {

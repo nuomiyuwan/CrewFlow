@@ -983,7 +983,7 @@ export default function LibraryView({
             const Icon = itemIcon(item)
             return (
               <article className="libraryResourceRow" key={item.id}>
-                <button className="libraryResourceMain" type="button" onClick={() => void previewItem(item)}>
+                <button className="libraryResourceMain" type="button" disabled={busy} onClick={() => void previewItem(item)}>
                   <span className="libraryResourceIcon"><Icon size={21} /></span>
                   <span className="libraryResourceText">
                     <strong>{item.title}</strong>
