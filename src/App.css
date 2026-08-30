@@ -4135,6 +4135,184 @@ h1 {
   padding: 18px 20px 20px;
 }
 
+.projectRiskAlert {
+  position: fixed;
+  right: 24px;
+  bottom: 84px;
+  z-index: 21;
+  width: min(370px, calc(100vw - 48px));
+  max-height: calc(100vh - 112px);
+  overflow: hidden;
+  border: 1px solid rgba(180, 202, 216, 0.22);
+  border-radius: 18px;
+  padding: 15px;
+  color: #f6f9fd;
+  background:
+    linear-gradient(145deg, rgba(255, 255, 255, 0.1), rgba(255, 255, 255, 0.035)),
+    rgba(15, 24, 37, 0.95);
+  backdrop-filter: blur(24px);
+  box-shadow:
+    0 24px 66px rgba(0, 0, 0, 0.44),
+    inset 0 1px 0 rgba(255, 255, 255, 0.1);
+  -webkit-app-region: no-drag;
+  animation: projectRiskAlertIn 220ms cubic-bezier(0.2, 0.85, 0.28, 1.1);
+}
+
+.projectRiskAlert-late {
+  border-color: rgba(255, 137, 126, 0.34);
+}
+
+.projectRiskAlert-overdue-node {
+  border-color: rgba(238, 211, 118, 0.3);
+}
+
+.projectRiskAlert-risk {
+  border-color: rgba(120, 226, 238, 0.3);
+}
+
+.projectRiskAlert.isClosing {
+  pointer-events: none;
+  animation: projectRiskAlertOut 150ms ease forwards;
+}
+
+@keyframes projectRiskAlertIn {
+  from {
+    opacity: 0;
+    transform: translateY(12px) scale(0.98);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes projectRiskAlertOut {
+  to {
+    opacity: 0;
+    transform: translateY(8px) scale(0.985);
+  }
+}
+
+.projectRiskAlertHeader,
+.projectRiskAlertMeta,
+.projectRiskAlertActions {
+  display: flex;
+  align-items: center;
+}
+
+.projectRiskAlertHeader {
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+
+.projectRiskAlertHeader > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  color: #f0d77e;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.projectRiskAlert-late .projectRiskAlertHeader > span {
+  color: #ffaaa1;
+}
+
+.projectRiskAlert-risk .projectRiskAlertHeader > span {
+  color: #83e5ed;
+}
+
+.projectRiskAlertHeader > button {
+  display: grid;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  place-items: center;
+  border: 0;
+  border-radius: 9px;
+  color: rgba(223, 232, 242, 0.62);
+  background: transparent;
+  cursor: pointer;
+}
+
+.projectRiskAlertHeader > button:hover {
+  color: #f7fbff;
+  background: rgba(255, 255, 255, 0.07);
+}
+
+.projectRiskAlertProject {
+  display: block;
+  overflow: hidden;
+  margin-right: 4px;
+  color: #f7fbff;
+  font-size: 18px;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.projectRiskAlert > p {
+  margin: 5px 0 10px;
+  color: rgba(222, 231, 241, 0.72);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.projectRiskAlertMeta {
+  justify-content: space-between;
+  min-height: 22px;
+  color: rgba(194, 208, 221, 0.58);
+  font-size: 12px;
+}
+
+.projectRiskAlertMeta span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.projectRiskAlertMeta em {
+  border: 1px solid rgba(180, 202, 216, 0.16);
+  border-radius: 999px;
+  padding: 3px 8px;
+  color: rgba(219, 229, 239, 0.68);
+  font-style: normal;
+}
+
+.projectRiskAlertActions {
+  justify-content: flex-end;
+  gap: 7px;
+  margin-top: 13px;
+  padding-top: 12px;
+  border-top: 1px solid rgba(180, 202, 216, 0.12);
+}
+
+.projectRiskAlertActions button {
+  min-height: 34px;
+  border: 1px solid rgba(180, 202, 216, 0.17);
+  border-radius: 10px;
+  padding: 0 11px;
+  color: rgba(237, 243, 250, 0.78);
+  background: rgba(255, 255, 255, 0.045);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.projectRiskAlertActions button:hover {
+  color: #f7fbff;
+  border-color: rgba(132, 231, 239, 0.34);
+  background: rgba(132, 231, 239, 0.08);
+}
+
+.projectRiskAlertActions button.primary {
+  border-color: rgba(140, 235, 239, 0.26);
+  color: #07131b;
+  background: linear-gradient(135deg, #86eaed, #eadf97);
+  font-weight: 700;
+}
+
 .assistantFab {
   position: fixed;
   right: 26px;
@@ -7078,7 +7256,8 @@ h1 {
 
 .accountSummary {
   display: grid;
-  gap: 5px;
+  min-width: 0;
+  gap: 2px;
 }
 
 .accountSummary strong,
@@ -7086,22 +7265,94 @@ h1 {
   color: #f7fbff;
 }
 
-.logoutButton {
-  min-height: 36px;
-  border: 1px solid rgba(180, 202, 216, 0.18);
-  border-radius: 12px;
-  color: rgba(244, 248, 255, 0.82);
-  background: rgba(255, 255, 255, 0.055);
-  cursor: pointer;
+.roleBox {
+  gap: 8px;
+  border-color: rgba(128, 233, 247, 0.2);
+  border-radius: 16px;
+  background:
+    linear-gradient(145deg, rgba(129, 237, 247, 0.09), rgba(255, 255, 255, 0.035)),
+    rgba(18, 26, 39, 0.66);
+  padding: 12px;
+  box-shadow:
+    0 16px 36px rgba(0, 0, 0, 0.2),
+    inset 0 1px 0 rgba(255, 255, 255, 0.1);
 }
 
-.accountManageButton {
-  min-height: 32px;
-  border: 1px solid rgba(128, 233, 247, 0.24);
-  border-radius: 12px;
-  color: #91f3fb;
-  background: rgba(129, 237, 247, 0.08);
+.accountIdentity {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+
+.accountSummary .eyebrow {
+  font-size: 9px;
+  letter-spacing: 0.1em;
+}
+
+.accountSummary strong {
+  overflow: hidden;
+  font-size: 16px;
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.roleBox .accountMeta {
+  overflow: hidden;
+  color: rgba(210, 222, 235, 0.56);
+  font-size: 11px;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.accountQuickActions {
+  display: flex;
+  gap: 6px;
+}
+
+.accountActionButton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 0;
+  min-height: 31px;
+  flex: 1 1 0;
+  gap: 5px;
+  border: 1px solid rgba(128, 233, 247, 0.18);
+  border-radius: 9px;
+  color: rgba(205, 247, 251, 0.9);
+  background: rgba(129, 237, 247, 0.065);
   cursor: pointer;
+  font-size: 11px;
+  font-weight: 750;
+  padding: 0 7px;
+  transition:
+    border-color 160ms ease,
+    color 160ms ease,
+    background 160ms ease;
+}
+
+.accountActionButton svg {
+  flex: 0 0 auto;
+}
+
+.accountActionButton:hover {
+  border-color: rgba(128, 233, 247, 0.36);
+  color: #f4ffff;
+  background: rgba(129, 237, 247, 0.12);
+}
+
+.accountActionButton.logout {
+  border-color: rgba(180, 202, 216, 0.14);
+  color: rgba(210, 222, 235, 0.68);
+  background: rgba(255, 255, 255, 0.035);
+}
+
+.accountActionButton.logout:hover {
+  border-color: rgba(255, 136, 146, 0.28);
+  color: #ffd6da;
+  background: rgba(255, 106, 119, 0.08);
 }
 
 .topActions {
@@ -8033,6 +8284,54 @@ h1 {
   color: #9ff0c7;
 }
 
+.teamPairingRequests {
+  display: grid;
+  gap: 8px;
+  border: 1px solid rgba(244, 221, 143, 0.3);
+  border-radius: 12px;
+  background: rgba(244, 221, 143, 0.07);
+  padding: 10px;
+}
+
+.teamPairingRequests > strong {
+  color: #f4dd8f;
+  font-size: 13px;
+}
+
+.teamPairingRequests > div {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 7px;
+}
+
+.teamPairingRequests span {
+  min-width: 0;
+  overflow: hidden;
+  color: rgba(244, 248, 255, 0.86);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+}
+
+.teamPairingRequests button,
+.teamDiscoveryPanel button {
+  min-height: 32px;
+  border: 1px solid rgba(180, 202, 216, 0.18);
+  border-radius: 10px;
+  color: rgba(244, 248, 255, 0.82);
+  background: rgba(255, 255, 255, 0.06);
+  cursor: pointer;
+  padding: 0 10px;
+}
+
+.teamPairingRequests button.approve {
+  border-color: rgba(128, 233, 247, 0.3);
+  color: #07111a;
+  background: linear-gradient(135deg, #8df1f3, #f4dd8f);
+  font-weight: 800;
+}
+
 .teamHostAddress {
   padding: 0;
 }
@@ -8064,7 +8363,7 @@ h1 {
 
 .teamHostCandidates button {
   display: grid;
-  grid-template-columns: auto 1fr auto;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
   gap: 10px;
   min-height: 34px;
@@ -8075,11 +8374,6 @@ h1 {
   cursor: pointer;
   padding: 6px 10px;
   text-align: left;
-}
-
-.teamHostCandidates strong {
-  color: #7ee6ef;
-  font-size: 12px;
 }
 
 .teamHostCandidates span {
@@ -8117,6 +8411,75 @@ h1 {
 .teamHostActions button:disabled {
   cursor: not-allowed;
   opacity: 0.45;
+}
+
+.teamDiscoveryPanel {
+  display: grid;
+  gap: 10px;
+  margin: 12px 20px 0;
+  border: 1px solid rgba(128, 233, 247, 0.2);
+  border-radius: 14px;
+  background: rgba(6, 12, 22, 0.25);
+  padding: 12px;
+}
+
+.teamDiscoveryPanel .teamHostHeader > button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+}
+
+.teamDiscoveryPanel button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.teamDiscoveryHosts {
+  display: grid;
+  gap: 7px;
+}
+
+.teamDiscoveryHosts > div {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  border: 1px solid rgba(180, 202, 216, 0.14);
+  border-radius: 11px;
+  background: rgba(255, 255, 255, 0.035);
+  padding: 9px 10px;
+}
+
+.teamDiscoveryHosts span {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.teamDiscoveryHosts strong,
+.teamDiscoveryHosts em {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.teamDiscoveryHosts strong {
+  color: #f7fbff;
+  font-size: 13px;
+}
+
+.teamDiscoveryHosts em {
+  color: rgba(210, 222, 235, 0.52);
+  font-size: 11px;
+  font-style: normal;
+}
+
+.teamDiscoveryPanel > p {
+  margin: 0;
+  color: rgba(210, 222, 235, 0.58);
+  font-size: 12px;
+  line-height: 1.5;
 }
 
 .dataPathPanel {

@@ -3,6 +3,7 @@ const { autoUpdater } = require('electron-updater')
 const { spawn } = require('child_process')
 const { createHash } = require('crypto')
 const fs = require('fs')
+const os = require('os')
 const path = require('path')
 const { pathToFileURL } = require('url')
 const {
@@ -1034,12 +1035,24 @@ async function fetchLocalTeamHealth() {
 
 async function getTeamServiceInfo(message = '') {
   const { defaultServerDataDir } = await import(serverModuleUrl('crewflow-server.mjs'))
-  const { localTeamServerCandidates, readOrCreateAccessKey, readServiceRuntimeMetadata, serviceAccessKeyPath } = await import(
+  const { localTeamServerCandidates, localTeamStableUrl, readOrCreateAccessKey, readServiceRuntimeMetadata, serviceAccessKeyPath } = await import(
     serverModuleUrl('service-manager.mjs')
   )
   const accessKey = await readOrCreateAccessKey()
   const serviceRuntime = await readServiceRuntimeMetadata()
-  const urlCandidates = localTeamServerCandidates()
+  const stableUrl = localTeamStableUrl()
+  const stableCandidate = stableUrl
+    ? {
+        url: stableUrl,
+        address: new URL(stableUrl).hostname,
+        interfaceName: 'hostname',
+        kind: '稳定电脑名称',
+        priority: -1000,
+      }
+    : null
+  const urlCandidates = [stableCandidate, ...localTeamServerCandidates()].filter(
+    (candidate, index, candidates) => candidate && candidates.findIndex((item) => item?.url === candidate.url) === index,
+  )
   const urls = urlCandidates.map((candidate) => candidate.url)
   const health = await fetchLocalTeamHealth()
   const running = Boolean(health?.ok)
@@ -1051,9 +1064,11 @@ async function getTeamServiceInfo(message = '') {
   return {
     supported: process.platform === 'darwin' || process.platform === 'win32',
     platform: process.platform,
+    deviceName: os.hostname(),
     running,
     localUrl: `http://127.0.0.1:${process.env.CREWFLOW_PORT || '8787'}`,
-    connectionUrl: urls[0],
+    stableUrl,
+    connectionUrl: stableUrl || urls[0],
     urls,
     urlCandidates,
     accessKey,
@@ -1553,6 +1568,11 @@ if (!hasPrimaryInstanceLock) {
 
     ipcMain.handle('team-service:info', async () => {
       return getTeamServiceInfo()
+    })
+
+    ipcMain.handle('team-service:discover', async () => {
+      const { discoverLocalTeamServers } = await import(serverModuleUrl('service-manager.mjs'))
+      return discoverLocalTeamServers()
     })
 
     ipcMain.handle('team-service:install', async () => {

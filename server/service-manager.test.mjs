@@ -6,6 +6,8 @@ import path from 'node:path'
 import test from 'node:test'
 import {
   localTeamServerCandidates,
+  localTeamDiscoveryTargets,
+  localTeamStableUrl,
   localTeamServerUrls,
   readOrCreateAccessKey,
   readServiceRuntimeMetadata,
@@ -14,6 +16,21 @@ import {
   serviceRuntimeMetadataPath,
   writeServiceRuntimeMetadata,
 } from './service-manager.mjs'
+
+test('stable team server url uses the computer hostname', () => {
+  assert.equal(localTeamStableUrl({ hostname: 'MacBook-Pro-2', port: 8787 }), 'http://MacBook-Pro-2.local:8787')
+  assert.equal(localTeamStableUrl({ hostname: 'studio.example.com', port: 8787 }), 'http://studio.example.com:8787')
+  assert.equal(localTeamStableUrl({ hostname: 'invalid host', port: 8787 }), '')
+})
+
+test('team discovery targets physical LAN broadcasts and ignores VPN adapters', () => {
+  const targets = localTeamDiscoveryTargets({
+    en0: [{ address: '192.168.3.38', netmask: '255.255.255.0', family: 'IPv4', internal: false }],
+    utun4: [{ address: '198.18.0.1', netmask: '255.255.0.0', family: 'IPv4', internal: false }],
+  })
+
+  assert.deepEqual(targets, ['255.255.255.255', '192.168.3.255'])
+})
 
 test('service runtime uses packaged app executable when available', () => {
   const runtime = serviceRuntime({

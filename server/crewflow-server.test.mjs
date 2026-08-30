@@ -44,6 +44,8 @@ test('server reports health and data file metadata', async (t) => {
     assert.equal(response.status, 200)
     assert.equal(body.ok, true)
     assert.equal(body.name, 'CrewFlow Server')
+    assert.equal(typeof body.hostName, 'string')
+    assert.equal(new URL(baseUrl).port, String(body.port))
     assert.match(body.dataFile, /crewflow-team\.db$/)
     assert.equal(body.storageEngine, 'sqlite')
     assert.equal(body.incrementalSync, true)
@@ -107,6 +109,44 @@ test('server accepts app data access with the configured access key', async (t) 
 
     assert.equal(readResponse.status, 200)
     assert.equal(data.projects[0].name, 'Secured Project')
+  })
+})
+
+test('server requires host approval before sharing a team access key', async (t) => {
+  await withSecuredServer(t, async (baseUrl) => {
+    const requestToken = 'client-generated-request-token-123456'
+    const createResponse = await fetch(`${baseUrl}/api/pairing/requests`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ clientId: 'client-a', clientName: '剪辑电脑', requestToken }),
+    })
+    const created = await createResponse.json()
+    assert.equal(createResponse.status, 202)
+    assert.equal(created.status, 'pending')
+
+    assert.equal((await fetch(`${baseUrl}/api/pairing/requests`)).status, 401)
+    const pendingResponse = await fetch(`${baseUrl}/api/pairing/requests`, {
+      headers: { 'X-CrewFlow-Key': 'team-secret' },
+    })
+    const pending = await pendingResponse.json()
+    assert.equal(pending.requests.length, 1)
+    assert.equal(pending.requests[0].clientName, '剪辑电脑')
+    assert.equal(Object.prototype.hasOwnProperty.call(pending.requests[0], 'requestToken'), false)
+
+    const pendingStatus = await fetch(`${baseUrl}/api/pairing/status/${created.requestId}?token=${requestToken}`)
+    assert.equal((await pendingStatus.json()).status, 'pending')
+
+    const approveResponse = await fetch(`${baseUrl}/api/pairing/requests/${created.requestId}/approve`, {
+      method: 'POST',
+      headers: { 'X-CrewFlow-Key': 'team-secret' },
+    })
+    assert.equal(approveResponse.status, 200)
+    assert.equal((await fetch(`${baseUrl}/api/pairing/status/${created.requestId}?token=wrong-token`)).status, 404)
+
+    const approvedResponse = await fetch(`${baseUrl}/api/pairing/status/${created.requestId}?token=${requestToken}`)
+    const approved = await approvedResponse.json()
+    assert.equal(approved.status, 'approved')
+    assert.equal(approved.accessKey, 'team-secret')
   })
 })
 

@@ -19,6 +19,7 @@ contextBridge.exposeInMainWorld('desktopBridge', {
   loadAppData: () => ipcRenderer.invoke('app-data:load'),
   saveAppData: (data) => ipcRenderer.invoke('app-data:save', data),
   getTeamServiceInfo: () => ipcRenderer.invoke('team-service:info'),
+  discoverTeamServices: () => ipcRenderer.invoke('team-service:discover'),
   installTeamService: () => ipcRenderer.invoke('team-service:install'),
   restartTeamService: () => ipcRenderer.invoke('team-service:restart'),
   stopTeamService: () => ipcRenderer.invoke('team-service:stop'),

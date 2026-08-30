@@ -32,6 +32,7 @@ import {
   ImagePlus,
   LayoutDashboard,
   ListChecks,
+  LogOut,
   MessageSquareText,
   Minimize2,
   Pencil,
@@ -189,8 +190,10 @@ type StaffMember = {
 type TeamServiceInfo = {
   supported: boolean
   platform: string
+  deviceName?: string
   running: boolean
   localUrl: string
+  stableUrl?: string
   connectionUrl: string
   urls: string[]
   urlCandidates?: {
@@ -216,6 +219,22 @@ type TeamServiceInfo = {
   accessKeyDirectory?: string
   updatedAt?: string
   message: string
+}
+
+type DiscoveredTeamHost = {
+  serverUrl: string
+  stableUrl?: string
+  hostName: string
+  name: string
+}
+
+type TeamPairingRequest = {
+  id: string
+  clientId: string
+  clientName: string
+  status: 'pending'
+  createdAt: number
+  expiresAt: number
 }
 
 type AssistantMode = 'rules' | 'online' | 'local'
@@ -326,6 +345,32 @@ type AssistantRequestPayload = {
   task: 'chat' | 'calendar_extract' | 'operation_extract' | 'assistant_route'
 }
 
+type AssistantPromptRequest = {
+  id: string
+  prompt: string
+}
+
+type ProjectRiskAlertKind = 'late' | 'overdue-node' | 'risk'
+
+type ProjectRiskAlert = {
+  fingerprint: string
+  projectId: string
+  projectName: string
+  kind: ProjectRiskAlertKind
+  label: string
+  reason: string
+  detail: string
+  priority: number
+  overdueDays: number
+}
+
+type ProjectRiskAlertMemoryEntry = {
+  dismissedAt?: number
+  snoozedUntil?: number
+}
+
+type ProjectRiskAlertMemory = Record<string, ProjectRiskAlertMemoryEntry>
+
 type DesktopBridge = {
   platform: string
   arch: string
@@ -348,6 +393,7 @@ type DesktopBridge = {
   loadAppData: () => Promise<AppData | null>
   saveAppData: (data: Partial<AppData>) => Promise<boolean>
   getTeamServiceInfo: () => Promise<TeamServiceInfo>
+  discoverTeamServices: () => Promise<DiscoveredTeamHost[]>
   installTeamService: () => Promise<TeamServiceInfo>
   restartTeamService: () => Promise<TeamServiceInfo>
   stopTeamService: () => Promise<TeamServiceInfo>
@@ -732,6 +778,7 @@ const teamPresenceClientIdStorageKey = 'crewflow-team-presence-client-id-v1'
 const workflowOptionsStorageKey = 'crewflow-workflow-options'
 const libraryCollectionsStorageKey = 'crewflow-library-collections-v1'
 const libraryItemsStorageKey = 'crewflow-library-items-v1'
+const projectRiskAlertStorageKeyPrefix = 'crewflow-project-risk-alerts-v1'
 const defaultTeamServerUrl = 'http://127.0.0.1:8787'
 const appVersion = import.meta.env.VITE_APP_VERSION || '0.0.0'
 const crewFlowGitHubLatestReleaseUrl = 'https://api.github.com/repos/nuomiyuwan/CrewFlow/releases/latest'
@@ -1021,6 +1068,37 @@ function welcomeGuideStorageKey(account: Account) {
   return `${welcomeGuideStorageKeyPrefix}-${account.id}-${account.role}`
 }
 
+function projectRiskAlertStorageKey(accountId: string) {
+  return `${projectRiskAlertStorageKeyPrefix}-${accountId}`
+}
+
+function loadProjectRiskAlertMemory(accountId: string): ProjectRiskAlertMemory {
+  if (!accountId) return {}
+
+  try {
+    const raw = localStorage.getItem(projectRiskAlertStorageKey(accountId))
+    if (!raw) return {}
+    const value = JSON.parse(raw)
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return {}
+
+    return Object.fromEntries(
+      Object.entries(value).filter(([, entry]) => entry && typeof entry === 'object' && !Array.isArray(entry)),
+    ) as ProjectRiskAlertMemory
+  } catch {
+    return {}
+  }
+}
+
+function saveProjectRiskAlertMemory(accountId: string, memory: ProjectRiskAlertMemory) {
+  if (!accountId) return
+
+  try {
+    localStorage.setItem(projectRiskAlertStorageKey(accountId), JSON.stringify(memory))
+  } catch {
+    return
+  }
+}
+
 function loadStoredDataMode(): DataMode {
   try {
     return localStorage.getItem(dataModeStorageKey) === 'team' ? 'team' : 'single'
@@ -1206,6 +1284,27 @@ function isLocalTeamServerUrl(serverUrl: string, teamServiceInfo: TeamServiceInf
   ]
 
   return localUrls.some((url) => url && teamServerUrlKey(url) === targetKey)
+}
+
+function stableTeamServerUrlFromHealth(
+  health: { hostName?: string; port?: number },
+  currentServerUrl: string,
+) {
+  const hostName = String(health.hostName || '').trim().replace(/\.$/, '')
+  if (!hostName || !/^[A-Za-z0-9][A-Za-z0-9.-]*$/.test(hostName)) return ''
+  const stableHostName = hostName.includes('.') ? hostName : `${hostName}.local`
+  let port = Number(health.port)
+
+  if (!Number.isInteger(port) || port <= 0 || port > 65535) {
+    try {
+      const currentUrl = new URL(normalizeTeamServerUrl(currentServerUrl))
+      port = Number(currentUrl.port || (currentUrl.protocol === 'https:' ? 443 : 80))
+    } catch {
+      return ''
+    }
+  }
+
+  return `http://${stableHostName}:${port}`
 }
 
 function teamRequestHeaders(accessKey: string, hasBody = false) {
@@ -1631,7 +1730,64 @@ function applyTeamDataChanges(savedData: AppData, response: TeamDataChangesRespo
 async function fetchTeamHealth(serverUrl: string) {
   const response = await fetch(teamApiUrl(serverUrl, '/health'))
   if (!response.ok) throw new Error(`连接失败：${response.status}`)
-  return (await response.json()) as Partial<TeamServiceInfo> & { ok?: boolean; name?: string; revision?: number }
+  return (await response.json()) as Partial<TeamServiceInfo> & {
+    ok?: boolean
+    name?: string
+    revision?: number
+    hostName?: string
+    port?: number
+  }
+}
+
+async function requestTeamPairing(
+  serverUrl: string,
+  payload: { clientId: string; clientName: string; requestToken: string },
+) {
+  const response = await fetch(teamApiUrl(serverUrl, '/api/pairing/requests'), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+  const body = (await response.json()) as { requestId?: string; status?: string; error?: string; expiresAt?: number }
+  if (!response.ok || !body.requestId) throw new Error(body.error || `连接申请失败：${response.status}`)
+  return body as { requestId: string; status: 'pending'; expiresAt: number }
+}
+
+async function fetchTeamPairingStatus(serverUrl: string, requestId: string, requestToken: string) {
+  const params = new URLSearchParams({ token: requestToken })
+  const response = await fetch(teamApiUrl(serverUrl, `/api/pairing/status/${requestId}?${params}`))
+  const body = (await response.json()) as {
+    status?: 'pending' | 'approved' | 'rejected'
+    accessKey?: string
+    hostName?: string
+    port?: number
+    error?: string
+  }
+  if (!response.ok) throw new Error(body.error || `连接申请状态读取失败：${response.status}`)
+  return body
+}
+
+async function fetchTeamPairingRequests(serverUrl: string, accessKey: string) {
+  const response = await fetch(teamApiUrl(serverUrl, '/api/pairing/requests'), {
+    headers: teamRequestHeaders(accessKey),
+  })
+  if (!response.ok) throw new Error(`连接申请读取失败：${response.status}`)
+  const body = (await response.json()) as { requests?: TeamPairingRequest[] }
+  return body.requests ?? []
+}
+
+async function decideTeamPairing(serverUrl: string, accessKey: string, requestId: string, decision: 'approve' | 'reject') {
+  const response = await fetch(teamApiUrl(serverUrl, `/api/pairing/requests/${requestId}/${decision}`), {
+    method: 'POST',
+    headers: teamRequestHeaders(accessKey),
+  })
+  if (!response.ok) throw new Error(`连接申请处理失败：${response.status}`)
+}
+
+function newTeamPairingToken() {
+  const bytes = new Uint8Array(24)
+  window.crypto.getRandomValues(bytes)
+  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('')
 }
 
 async function fetchTeamPresence(serverUrl: string, accessKey: string) {
@@ -1688,6 +1844,7 @@ function App() {
   const [teamServiceInfo, setTeamServiceInfo] = useState<TeamServiceInfo | null>(null)
   const [teamServiceBusy, setTeamServiceBusy] = useState(false)
   const [teamServiceMessage, setTeamServiceMessage] = useState('')
+  const [teamPairingRequests, setTeamPairingRequests] = useState<TeamPairingRequest[]>([])
   const [remoteTeamServiceHost, setRemoteTeamServiceHost] = useState('')
   const [showDataModeModal, setShowDataModeModal] = useState(false)
   const [currentAccountId, setCurrentAccountId] = useState(() => loadStoredAccountId())
@@ -1720,6 +1877,12 @@ function App() {
   const [assistantNewProjectDraft, setAssistantNewProjectDraft] = useState<AssistantNewProjectDraft | null>(null)
   const [assistantProjectEditDraft, setAssistantProjectEditDraft] = useState<AssistantProjectEditDraft | null>(null)
   const [assistantTaskEditDraft, setAssistantTaskEditDraft] = useState<AssistantTaskEditDraft | null>(null)
+  const [assistantPromptRequest, setAssistantPromptRequest] = useState<AssistantPromptRequest | null>(null)
+  const [projectRiskAlertMemory, setProjectRiskAlertMemory] = useState<ProjectRiskAlertMemory>(() =>
+    loadProjectRiskAlertMemory(currentAccountId),
+  )
+  const [projectRiskAlertMemoryAccountId, setProjectRiskAlertMemoryAccountId] = useState(currentAccountId)
+  const [projectRiskAlertsReady, setProjectRiskAlertsReady] = useState(false)
   const [assistantWeatherQuery, setAssistantWeatherQuery] = useState('')
   const [assistantWorkScheduleDraft, setAssistantWorkScheduleDraft] = useState<WorkSchedule | null>(null)
   const [showControllerAccountModal, setShowControllerAccountModal] = useState(false)
@@ -1762,6 +1925,7 @@ function App() {
   const teamSyncPendingRef = useRef(false)
   const teamResolvedConflictDataRef = useRef<AppData | null>(null)
   const teamServiceInfoRef = useRef<TeamServiceInfo | null>(null)
+  const seenTeamPairingRequestIdsRef = useRef(new Set<string>())
   const updateCheckPendingRef = useRef(false)
   const weatherRequestIdRef = useRef(0)
   const chinaHolidayRequestIdRef = useRef(0)
@@ -1915,6 +2079,67 @@ function App() {
       setTeamServiceBusy(false)
     }
   }, [remoteHostForTeamServer, teamConnectionStatus, teamServerUrl, updateTeamServiceInfoState])
+
+  useEffect(() => {
+    if (dataMode !== 'team' || !window.desktopBridge?.getTeamServiceInfo) return
+    let active = true
+
+    void window.desktopBridge.getTeamServiceInfo().then((info) => {
+      if (!active) return
+      updateTeamServiceInfoState(info)
+      setTeamServiceMessage(info.message)
+
+      const localAccessKey = info.accessKey?.trim() ?? ''
+      if (!info.running || !localAccessKey || localAccessKey !== teamAccessKey.trim()) return
+
+      const localUrl = info.localUrl || defaultTeamServerUrl
+      if (teamServerUrlKey(localUrl) === teamServerUrlKey(teamServerUrl)) return
+
+      setTeamServerUrl(localUrl)
+      setRemoteTeamServiceHost('')
+      setTeamConnectionStatus('checking')
+      setTeamConnectionMessage('正在连接本机团队服务')
+      try {
+        localStorage.setItem(teamServerUrlStorageKey, localUrl)
+      } catch {
+        return
+      }
+    }).catch(() => undefined)
+
+    return () => {
+      active = false
+    }
+  }, [dataMode, teamAccessKey, teamServerUrl, updateTeamServiceInfoState])
+
+  useEffect(() => {
+    const localUrl = teamServiceInfo?.localUrl || defaultTeamServerUrl
+    const localAccessKey = teamServiceInfo?.accessKey?.trim() ?? ''
+    if (dataMode !== 'team' || !teamServiceInfo?.running || !localAccessKey || localAccessKey !== teamAccessKey.trim()) {
+      setTeamPairingRequests([])
+      return
+    }
+
+    let active = true
+    const refreshRequests = async () => {
+      try {
+        const requests = await fetchTeamPairingRequests(localUrl, localAccessKey)
+        if (!active) return
+        const hasNewRequest = requests.some((request) => !seenTeamPairingRequestIdsRef.current.has(request.id))
+        seenTeamPairingRequestIdsRef.current = new Set(requests.map((request) => request.id))
+        setTeamPairingRequests(requests)
+        if (hasNewRequest) setShowDataModeModal(true)
+      } catch {
+        if (active) setTeamPairingRequests([])
+      }
+    }
+
+    void refreshRequests()
+    const timer = window.setInterval(refreshRequests, 1500)
+    return () => {
+      active = false
+      window.clearInterval(timer)
+    }
+  }, [dataMode, teamAccessKey, teamServiceInfo?.accessKey, teamServiceInfo?.localUrl, teamServiceInfo?.running])
 
   const shouldSaveSlice = useCallback(
     (key: AppDataSliceKey, value: unknown) => {
@@ -2281,6 +2506,34 @@ function App() {
   }, [appCalendarItems, dataSourceReady])
 
   useEffect(() => {
+    if (dataMode !== 'team' || !dataSourceReady || isLocalTeamServerUrl(teamServerUrl, teamServiceInfoRef.current)) return
+    let active = true
+
+    void (async () => {
+      const health = await fetchTeamHealth(teamServerUrl)
+      const stableUrl = stableTeamServerUrlFromHealth(health, teamServerUrl)
+      if (!stableUrl || teamServerUrlKey(stableUrl) === teamServerUrlKey(teamServerUrl)) return
+
+      await fetchTeamAppData(stableUrl, teamAccessKey)
+      if (!active) return
+
+      setTeamServerUrl(stableUrl)
+      setRemoteTeamServiceHost(teamServerDisplayHost(stableUrl))
+      setTeamConnectionStatus('checking')
+      setTeamConnectionMessage('已识别稳定主机地址，正在重新连接')
+      try {
+        localStorage.setItem(teamServerUrlStorageKey, stableUrl)
+      } catch {
+        return
+      }
+    })().catch(() => undefined)
+
+    return () => {
+      active = false
+    }
+  }, [dataMode, dataSourceReady, teamAccessKey, teamServerUrl])
+
+  useEffect(() => {
     if (!dataSourceReady) return
     localStorage.setItem('crewflow-project-data-version', projectDataStorageVersion)
     localStorage.setItem('crewflow-projects', JSON.stringify(appProjects))
@@ -2630,6 +2883,53 @@ function App() {
     () => roleVisibleCalendarItems.filter((item) => assistantProjectIds.has(item.projectId)),
     [assistantProjectIds, roleVisibleCalendarItems],
   )
+  const projectRiskAlerts = useMemo(
+    () => projectRiskAlertsForProjects(assistantProjects, assistantCalendarItems, now),
+    [assistantCalendarItems, assistantProjects, now],
+  )
+  const visibleProjectRiskAlerts = useMemo(
+    () =>
+      projectRiskAlerts.filter((alert) => {
+        const memory = projectRiskAlertMemory[alert.fingerprint]
+        if (memory?.dismissedAt) return false
+        return !memory?.snoozedUntil || memory.snoozedUntil <= now.getTime()
+      }),
+    [now, projectRiskAlertMemory, projectRiskAlerts],
+  )
+  const activeProjectRiskAlert =
+    projectRiskAlertsReady && projectRiskAlertMemoryAccountId === currentAccountId
+      ? visibleProjectRiskAlerts[0] ?? null
+      : null
+
+  useEffect(() => {
+    setProjectRiskAlertMemory(loadProjectRiskAlertMemory(currentAccountId))
+    setProjectRiskAlertMemoryAccountId(currentAccountId)
+    setProjectRiskAlertsReady(false)
+  }, [currentAccountId])
+
+  useEffect(() => {
+    if (!currentAccountId || !dataSourceReady) {
+      setProjectRiskAlertsReady(false)
+      return
+    }
+
+    const timer = window.setTimeout(() => setProjectRiskAlertsReady(true), 900)
+    return () => window.clearTimeout(timer)
+  }, [currentAccountId, dataSourceReady])
+
+  useEffect(() => {
+    if (!currentAccountId || !dataSourceReady) return
+    const activeFingerprints = new Set(projectRiskAlerts.map((alert) => alert.fingerprint))
+
+    setProjectRiskAlertMemory((current) => {
+      const next = Object.fromEntries(
+        Object.entries(current).filter(([fingerprint]) => activeFingerprints.has(fingerprint)),
+      ) as ProjectRiskAlertMemory
+      if (Object.keys(next).length === Object.keys(current).length) return current
+      saveProjectRiskAlertMemory(currentAccountId, next)
+      return next
+    })
+  }, [currentAccountId, dataSourceReady, projectRiskAlerts])
   const assistantCalendarProjects = useMemo(
     () =>
       assistantProjects.filter(
@@ -2671,6 +2971,49 @@ function App() {
     if (teamConnectionStatus !== 'connected' || isLocalTeamServerUrl(teamServerUrl, teamServiceInfo)) return ''
     return teamServerDisplayHost(teamServerUrl)
   }, [remoteTeamServiceHost, teamConnectionStatus, teamServerUrl, teamServiceInfo])
+
+  function rememberProjectRiskAlert(fingerprint: string, entry: ProjectRiskAlertMemoryEntry) {
+    setProjectRiskAlertMemory((current) => {
+      const next = { ...current, [fingerprint]: entry }
+      saveProjectRiskAlertMemory(currentAccountId, next)
+      return next
+    })
+  }
+
+  function dismissProjectRiskAlert(alert: ProjectRiskAlert) {
+    rememberProjectRiskAlert(alert.fingerprint, { dismissedAt: Date.now() })
+  }
+
+  function dismissProjectRiskAlerts(alerts: ProjectRiskAlert[]) {
+    const dismissedAt = Date.now()
+    setProjectRiskAlertMemory((current) => {
+      const next = { ...current }
+      alerts.forEach((alert) => {
+        next[alert.fingerprint] = { dismissedAt }
+      })
+      saveProjectRiskAlertMemory(currentAccountId, next)
+      return next
+    })
+  }
+
+  function viewProjectRiskAlert(alert: ProjectRiskAlert) {
+    dismissProjectRiskAlert(alert)
+    setSearchQuery('')
+    setFilterStatus('all')
+    setFilterType('全部类型')
+    setSelectedProjectId(alert.projectId)
+    setSection(canAccessProjects ? 'projects' : 'tasks')
+  }
+
+  function analyzeProjectRiskAlerts(alert: ProjectRiskAlert) {
+    const alertsToAnalyze = [alert, ...visibleProjectRiskAlerts.filter((item) => item.fingerprint !== alert.fingerprint)].slice(0, 6)
+    dismissProjectRiskAlerts(visibleProjectRiskAlerts)
+    const prompt = [
+      '请分析以下项目风险，按紧急程度给出处理顺序和下一步建议：',
+      ...alertsToAnalyze.map((item) => `- ${item.projectName}：${item.reason}`),
+    ].join('\n')
+    setAssistantPromptRequest({ id: `project-risk-${Date.now()}`, prompt })
+  }
 
   async function handleLogin() {
     const cleanLoginAccountId = loginAccountId.trim()
@@ -2805,6 +3148,29 @@ function App() {
     }
   }
 
+  function connectDiscoveredTeamHost(serverUrl: string, accessKey: string) {
+    updateTeamServerUrl(serverUrl)
+    updateTeamAccessKey(accessKey)
+    updateDataMode('team')
+    setTeamConnectionStatus('checking')
+    setTeamConnectionMessage('主机已同意，正在连接团队数据')
+  }
+
+  async function handleTeamPairingDecision(requestId: string, decision: 'approve' | 'reject') {
+    const info = teamServiceInfoRef.current
+    const localUrl = info?.localUrl || defaultTeamServerUrl
+    const accessKey = info?.accessKey?.trim() ?? ''
+    if (!accessKey) return
+
+    try {
+      await decideTeamPairing(localUrl, accessKey, requestId, decision)
+      setTeamPairingRequests((current) => current.filter((request) => request.id !== requestId))
+      setTeamServiceMessage(decision === 'approve' ? '已同意连接申请' : '已拒绝连接申请')
+    } catch (error) {
+      setTeamServiceMessage(error instanceof Error ? error.message : '连接申请处理失败')
+    }
+  }
+
   async function checkTeamConnection() {
     setTeamConnectionStatus('checking')
     setTeamConnectionMessage('正在连接团队服务')
@@ -2876,12 +3242,12 @@ function App() {
       const info = await window.desktopBridge.installTeamService()
       updateTeamServiceInfoState(info)
       setTeamServiceMessage(info.message)
-      if (info.connectionUrl) updateTeamServerUrl(info.connectionUrl)
+      if (info.localUrl) updateTeamServerUrl(info.localUrl)
       if (info.accessKey) updateTeamAccessKey(info.accessKey)
       setRemoteTeamServiceHost('')
       updateDataMode('team')
       setTeamConnectionStatus(info.running ? 'connected' : 'idle')
-      setTeamConnectionMessage(info.running ? `本机团队服务已开启：${info.connectionUrl}` : info.message)
+      setTeamConnectionMessage(info.running ? '本机团队服务已开启' : info.message)
     } catch (error) {
       setTeamServiceMessage(error instanceof Error ? error.message : '团队服务开启失败')
     } finally {
@@ -3845,6 +4211,9 @@ function App() {
             teamServiceInfo={teamServiceInfo}
             teamServiceBusy={teamServiceBusy}
             teamServiceMessage={teamServiceMessage}
+            teamPairingRequests={teamPairingRequests}
+            pairingClientId={teamPresenceClientId}
+            pairingClientName={[presenceAccountName, teamServiceInfo?.deviceName].filter(Boolean).join(' · ') || 'CrewFlow 电脑'}
             onClose={() => setShowDataModeModal(false)}
             onDataModeChange={updateDataMode}
             onTeamServerUrlChange={updateTeamServerUrl}
@@ -3855,6 +4224,8 @@ function App() {
             onInstallTeamService={installLocalTeamService}
             onStopTeamService={stopLocalTeamService}
             onCopyTeamServiceUrl={copyLocalTeamServiceUrl}
+            onConnectDiscoveredHost={connectDiscoveredTeamHost}
+            onTeamPairingDecision={handleTeamPairingDecision}
           />
         )}
       </>
@@ -3887,25 +4258,33 @@ function App() {
         </div>
 
         <div className="roleBox">
-          <div className="eyebrow">当前账号</div>
-          <div className="accountSummary">
-            <strong>{currentAccount.label}</strong>
-            {currentAccountTitle && <span>{currentAccountTitle}</span>}
+          <div className="accountIdentity">
+            <div className="accountSummary">
+              <span className="eyebrow">当前账号</span>
+              <strong>{currentAccount.label}</strong>
+            </div>
           </div>
-          <p>{roles.find((item) => item.id === role)?.description}</p>
-          {role === 'controller' && (
-            <button className="accountManageButton" type="button" onClick={() => setShowControllerAccountModal(true)}>
-              账号管理
+          <p className="accountMeta">
+            {[currentAccountTitle, roles.find((item) => item.id === role)?.description].filter(Boolean).join(' · ')}
+          </p>
+          <div className="accountQuickActions">
+            {role === 'controller' && (
+              <button className="accountActionButton" type="button" title="账号管理" onClick={() => setShowControllerAccountModal(true)}>
+                <Users size={14} />
+                <span>账号</span>
+              </button>
+            )}
+            {canManageWorkflowOptions && (
+              <button className="accountActionButton" type="button" title="选项管理" onClick={() => setShowWorkflowOptionsModal(true)}>
+                <Settings2 size={14} />
+                <span>选项</span>
+              </button>
+            )}
+            <button className="accountActionButton logout" type="button" title="退出登录" onClick={handleLogout}>
+              <LogOut size={14} />
+              <span>退出</span>
             </button>
-          )}
-          {canManageWorkflowOptions && (
-            <button className="accountManageButton" type="button" onClick={() => setShowWorkflowOptionsModal(true)}>
-              选项管理
-            </button>
-          )}
-          <button className="logoutButton" type="button" onClick={handleLogout}>
-            退出登录
-          </button>
+          </div>
         </div>
 
         <nav className="navList">
@@ -4144,6 +4523,23 @@ function App() {
         </main>
       </div>
 
+      {activeProjectRiskAlert && (
+        <ProjectRiskAlertCard
+          key={activeProjectRiskAlert.fingerprint}
+          alert={activeProjectRiskAlert}
+          remainingCount={visibleProjectRiskAlerts.length - 1}
+          canAccessProjects={canAccessProjects}
+          onDismiss={() => dismissProjectRiskAlert(activeProjectRiskAlert)}
+          onSnooze={() =>
+            rememberProjectRiskAlert(activeProjectRiskAlert.fingerprint, {
+              snoozedUntil: Date.now() + 2 * 60 * 60 * 1000,
+            })
+          }
+          onView={() => viewProjectRiskAlert(activeProjectRiskAlert)}
+          onAnalyze={() => analyzeProjectRiskAlerts(activeProjectRiskAlert)}
+        />
+      )}
+
       <CrewFlowAssistant
         role={role}
         section={section}
@@ -4167,6 +4563,7 @@ function App() {
         canCreateProject={canCreateProject}
         workflowOptions={appWorkflowOptions}
         canEditProjectTaskBoard={assistantEditableProjects.some(canEditProjectTaskBoard)}
+        promptRequest={assistantPromptRequest}
         onOpenNewProject={() => {
           setAssistantNewProjectDraft(null)
           setShowNewProjectModal(true)
@@ -4282,6 +4679,9 @@ function App() {
           teamServiceInfo={teamServiceInfo}
           teamServiceBusy={teamServiceBusy}
           teamServiceMessage={teamServiceMessage}
+          teamPairingRequests={teamPairingRequests}
+          pairingClientId={teamPresenceClientId}
+          pairingClientName={[presenceAccountName, teamServiceInfo?.deviceName].filter(Boolean).join(' · ') || 'CrewFlow 电脑'}
           onClose={() => setShowDataModeModal(false)}
           onDataModeChange={updateDataMode}
           onTeamServerUrlChange={updateTeamServerUrl}
@@ -4292,6 +4692,8 @@ function App() {
           onInstallTeamService={installLocalTeamService}
           onStopTeamService={stopLocalTeamService}
           onCopyTeamServiceUrl={copyLocalTeamServiceUrl}
+          onConnectDiscoveredHost={connectDiscoveredTeamHost}
+          onTeamPairingDecision={handleTeamPairingDecision}
         />
       )}
       {showWeatherSettings && (
@@ -5158,6 +5560,9 @@ function DataModeModal({
   teamServiceInfo,
   teamServiceBusy,
   teamServiceMessage,
+  teamPairingRequests,
+  pairingClientId,
+  pairingClientName,
   onClose,
   onDataModeChange,
   onTeamServerUrlChange,
@@ -5168,6 +5573,8 @@ function DataModeModal({
   onInstallTeamService,
   onStopTeamService,
   onCopyTeamServiceUrl,
+  onConnectDiscoveredHost,
+  onTeamPairingDecision,
 }: {
   dataMode: DataMode
   teamServerUrl: string
@@ -5179,6 +5586,9 @@ function DataModeModal({
   teamServiceInfo: TeamServiceInfo | null
   teamServiceBusy: boolean
   teamServiceMessage: string
+  teamPairingRequests: TeamPairingRequest[]
+  pairingClientId: string
+  pairingClientName: string
   onClose: () => void
   onDataModeChange: (mode: DataMode) => void
   onTeamServerUrlChange: (url: string) => void
@@ -5189,8 +5599,15 @@ function DataModeModal({
   onInstallTeamService: () => void
   onStopTeamService: () => void
   onCopyTeamServiceUrl: (url?: string) => void
+  onConnectDiscoveredHost: (serverUrl: string, accessKey: string) => void
+  onTeamPairingDecision: (requestId: string, decision: 'approve' | 'reject') => void
 }) {
-  const hostUrl = teamServiceInfo?.connectionUrl ?? defaultTeamServerUrl
+  const [discoveredHosts, setDiscoveredHosts] = useState<DiscoveredTeamHost[]>([])
+  const [discoveryBusy, setDiscoveryBusy] = useState(false)
+  const [discoveryMessage, setDiscoveryMessage] = useState('')
+  const [pairingHostUrl, setPairingHostUrl] = useState('')
+  const pairingAttemptRef = useRef(0)
+  const hostUrl = teamServiceInfo?.stableUrl || teamServiceInfo?.connectionUrl || defaultTeamServerUrl
   const visibleHostUrl = activeRemoteTeamHost ? normalizeTeamServerUrl(teamServerUrl) : hostUrl
   const hostStatus = activeRemoteTeamHost ? '已有主机' : teamServiceInfo?.running ? '运行中' : '未开启'
   const canManageLocalService = Boolean(teamServiceInfo?.supported) && !activeRemoteTeamHost
@@ -5200,7 +5617,11 @@ function DataModeModal({
       : hostUrl
         ? [{ url: hostUrl, address: hostUrl, interfaceName: '默认地址', kind: '推荐地址' }]
         : []
-  const alternateHostCandidates = activeRemoteTeamHost ? [] : hostCandidates.filter((candidate) => candidate.url !== hostUrl)
+  const alternateHostCandidates = activeRemoteTeamHost
+    ? []
+    : hostCandidates.filter(
+        (candidate) => candidate.url !== hostUrl && candidate.url !== teamServiceInfo?.localUrl && candidate.kind !== 'VPN/虚拟网卡',
+      )
   const singleDataFile = teamServiceInfo?.singleDataFile ?? ''
   const singleDataDirectory = teamServiceInfo?.singleDataDirectory ?? ''
   const teamDataFile = teamServiceInfo?.teamDataFile ?? teamServiceInfo?.dataFile ?? ''
@@ -5208,6 +5629,82 @@ function DataModeModal({
   const backupDirectory = teamServiceInfo?.backupDirectory ?? ''
   const accessKeyFile = teamServiceInfo?.accessKeyFile ?? ''
   const accessKeyDirectory = teamServiceInfo?.accessKeyDirectory ?? ''
+  const localHostActive = Boolean(
+    teamServiceInfo?.running && teamServiceInfo.accessKey?.trim() && teamServiceInfo.accessKey.trim() === teamAccessKey.trim(),
+  )
+
+  useEffect(() => () => {
+    pairingAttemptRef.current += 1
+  }, [])
+
+  async function discoverHosts() {
+    if (!window.desktopBridge?.discoverTeamServices) {
+      setDiscoveryMessage('请在 CrewFlow 桌面 App 中使用自动发现')
+      return
+    }
+
+    pairingAttemptRef.current += 1
+    setPairingHostUrl('')
+    setDiscoveryBusy(true)
+    setDiscoveryMessage('正在局域网中查找 CrewFlow 主机')
+    try {
+      const hosts = await window.desktopBridge.discoverTeamServices()
+      setDiscoveredHosts(hosts)
+      setDiscoveryMessage(
+        hosts.length > 0
+          ? `发现 ${hosts.length} 台团队主机，请选择并请求连接`
+          : '未发现主机，请确认在同一局域网，并检查 VPN 是否允许访问本地网络',
+      )
+    } catch (error) {
+      setDiscoveredHosts([])
+      setDiscoveryMessage(error instanceof Error ? error.message : '自动发现失败')
+    } finally {
+      setDiscoveryBusy(false)
+    }
+  }
+
+  async function requestHostConnection(host: DiscoveredTeamHost) {
+    const attempt = pairingAttemptRef.current + 1
+    pairingAttemptRef.current = attempt
+    const requestToken = newTeamPairingToken()
+    setPairingHostUrl(host.serverUrl)
+    setDiscoveryMessage(`已向 ${host.hostName} 发送申请，等待主机同意`)
+
+    try {
+      const request = await requestTeamPairing(host.serverUrl, {
+        clientId: pairingClientId,
+        clientName: pairingClientName,
+        requestToken,
+      })
+      const expiresAt = request.expiresAt || Date.now() + 2 * 60 * 1000
+
+      while (pairingAttemptRef.current === attempt && Date.now() < expiresAt) {
+        await new Promise((resolve) => window.setTimeout(resolve, 1200))
+        if (pairingAttemptRef.current !== attempt) return
+        const status = await fetchTeamPairingStatus(host.serverUrl, request.requestId, requestToken)
+        if (status.status === 'rejected') {
+          setDiscoveryMessage(`${host.hostName} 已拒绝连接申请`)
+          setPairingHostUrl('')
+          return
+        }
+        if (status.status === 'approved' && status.accessKey) {
+          setDiscoveryMessage('主机已同意，正在连接团队数据')
+          onConnectDiscoveredHost(host.serverUrl, status.accessKey)
+          setPairingHostUrl('')
+          return
+        }
+      }
+
+      if (pairingAttemptRef.current === attempt) {
+        setDiscoveryMessage('连接申请已超时，请重新发送')
+        setPairingHostUrl('')
+      }
+    } catch (error) {
+      if (pairingAttemptRef.current !== attempt) return
+      setDiscoveryMessage(error instanceof Error ? error.message : '连接申请失败')
+      setPairingHostUrl('')
+    }
+  }
 
   async function copyPath(value: string) {
     if (!value) return
@@ -5252,29 +5749,38 @@ function DataModeModal({
           <div className="teamHostHeader">
             <div>
               <strong>本机作为团队主机</strong>
-              <span>{activeRemoteTeamHost ? `团队服务已由 ${activeRemoteTeamHost} 开启，本机不能重复开启。` : '只在常驻电脑操作。开启后，把下面地址发给其他电脑填写。'}</span>
+              {activeRemoteTeamHost && <span>团队服务已由 {activeRemoteTeamHost} 开启</span>}
             </div>
             <em className={teamServiceInfo?.running || activeRemoteTeamHost ? 'running' : ''}>{hostStatus}</em>
           </div>
+          {teamPairingRequests.length > 0 && (
+            <div className="teamPairingRequests" aria-label="待处理连接申请">
+              <strong>{teamPairingRequests.length} 个连接申请</strong>
+              {teamPairingRequests.map((request) => (
+                <div key={request.id}>
+                  <span>{request.clientName}</span>
+                  <button type="button" onClick={() => onTeamPairingDecision(request.id, 'reject')}>拒绝</button>
+                  <button className="approve" type="button" onClick={() => onTeamPairingDecision(request.id, 'approve')}>同意</button>
+                </div>
+              ))}
+            </div>
+          )}
           <label className="dataModeField teamHostAddress">
-            <span>{activeRemoteTeamHost ? '当前团队主机地址' : '其他电脑填写这个地址'}</span>
+            <span>{activeRemoteTeamHost ? '团队主机地址' : '稳定地址'}</span>
             <input value={visibleHostUrl} readOnly />
           </label>
           {alternateHostCandidates.length > 0 && (
             <div className="teamHostCandidates" aria-label="可用团队服务地址">
               {alternateHostCandidates.map((candidate) => (
                 <button key={`${candidate.interfaceName}-${candidate.url}`} type="button" onClick={() => onCopyTeamServiceUrl(candidate.url)}>
-                  <strong>候选</strong>
                   <span>{candidate.url}</span>
-                  <em>
-                    {candidate.interfaceName} · {candidate.kind}
-                  </em>
+                  <em>{candidate.kind}</em>
                 </button>
               ))}
             </div>
           )}
           <label className="dataModeField teamHostAddress">
-            <span>其他电脑填写这个访问密钥</span>
+            <span>访问密钥</span>
             <input value={teamServiceInfo?.accessKey ?? ''} readOnly placeholder="开启团队服务后自动生成" />
           </label>
           <div className="teamHostActions">
@@ -5292,9 +5798,38 @@ function DataModeModal({
             </button>
           </div>
           <p className="teamHostMessage">
-            {activeRemoteTeamHost ? `已开启电脑：${activeRemoteTeamHost}` : teamServiceMessage || teamServiceInfo?.message || '打开后会自动显示本机局域网地址。'}
+            {activeRemoteTeamHost ? `已开启电脑：${activeRemoteTeamHost}` : teamServiceMessage || teamServiceInfo?.message || '稳定地址不会随 Wi-Fi 的数字 IP 一起变化。'}
           </p>
         </section>
+        {!localHostActive && (
+          <section className="teamDiscoveryPanel" aria-label="自动发现团队主机">
+            <div className="teamHostHeader">
+              <div>
+                <strong>自动发现团队主机</strong>
+              </div>
+              <button type="button" onClick={discoverHosts} disabled={discoveryBusy || Boolean(pairingHostUrl)}>
+                {discoveryBusy ? <RefreshCw className="spinning" size={15} /> : <Search size={15} />}
+                {discoveryBusy ? '正在查找' : '发现主机'}
+              </button>
+            </div>
+            {discoveredHosts.length > 0 && (
+              <div className="teamDiscoveryHosts">
+                {discoveredHosts.map((host) => (
+                  <div key={host.serverUrl}>
+                    <span>
+                      <strong>{host.hostName}</strong>
+                      <em>{host.serverUrl}</em>
+                    </span>
+                    <button type="button" onClick={() => requestHostConnection(host)} disabled={Boolean(pairingHostUrl)}>
+                      {pairingHostUrl === host.serverUrl ? '等待同意' : '请求连接'}
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+            {discoveryMessage && <p>{discoveryMessage}</p>}
+          </section>
+        )}
         <section className="dataPathPanel" aria-label="数据文件位置">
           <div className="dataPathHeader">
             <strong>数据文件位置</strong>
@@ -5318,11 +5853,11 @@ function DataModeModal({
           )}
         </section>
         <label className="dataModeField">
-          <span>团队服务器地址</span>
+          <span>服务器地址</span>
           <input value={teamServerUrl} onChange={(event) => onTeamServerUrlChange(event.target.value)} placeholder="例如：http://HOST_LAN_IP:8787" />
         </label>
         <label className="dataModeField">
-          <span>团队访问密钥</span>
+          <span>访问密钥</span>
           <input value={teamAccessKey} onChange={(event) => onTeamAccessKeyChange(event.target.value)} placeholder="主机开启团队服务后显示的访问密钥" />
         </label>
         <div className={`dataModeConnection ${teamConnectionStatus}`}>
@@ -10756,6 +11291,70 @@ function readAssistantImage(file: File) {
   })
 }
 
+function ProjectRiskAlertCard({
+  alert,
+  remainingCount,
+  canAccessProjects,
+  onDismiss,
+  onSnooze,
+  onView,
+  onAnalyze,
+}: {
+  alert: ProjectRiskAlert
+  remainingCount: number
+  canAccessProjects: boolean
+  onDismiss: () => void
+  onSnooze: () => void
+  onView: () => void
+  onAnalyze: () => void
+}) {
+  const [closing, setClosing] = useState(false)
+
+  function closeThen(action: () => void) {
+    if (closing) return
+    setClosing(true)
+    window.setTimeout(action, 150)
+  }
+
+  return (
+    <aside
+      className={`projectRiskAlert projectRiskAlert-${alert.kind}${closing ? ' isClosing' : ''}`}
+      role="status"
+      aria-live="polite"
+    >
+      <div className="projectRiskAlertHeader">
+        <span>
+          <AlertTriangle size={16} />
+          {alert.label}
+        </span>
+        <button type="button" aria-label="关闭提醒" title="关闭" onClick={() => closeThen(onDismiss)}>
+          <X size={15} />
+        </button>
+      </div>
+      <strong className="projectRiskAlertProject">{alert.projectName}</strong>
+      <p>{alert.reason}</p>
+      <div className="projectRiskAlertMeta">
+        <span>
+          <Clock3 size={14} />
+          {alert.detail}
+        </span>
+        {remainingCount > 0 && <em>另有 {remainingCount} 个</em>}
+      </div>
+      <div className="projectRiskAlertActions">
+        <button type="button" onClick={() => closeThen(onSnooze)}>
+          稍后提醒
+        </button>
+        <button type="button" onClick={() => closeThen(onAnalyze)}>
+          助手分析
+        </button>
+        <button className="primary" type="button" onClick={() => closeThen(onView)}>
+          {canAccessProjects ? '查看项目' : '查看任务'}
+        </button>
+      </div>
+    </aside>
+  )
+}
+
 function CrewFlowAssistant({
   role,
   section,
@@ -10775,6 +11374,7 @@ function CrewFlowAssistant({
   workflowOptions,
   canCreateProject,
   canEditProjectTaskBoard,
+  promptRequest,
   onOpenNewProject,
   onReviewCalendarPlans,
   onReviewOperation,
@@ -10797,6 +11397,7 @@ function CrewFlowAssistant({
   workflowOptions: WorkflowOptions
   canCreateProject: boolean
   canEditProjectTaskBoard: boolean
+  promptRequest: AssistantPromptRequest | null
   onOpenNewProject: () => void
   onReviewCalendarPlans: (plans: ProjectPlanPayload[]) => void
   onReviewOperation: (operation: AssistantOperation) => boolean
@@ -10806,6 +11407,7 @@ function CrewFlowAssistant({
   const [busy, setBusy] = useState(false)
   const [showSettings, setShowSettings] = useState(false)
   const [settings, setSettings] = useState<AssistantSettings>(defaultAssistantSettings)
+  const [settingsReady, setSettingsReady] = useState(false)
   const [settingsDraft, setSettingsDraft] = useState<AssistantSettingsDraft>(() => assistantSettingsDraft(defaultAssistantSettings))
   const [apiKey, setApiKey] = useState('')
   const [onlineTestPassed, setOnlineTestPassed] = useState(false)
@@ -10820,6 +11422,7 @@ function CrewFlowAssistant({
   const messagesRef = useRef<HTMLDivElement | null>(null)
   const inputRef = useRef<HTMLInputElement | null>(null)
   const imageInputRef = useRef<HTMLInputElement | null>(null)
+  const handledPromptRequestRef = useRef('')
   const [messages, setMessages] = useState<AssistantMessage[]>([
     {
       from: 'assistant',
@@ -10834,8 +11437,13 @@ function CrewFlowAssistant({
     selectedOnlineProfile?.hasApiKey ?? (onlineProfiles.length === 0 ? settings.hasApiKey : false)
 
   useEffect(() => {
+    if (!window.desktopBridge?.loadAssistantSettings) {
+      setSettingsReady(true)
+      return
+    }
+
     window.desktopBridge
-      ?.loadAssistantSettings()
+      .loadAssistantSettings()
       .then((savedSettings) => {
         setSettings(savedSettings)
         setSettingsDraft(assistantSettingsDraft(savedSettings))
@@ -10844,6 +11452,7 @@ function CrewFlowAssistant({
         setSettings(defaultAssistantSettings)
         setSettingsDraft(assistantSettingsDraft(defaultAssistantSettings))
       })
+      .finally(() => setSettingsReady(true))
   }, [])
 
   useEffect(() => {
@@ -11132,6 +11741,18 @@ function CrewFlowAssistant({
       setBusy(false)
     }
   }
+
+  const sendMessageRef = useRef(sendMessage)
+  sendMessageRef.current = sendMessage
+
+  useEffect(() => {
+    if (!promptRequest || !settingsReady || busy || handledPromptRequestRef.current === promptRequest.id) return
+    handledPromptRequestRef.current = promptRequest.id
+    setOpen(true)
+    setShowSettings(false)
+    const timer = window.setTimeout(() => void sendMessageRef.current(promptRequest.prompt, false), 0)
+    return () => window.clearTimeout(timer)
+  }, [busy, promptRequest, settingsReady])
 
   async function saveSettings(clearApiKey = false) {
     if (!window.desktopBridge?.saveAssistantSettings) return
@@ -12132,6 +12753,17 @@ function assistantReply(
     ].join('\n')
   }
 
+  if (/项目.{0,8}风险|风险.{0,8}项目|延期/.test(prompt)) {
+    const alerts = projectRiskAlertsForProjects(projects, calendarItems, new Date())
+    if (alerts.length === 0) return '当前可见项目没有明确的延期、逾期节点或手动风险标记。'
+
+    return [
+      `当前有 ${alerts.length} 个项目需要关注：`,
+      ...alerts.slice(0, 5).map((alert) => `- ${alert.projectName}：${alert.reason}（${alert.detail}）`),
+      '建议先确认最紧急项目的实际可交付时间和负责人，再同步客户预期；节点逾期的项目要补充恢复时间，手动风险项目要确认风险是否仍然有效。',
+    ].join('\n')
+  }
+
   if (section === 'calendar' || prompt.includes('交付') || prompt.includes('日程') || prompt.includes('撞期')) {
     const busyDays = Array.from(new Set(calendarItems.map((item) => item.time.split(' ')[0]))).slice(0, 4)
     return [
@@ -12481,6 +13113,84 @@ function isLateProject(project: Project, today = new Date(), calendarItems: Cale
 
 function isProjectAtRisk(project: Project, today = new Date(), calendarItems: CalendarItem[] = []) {
   return isRiskProject(project) || isLateProject(project, today, calendarItems) || hasOverdueProjectNode(project, calendarItems, today)
+}
+
+function projectRiskAlertsForProjects(projects: Project[], calendarItems: CalendarItem[], today = new Date()) {
+  const todayKey = localDateKey(today)
+  const alerts = projects.flatMap<ProjectRiskAlert>((project) => {
+    if (isArchivedProject(project)) return []
+
+    const dueDateKey = project.due.match(/^\d{4}-\d{2}-\d{2}/)?.[0] ?? ''
+    if (isLateProject(project, today, calendarItems) && dueDateKey) {
+      const overdueDays = dateKeyDistance(dueDateKey, todayKey)
+      return [{
+        fingerprint: `${project.id}:late:${dueDateKey}`,
+        projectId: project.id,
+        projectName: project.name,
+        kind: 'late',
+        label: '项目已延期',
+        reason: `最终交付已逾期 ${overdueDays} 天`,
+        detail: `原定 ${formatProjectRiskAlertDate(dueDateKey)}`,
+        priority: 3,
+        overdueDays,
+      }]
+    }
+
+    const overdueNode = calendarItems
+      .filter((item) => item.projectId === project.id && item.completed !== true && !isPrimaryProjectCalendarItem(item, project))
+      .map((item) => ({ item, dateKey: dateForCalendarItem(today, item).match(/^\d{4}-\d{2}-\d{2}/)?.[0] ?? '' }))
+      .filter(({ dateKey }) => dateKey && dateKey < todayKey)
+      .sort((left, right) => left.dateKey.localeCompare(right.dateKey))[0]
+
+    if (overdueNode) {
+      const overdueDays = dateKeyDistance(overdueNode.dateKey, todayKey)
+      const nodeName = overdueNode.item.title.trim() || overdueNode.item.type.trim() || '项目节点'
+      return [{
+        fingerprint: `${project.id}:node:${calendarItemKey(overdueNode.item)}:${overdueNode.dateKey}`,
+        projectId: project.id,
+        projectName: project.name,
+        kind: 'overdue-node',
+        label: '节点已逾期',
+        reason: `“${nodeName}”已逾期 ${overdueDays} 天`,
+        detail: `原定 ${formatProjectRiskAlertDate(overdueNode.dateKey)}`,
+        priority: 2,
+        overdueDays,
+      }]
+    }
+
+    if (isRiskProject(project)) {
+      return [{
+        fingerprint: `${project.id}:risk`,
+        projectId: project.id,
+        projectName: project.name,
+        kind: 'risk',
+        label: '项目有风险',
+        reason: '项目已被标记为需要关注',
+        detail: `当前阶段 · ${project.stage}`,
+        priority: 1,
+        overdueDays: 0,
+      }]
+    }
+
+    return []
+  })
+
+  return alerts.sort(
+    (left, right) =>
+      right.priority - left.priority || right.overdueDays - left.overdueDays || left.projectName.localeCompare(right.projectName, 'zh-CN'),
+  )
+}
+
+function dateKeyDistance(fromDateKey: string, toDateKey: string) {
+  const from = fromDateKey.split('-').map(Number)
+  const to = toDateKey.split('-').map(Number)
+  if (from.length !== 3 || to.length !== 3 || from.some(Number.isNaN) || to.some(Number.isNaN)) return 1
+  return Math.max(1, Math.round((Date.UTC(to[0], to[1] - 1, to[2]) - Date.UTC(from[0], from[1] - 1, from[2])) / 86400000))
+}
+
+function formatProjectRiskAlertDate(dateKey: string) {
+  const [, , month, day] = dateKey.match(/^(\d{4})-(\d{2})-(\d{2})$/) ?? []
+  return month && day ? `${Number(month)}月${Number(day)}日` : dateKey
 }
 
 function projectHealthStatus(project: Project): ProjectHealthStatus {

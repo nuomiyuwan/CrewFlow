@@ -1,5 +1,6 @@
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { randomBytes } from 'node:crypto'
+import dgram from 'node:dgram'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -13,6 +14,7 @@ const serviceLabel = 'local.crewflow.server'
 const taskName = 'CrewFlow Server'
 const port = process.env.CREWFLOW_PORT || '8787'
 const host = process.env.CREWFLOW_HOST || '0.0.0.0'
+const discoveryPort = Number(process.env.CREWFLOW_DISCOVERY_PORT || 8788)
 
 function defaultServiceDataDir({
   platform = process.platform,
@@ -206,6 +208,93 @@ export function localTeamServerCandidates({ interfaces = os.networkInterfaces(),
     if (seenUrls.has(candidate.url)) return false
     seenUrls.add(candidate.url)
     return true
+  })
+}
+
+export function localTeamStableUrl({ hostname = os.hostname(), port: serverPort = port } = {}) {
+  const cleanHostname = String(hostname || '').trim().replace(/\.$/, '')
+  if (!cleanHostname || !/^[A-Za-z0-9][A-Za-z0-9.-]*$/.test(cleanHostname)) return ''
+  const stableHostname = cleanHostname.includes('.') ? cleanHostname : `${cleanHostname}.local`
+  return `http://${stableHostname}:${serverPort}`
+}
+
+function ipv4BroadcastAddress(address, netmask) {
+  const addressParts = ipv4Parts(address)
+  const netmaskParts = ipv4Parts(netmask)
+  if (!addressParts || !netmaskParts) return ''
+  return addressParts.map((part, index) => (part & netmaskParts[index]) | (255 ^ netmaskParts[index])).join('.')
+}
+
+export function localTeamDiscoveryTargets(interfaces = os.networkInterfaces()) {
+  const targets = new Set(['255.255.255.255'])
+  Object.entries(interfaces).forEach(([interfaceName, items = []]) => {
+    items.forEach((item) => {
+      if (item.family !== 'IPv4' || item.internal || !item.address || networkAdapterGroup(interfaceName, item.address) > 1) return
+      const broadcast = ipv4BroadcastAddress(item.address, item.netmask)
+      if (broadcast) targets.add(broadcast)
+    })
+  })
+  return [...targets]
+}
+
+function isAddressOnLocalDiscoveryNetwork(address, interfaces) {
+  const remoteParts = ipv4Parts(address)
+  if (!remoteParts) return false
+  return Object.entries(interfaces).some(([interfaceName, items = []]) => items.some((item) => {
+    if (item.family !== 'IPv4' || item.internal || !item.address || networkAdapterGroup(interfaceName, item.address) > 1) return false
+    const localParts = ipv4Parts(item.address)
+    const netmaskParts = ipv4Parts(item.netmask)
+    if (!localParts || !netmaskParts) return false
+    return remoteParts.every((part, index) => (part & netmaskParts[index]) === (localParts[index] & netmaskParts[index]))
+  }))
+}
+
+export function discoverLocalTeamServers({
+  interfaces = os.networkInterfaces(),
+  port: targetPort = discoveryPort,
+  timeoutMs = 1800,
+} = {}) {
+  return new Promise((resolve) => {
+    const socket = dgram.createSocket('udp4')
+    const nonce = randomBytes(12).toString('hex')
+    const hosts = new Map()
+    let settled = false
+
+    const finish = () => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      try {
+        socket.close()
+      } catch {
+        return resolve([...hosts.values()])
+      }
+      resolve([...hosts.values()])
+    }
+    const timer = setTimeout(finish, Math.max(500, Math.min(Number(timeoutMs) || 1800, 4000)))
+
+    socket.on('message', (message, remote) => {
+      try {
+        const payload = JSON.parse(message.toString('utf8'))
+        const servicePort = Number(payload.servicePort)
+        if (payload.type !== 'crewflow-host' || payload.nonce !== nonce || !Number.isInteger(servicePort) || servicePort <= 0 || servicePort > 65535 || !isAddressOnLocalDiscoveryNetwork(remote.address, interfaces)) return
+        const serverUrl = `http://${remote.address}:${servicePort}`
+        hosts.set(serverUrl, {
+          serverUrl,
+          stableUrl: localTeamStableUrl({ hostname: payload.hostName, port: servicePort }),
+          hostName: String(payload.hostName || remote.address).slice(0, 120),
+          name: String(payload.name || 'CrewFlow Server').slice(0, 120),
+        })
+      } catch {
+        return
+      }
+    })
+    socket.once('error', finish)
+    socket.bind(0, '0.0.0.0', () => {
+      socket.setBroadcast(true)
+      const message = Buffer.from(JSON.stringify({ type: 'crewflow-discover', version: 1, nonce }))
+      localTeamDiscoveryTargets(interfaces).forEach((target) => socket.send(message, targetPort, target, () => undefined))
+    })
   })
 }
 

@@ -1,4 +1,6 @@
 import http from 'node:http'
+import dgram from 'node:dgram'
+import { randomBytes } from 'node:crypto'
 import os from 'node:os'
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -12,6 +14,7 @@ import { StaleTeamDataError, UnsafeTeamDataMutationError, createTeamStore } from
 const defaultPort = Number(process.env.CREWFLOW_PORT || 8787)
 const defaultHost = process.env.CREWFLOW_HOST || '0.0.0.0'
 const defaultAccessKey = process.env.CREWFLOW_ACCESS_KEY || ''
+const defaultDiscoveryPort = Number(process.env.CREWFLOW_DISCOVERY_PORT || 8788)
 export function defaultServerDataDir({
   platform = process.platform,
   homeDir = os.homedir(),
@@ -86,6 +89,7 @@ function cleanPresenceText(value, maxLength) {
 
 export function createCrewFlowServer({ store, accessKey = defaultAccessKey, presenceTtlMs = 25_000, libraryFilesDir = '' } = {}) {
   const presenceConnections = new Map()
+  const pairingRequests = new Map()
   const libraryFileStore = createLibraryFileStore({
     directory: libraryFilesDir || path.join(store?.dataDir || path.dirname(store?.dataFile || defaultDataDir), 'library-files'),
   })
@@ -122,6 +126,17 @@ export function createCrewFlowServer({ store, accessKey = defaultAccessKey, pres
       members: [...membersByAccount.values()].sort((left, right) => left.name.localeCompare(right.name, 'zh-CN')),
       updatedAt: now,
     }
+  }
+
+  const pairingSnapshot = () => {
+    const now = Date.now()
+    for (const [requestId, request] of pairingRequests.entries()) {
+      if (request.expiresAt <= now) pairingRequests.delete(requestId)
+    }
+    return [...pairingRequests.values()]
+      .filter((request) => request.status === 'pending')
+      .map(({ requestToken: _requestToken, ...request }) => request)
+      .sort((left, right) => left.createdAt - right.createdAt)
   }
 
   const server = http.createServer(async (request, response) => {
@@ -188,9 +203,12 @@ export function createCrewFlowServer({ store, accessKey = defaultAccessKey, pres
 
       if (request.method === 'GET' && url.pathname === '/health') {
         const storage = store.info ? await store.info() : await store.read()
+        const serverAddress = server.address()
         sendJson(response, 200, {
           ok: true,
           name: 'CrewFlow Server',
+          hostName: os.hostname(),
+          port: typeof serverAddress === 'object' && serverAddress ? serverAddress.port : defaultPort,
           requiresKey: Boolean(accessKey),
           dataFile: storage.dataFile || store.dataFile,
           legacyDataFile: storage.legacyDataFile || store.legacyDataFile,
@@ -203,6 +221,87 @@ export function createCrewFlowServer({ store, accessKey = defaultAccessKey, pres
           updatedAt: storage.updatedAt,
           revision: storage.revision,
         })
+        return
+      }
+
+      if (request.method === 'POST' && url.pathname === '/api/pairing/requests') {
+        const body = await readRequestJson(request)
+        const clientId = cleanPresenceText(body.clientId, 120)
+        const clientName = cleanPresenceText(body.clientName, 120)
+        const requestToken = cleanPresenceText(body.requestToken, 160)
+        if (!clientId || !clientName || requestToken.length < 20) {
+          sendJson(response, 400, { ok: false, error: '连接申请信息不完整' })
+          return
+        }
+
+        const now = Date.now()
+        pairingSnapshot()
+        if (pairingRequests.size >= 50) {
+          const oldestRequest = [...pairingRequests.values()].sort((left, right) => left.createdAt - right.createdAt)[0]
+          if (oldestRequest) pairingRequests.delete(oldestRequest.id)
+        }
+        for (const [requestId, item] of pairingRequests.entries()) {
+          if (item.clientId === clientId) pairingRequests.delete(requestId)
+        }
+        const requestId = randomBytes(16).toString('hex')
+        const pairingRequest = {
+          id: requestId,
+          clientId,
+          clientName,
+          requestToken,
+          status: 'pending',
+          createdAt: now,
+          expiresAt: now + 2 * 60 * 1000,
+        }
+        pairingRequests.set(requestId, pairingRequest)
+        sendJson(response, 202, { ok: true, requestId, status: pairingRequest.status, expiresAt: pairingRequest.expiresAt })
+        return
+      }
+
+      if (request.method === 'GET' && url.pathname === '/api/pairing/requests') {
+        if (!hasValidAccessKey(request, url, accessKey)) {
+          sendJson(response, 401, { ok: false, error: 'Invalid CrewFlow access key' })
+          return
+        }
+        sendJson(response, 200, { ok: true, requests: pairingSnapshot(), updatedAt: Date.now() })
+        return
+      }
+
+      const pairingDecisionMatch = /^\/api\/pairing\/requests\/([a-f0-9]{32})\/(approve|reject)$/.exec(url.pathname)
+      if (request.method === 'POST' && pairingDecisionMatch) {
+        if (!hasValidAccessKey(request, url, accessKey)) {
+          sendJson(response, 401, { ok: false, error: 'Invalid CrewFlow access key' })
+          return
+        }
+        pairingSnapshot()
+        const pairingRequest = pairingRequests.get(pairingDecisionMatch[1])
+        if (!pairingRequest) {
+          sendJson(response, 404, { ok: false, error: '连接申请已失效' })
+          return
+        }
+        pairingRequest.status = pairingDecisionMatch[2] === 'approve' ? 'approved' : 'rejected'
+        pairingRequest.expiresAt = Date.now() + 60 * 1000
+        sendJson(response, 200, { ok: true, status: pairingRequest.status })
+        return
+      }
+
+      const pairingStatusMatch = /^\/api\/pairing\/status\/([a-f0-9]{32})$/.exec(url.pathname)
+      if (request.method === 'GET' && pairingStatusMatch) {
+        pairingSnapshot()
+        const pairingRequest = pairingRequests.get(pairingStatusMatch[1])
+        const requestToken = cleanPresenceText(url.searchParams.get('token'), 160)
+        if (!pairingRequest || !requestToken || requestToken !== pairingRequest.requestToken) {
+          sendJson(response, 404, { ok: false, error: '连接申请不存在' })
+          return
+        }
+        const serverAddress = server.address()
+        const payload = {
+          ok: true,
+          status: pairingRequest.status,
+          hostName: os.hostname(),
+          port: typeof serverAddress === 'object' && serverAddress ? serverAddress.port : defaultPort,
+        }
+        sendJson(response, 200, pairingRequest.status === 'approved' ? { ...payload, accessKey } : payload)
         return
       }
 
@@ -364,7 +463,43 @@ export function startCrewFlowServer({
     process.removeListener('SIGTERM', shutdown)
   })
 
-  server.listen(port, host, () => onReady({ server, store, host, port }))
+  let discoverySocket = null
+  const closeDiscoverySocket = () => {
+    if (!discoverySocket) return
+    try {
+      discoverySocket.close()
+    } catch {
+      discoverySocket = null
+      return
+    }
+    discoverySocket = null
+  }
+  server.once('close', closeDiscoverySocket)
+  server.listen(port, host, () => {
+    const serverAddress = server.address()
+    const servicePort = typeof serverAddress === 'object' && serverAddress ? serverAddress.port : Number(port)
+    discoverySocket = dgram.createSocket({ type: 'udp4', reuseAddr: true })
+    discoverySocket.on('message', (message, remote) => {
+      try {
+        const payload = JSON.parse(message.toString('utf8'))
+        if (payload.type !== 'crewflow-discover' || !payload.nonce) return
+        const reply = Buffer.from(JSON.stringify({
+          type: 'crewflow-host',
+          version: 1,
+          nonce: String(payload.nonce).slice(0, 80),
+          name: 'CrewFlow Server',
+          hostName: os.hostname(),
+          servicePort,
+        }))
+        discoverySocket.send(reply, remote.port, remote.address, () => undefined)
+      } catch {
+        return
+      }
+    })
+    discoverySocket.once('error', closeDiscoverySocket)
+    discoverySocket.bind(defaultDiscoveryPort, '0.0.0.0')
+    onReady({ server, store, host, port: servicePort })
+  })
   return { server, store }
 }
 

@@ -145,6 +145,30 @@ test('assistant capability replies describe calendar prefill instead of denying 
   )
 })
 
+test('assistant replies use project names while keeping project IDs in operation data', () => {
+  const context = {
+    projects: [
+      { id: 'P-12379955', name: '警示案例视频（通州）' },
+      { id: 'P-94852416', name: '综合能源昌平区医院节能改造专题片' },
+    ],
+  }
+  const result = parseAssistantRouting(
+    JSON.stringify({
+      kind: 'operation',
+      message: '准备打开 P-12379955（警示案例视频（通州）），并参考项目编号 P-94852416。',
+      operation: {
+        type: 'update_project',
+        projectId: 'P-12379955',
+        projectName: '警示案例视频（通州）',
+      },
+    }),
+    context,
+  )
+
+  assert.equal(result.message, '准备打开警示案例视频（通州），并参考综合能源昌平区医院节能改造专题片。')
+  assert.equal(result.operation.projectId, 'P-12379955')
+})
+
 test('calendar extraction accepts a JSON object surrounded by model commentary', () => {
   const result = parseCalendarExtraction(
     '我已经整理完成。\n{"message":"请确认","candidates":[{"projectId":"P-1","date":"2026-08-08","title":"提交方案"}]}\n以上是提取结果。',
