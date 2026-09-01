@@ -4516,6 +4516,14 @@ h1 {
   border-color: rgba(128, 233, 247, 0.58);
 }
 
+.assistantSettingsFields select option,
+.assistantSettingsFields select optgroup,
+.assistantCandidate select option,
+.assistantCandidate select optgroup {
+  color: #0b1320;
+  background: #ffffff;
+}
+
 .assistantOnlineProfileRow {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 38px;
