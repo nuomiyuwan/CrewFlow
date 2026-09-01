@@ -244,6 +244,12 @@ type AssistantOnlineProfile = {
   onlineModel: string
   hasApiKey: boolean
 }
+type AssistantOnlinePreset = {
+  id: string
+  label: string
+  onlineBaseUrl: string
+  onlineModel: string
+}
 type AssistantSettings = {
   mode: AssistantMode
   onlineBaseUrl: string
@@ -381,7 +387,8 @@ type DesktopBridge = {
   openProjectFolder: (folderPath: string) => Promise<boolean>
   selectProjectFile: (title: string) => Promise<string | null>
   openProjectFile: (filePath: string) => Promise<boolean>
-  selectLibraryFile: (purpose: 'upload' | 'reference') => Promise<LibraryFileSelection | null>
+  selectLibraryFile: (purpose: 'upload' | 'reference' | 'folder') => Promise<LibraryFileSelection | null>
+  identifyLibraryPath: (filePath: string) => Promise<string>
   importLibraryFile: (payload: Record<string, unknown>) => Promise<Record<string, unknown>>
   readLibraryFile: (payload: Record<string, unknown>) => Promise<{
     data: unknown
@@ -869,7 +876,7 @@ const welcomeGuides: Record<Role, WelcomeGuideContent> = {
         items: [
           '系统默认总控账号：zk，密码：123456。',
           '先在左侧“账号管理”修改总控用户名和密码。',
-          '在“工作模式”选择单人模式或团队模式；团队模式需要在一台常驻电脑开启团队服务，再把显示的地址发给其他电脑连接。',
+          '在“工作模式”选择单人模式或团队模式；团队模式由一台常驻电脑开启服务，其他电脑选择团队模式后会自动发现主机并申请连接。',
         ],
       },
       {
@@ -877,7 +884,7 @@ const welcomeGuides: Record<Role, WelcomeGuideContent> = {
         items: [
           '在“人员管理”添加团队成员、设置标签，并到“账号管理”创建成员账号。',
           '在“选项管理”维护项目类型、任务工种、流程节点、人员标签。',
-          '在“资料库”建立需要共享的资料集；小型文稿可上传，视频和大型资料使用“视频/共享文件”。',
+          '在“资料库”建立需要共享的资料集；小型文稿可上传，视频、大型资料和共享文件夹使用“视频/共享路径”。',
           '完成基础设置后，可在右上角“新建项目”，再进入项目设置交付节点和任务负责人。',
         ],
       },
@@ -1845,6 +1852,7 @@ function App() {
   const [teamServiceBusy, setTeamServiceBusy] = useState(false)
   const [teamServiceMessage, setTeamServiceMessage] = useState('')
   const [teamPairingRequests, setTeamPairingRequests] = useState<TeamPairingRequest[]>([])
+  const [showTeamPairingRequestModal, setShowTeamPairingRequestModal] = useState(false)
   const [remoteTeamServiceHost, setRemoteTeamServiceHost] = useState('')
   const [showDataModeModal, setShowDataModeModal] = useState(false)
   const [currentAccountId, setCurrentAccountId] = useState(() => loadStoredAccountId())
@@ -2116,6 +2124,7 @@ function App() {
     const localAccessKey = teamServiceInfo?.accessKey?.trim() ?? ''
     if (dataMode !== 'team' || !teamServiceInfo?.running || !localAccessKey || localAccessKey !== teamAccessKey.trim()) {
       setTeamPairingRequests([])
+      setShowTeamPairingRequestModal(false)
       return
     }
 
@@ -2127,9 +2136,13 @@ function App() {
         const hasNewRequest = requests.some((request) => !seenTeamPairingRequestIdsRef.current.has(request.id))
         seenTeamPairingRequestIdsRef.current = new Set(requests.map((request) => request.id))
         setTeamPairingRequests(requests)
-        if (hasNewRequest) setShowDataModeModal(true)
+        if (requests.length === 0) setShowTeamPairingRequestModal(false)
+        else if (hasNewRequest) setShowTeamPairingRequestModal(true)
       } catch {
-        if (active) setTeamPairingRequests([])
+        if (active) {
+          setTeamPairingRequests([])
+          setShowTeamPairingRequestModal(false)
+        }
       }
     }
 
@@ -3113,6 +3126,7 @@ function App() {
   }
 
   function updateDataMode(nextMode: DataMode) {
+    if (nextMode === dataMode) return
     setDataMode(nextMode)
     try {
       localStorage.setItem(dataModeStorageKey, nextMode)
@@ -3465,7 +3479,7 @@ function App() {
   }
 
   function handleCreateProject(payload: NewProjectPayload) {
-    const projectId = `P-${Date.now().toString().slice(-8)}`
+    const projectId = createProjectId()
     const dueDate = new Date(payload.deliveryDate)
     const initialStage = appWorkflowOptions.workflowStages[0] ?? defaultWorkflowStageOptions[0]
     const initialStatus = appWorkflowOptions.nodeStatuses[0] ?? defaultNodeStatusOptions[0]
@@ -4181,6 +4195,14 @@ function App() {
     setHandoffProject(null)
   }
 
+  const teamPairingRequestDialog = showTeamPairingRequestModal && teamPairingRequests.length > 0 ? (
+    <TeamPairingRequestModal
+      requests={teamPairingRequests}
+      onClose={() => setShowTeamPairingRequestModal(false)}
+      onDecision={handleTeamPairingDecision}
+    />
+  ) : null
+
   if (!currentAccount) {
     return (
       <>
@@ -4211,7 +4233,7 @@ function App() {
             teamServiceInfo={teamServiceInfo}
             teamServiceBusy={teamServiceBusy}
             teamServiceMessage={teamServiceMessage}
-            teamPairingRequests={teamPairingRequests}
+            pendingPairingRequestCount={teamPairingRequests.length}
             pairingClientId={teamPresenceClientId}
             pairingClientName={[presenceAccountName, teamServiceInfo?.deviceName].filter(Boolean).join(' · ') || 'CrewFlow 电脑'}
             onClose={() => setShowDataModeModal(false)}
@@ -4225,9 +4247,10 @@ function App() {
             onStopTeamService={stopLocalTeamService}
             onCopyTeamServiceUrl={copyLocalTeamServiceUrl}
             onConnectDiscoveredHost={connectDiscoveredTeamHost}
-            onTeamPairingDecision={handleTeamPairingDecision}
+            onOpenTeamPairingRequests={() => setShowTeamPairingRequestModal(true)}
           />
         )}
+        {teamPairingRequestDialog}
       </>
     )
   }
@@ -4679,7 +4702,7 @@ function App() {
           teamServiceInfo={teamServiceInfo}
           teamServiceBusy={teamServiceBusy}
           teamServiceMessage={teamServiceMessage}
-          teamPairingRequests={teamPairingRequests}
+          pendingPairingRequestCount={teamPairingRequests.length}
           pairingClientId={teamPresenceClientId}
           pairingClientName={[presenceAccountName, teamServiceInfo?.deviceName].filter(Boolean).join(' · ') || 'CrewFlow 电脑'}
           onClose={() => setShowDataModeModal(false)}
@@ -4693,9 +4716,10 @@ function App() {
           onStopTeamService={stopLocalTeamService}
           onCopyTeamServiceUrl={copyLocalTeamServiceUrl}
           onConnectDiscoveredHost={connectDiscoveredTeamHost}
-          onTeamPairingDecision={handleTeamPairingDecision}
+          onOpenTeamPairingRequests={() => setShowTeamPairingRequestModal(true)}
         />
       )}
+      {teamPairingRequestDialog}
       {showWeatherSettings && (
         <WeatherSettingsModal
           currentLocation={weatherLocation}
@@ -5549,6 +5573,58 @@ function VersionUpdateModal({
   )
 }
 
+function TeamPairingRequestModal({
+  requests,
+  onClose,
+  onDecision,
+}: {
+  requests: TeamPairingRequest[]
+  onClose: () => void
+  onDecision: (requestId: string, decision: 'approve' | 'reject') => Promise<void>
+}) {
+  const [busyRequestId, setBusyRequestId] = useState('')
+
+  async function decide(requestId: string, decision: 'approve' | 'reject') {
+    setBusyRequestId(requestId)
+    await onDecision(requestId, decision)
+    setBusyRequestId('')
+  }
+
+  return (
+    <div className="modalBackdrop teamPairingRequestBackdrop" role="presentation" onMouseDown={onClose}>
+      <section className="financeEntryModal teamPairingRequestModal" role="dialog" aria-modal="true" aria-label="团队连接申请" onMouseDown={(event) => event.stopPropagation()}>
+        <header>
+          <div>
+            <span className="eyebrow">团队模式</span>
+            <h2>连接申请</h2>
+          </div>
+          <button type="button" onClick={onClose} title="关闭">
+            <X size={18} />
+          </button>
+        </header>
+        <div className="teamPairingRequestList">
+          {requests.map((request) => (
+            <div className="teamPairingRequestRow" key={request.id}>
+              <div>
+                <Users size={19} />
+                <strong>{request.clientName}</strong>
+              </div>
+              <div>
+                <button type="button" disabled={Boolean(busyRequestId)} onClick={() => void decide(request.id, 'reject')}>
+                  拒绝
+                </button>
+                <button className="primaryButton" type="button" disabled={Boolean(busyRequestId)} onClick={() => void decide(request.id, 'approve')}>
+                  {busyRequestId === request.id ? '处理中' : '同意连接'}
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      </section>
+    </div>
+  )
+}
+
 function DataModeModal({
   dataMode,
   teamServerUrl,
@@ -5560,7 +5636,7 @@ function DataModeModal({
   teamServiceInfo,
   teamServiceBusy,
   teamServiceMessage,
-  teamPairingRequests,
+  pendingPairingRequestCount,
   pairingClientId,
   pairingClientName,
   onClose,
@@ -5574,7 +5650,7 @@ function DataModeModal({
   onStopTeamService,
   onCopyTeamServiceUrl,
   onConnectDiscoveredHost,
-  onTeamPairingDecision,
+  onOpenTeamPairingRequests,
 }: {
   dataMode: DataMode
   teamServerUrl: string
@@ -5586,7 +5662,7 @@ function DataModeModal({
   teamServiceInfo: TeamServiceInfo | null
   teamServiceBusy: boolean
   teamServiceMessage: string
-  teamPairingRequests: TeamPairingRequest[]
+  pendingPairingRequestCount: number
   pairingClientId: string
   pairingClientName: string
   onClose: () => void
@@ -5600,12 +5676,15 @@ function DataModeModal({
   onStopTeamService: () => void
   onCopyTeamServiceUrl: (url?: string) => void
   onConnectDiscoveredHost: (serverUrl: string, accessKey: string) => void
-  onTeamPairingDecision: (requestId: string, decision: 'approve' | 'reject') => void
+  onOpenTeamPairingRequests: () => void
 }) {
   const [discoveredHosts, setDiscoveredHosts] = useState<DiscoveredTeamHost[]>([])
   const [discoveryBusy, setDiscoveryBusy] = useState(false)
   const [discoveryMessage, setDiscoveryMessage] = useState('')
+  const [showDiscoveryDialog, setShowDiscoveryDialog] = useState(false)
   const [pairingHostUrl, setPairingHostUrl] = useState('')
+  const discoveryAttemptRef = useRef(0)
+  const autoDiscoveryAttemptedRef = useRef(false)
   const pairingAttemptRef = useRef(0)
   const hostUrl = teamServiceInfo?.stableUrl || teamServiceInfo?.connectionUrl || defaultTeamServerUrl
   const visibleHostUrl = activeRemoteTeamHost ? normalizeTeamServerUrl(teamServerUrl) : hostUrl
@@ -5632,10 +5711,37 @@ function DataModeModal({
   const localHostActive = Boolean(
     teamServiceInfo?.running && teamServiceInfo.accessKey?.trim() && teamServiceInfo.accessKey.trim() === teamAccessKey.trim(),
   )
+  const teamConnectionActive = teamConnectionStatus === 'connected' || Boolean(activeRemoteTeamHost) || localHostActive
 
   useEffect(() => () => {
+    discoveryAttemptRef.current += 1
     pairingAttemptRef.current += 1
   }, [])
+
+  useEffect(() => {
+    if (!teamConnectionActive) return
+    discoveryAttemptRef.current += 1
+    pairingAttemptRef.current += 1
+    setDiscoveredHosts([])
+    setDiscoveryBusy(false)
+    setShowDiscoveryDialog(false)
+    setPairingHostUrl('')
+  }, [teamConnectionActive])
+
+  useEffect(() => {
+    if (dataMode !== 'team') autoDiscoveryAttemptedRef.current = false
+  }, [dataMode])
+
+  useEffect(() => {
+    if (
+      dataMode !== 'team'
+      || teamConnectionActive
+      || teamConnectionStatus === 'checking'
+      || autoDiscoveryAttemptedRef.current
+    ) return
+    autoDiscoveryAttemptedRef.current = true
+    void discoverHosts()
+  }, [dataMode, teamConnectionActive, teamConnectionStatus])
 
   async function discoverHosts() {
     if (!window.desktopBridge?.discoverTeamServices) {
@@ -5643,23 +5749,45 @@ function DataModeModal({
       return
     }
 
+    const discoveryAttempt = discoveryAttemptRef.current + 1
+    discoveryAttemptRef.current = discoveryAttempt
     pairingAttemptRef.current += 1
     setPairingHostUrl('')
     setDiscoveryBusy(true)
     setDiscoveryMessage('正在局域网中查找 CrewFlow 主机')
     try {
       const hosts = await window.desktopBridge.discoverTeamServices()
+      if (discoveryAttemptRef.current !== discoveryAttempt) return
       setDiscoveredHosts(hosts)
+      setShowDiscoveryDialog(hosts.length > 0)
       setDiscoveryMessage(
         hosts.length > 0
           ? `发现 ${hosts.length} 台团队主机，请选择并请求连接`
           : '未发现主机，请确认在同一局域网，并检查 VPN 是否允许访问本地网络',
       )
     } catch (error) {
+      if (discoveryAttemptRef.current !== discoveryAttempt) return
       setDiscoveredHosts([])
+      setShowDiscoveryDialog(false)
       setDiscoveryMessage(error instanceof Error ? error.message : '自动发现失败')
     } finally {
-      setDiscoveryBusy(false)
+      if (discoveryAttemptRef.current === discoveryAttempt) setDiscoveryBusy(false)
+    }
+  }
+
+  function closeDiscoveryDialog() {
+    pairingAttemptRef.current += 1
+    setPairingHostUrl('')
+    setShowDiscoveryDialog(false)
+  }
+
+  function selectTeamMode() {
+    if (dataMode !== 'team') {
+      onDataModeChange('team')
+      return
+    }
+    if (!teamConnectionActive && teamConnectionStatus !== 'checking' && !discoveryBusy && !pairingHostUrl) {
+      void discoverHosts()
     }
   }
 
@@ -5691,6 +5819,7 @@ function DataModeModal({
           setDiscoveryMessage('主机已同意，正在连接团队数据')
           onConnectDiscoveredHost(host.serverUrl, status.accessKey)
           setPairingHostUrl('')
+          setShowDiscoveryDialog(false)
           return
         }
       }
@@ -5721,6 +5850,7 @@ function DataModeModal({
   }
 
   return (
+    <>
     <div className="modalBackdrop" role="presentation" onMouseDown={onClose}>
       <section className="financeEntryModal dataModeModal" role="dialog" aria-modal="true" aria-label="工作模式设置" onMouseDown={(event) => event.stopPropagation()}>
         <div className="dataModeScroll">
@@ -5739,7 +5869,7 @@ function DataModeModal({
             <strong>单人模式</strong>
             <span>只读写这台电脑上的数据文件。</span>
           </button>
-          <button className={dataMode === 'team' ? 'active' : ''} type="button" onClick={() => onDataModeChange('team')}>
+          <button className={dataMode === 'team' ? 'active' : ''} type="button" onClick={selectTeamMode}>
             <Users size={18} />
             <strong>团队模式</strong>
             <span>连接常驻电脑上的 CrewFlow Server。</span>
@@ -5753,17 +5883,12 @@ function DataModeModal({
             </div>
             <em className={teamServiceInfo?.running || activeRemoteTeamHost ? 'running' : ''}>{hostStatus}</em>
           </div>
-          {teamPairingRequests.length > 0 && (
-            <div className="teamPairingRequests" aria-label="待处理连接申请">
-              <strong>{teamPairingRequests.length} 个连接申请</strong>
-              {teamPairingRequests.map((request) => (
-                <div key={request.id}>
-                  <span>{request.clientName}</span>
-                  <button type="button" onClick={() => onTeamPairingDecision(request.id, 'reject')}>拒绝</button>
-                  <button className="approve" type="button" onClick={() => onTeamPairingDecision(request.id, 'approve')}>同意</button>
-                </div>
-              ))}
-            </div>
+          {pendingPairingRequestCount > 0 && (
+            <button className="teamPairingNotice" type="button" onClick={onOpenTeamPairingRequests}>
+              <Users size={16} />
+              <span>{pendingPairingRequestCount} 个连接申请</span>
+              <strong>查看</strong>
+            </button>
           )}
           <label className="dataModeField teamHostAddress">
             <span>{activeRemoteTeamHost ? '团队主机地址' : '稳定地址'}</span>
@@ -5801,32 +5926,17 @@ function DataModeModal({
             {activeRemoteTeamHost ? `已开启电脑：${activeRemoteTeamHost}` : teamServiceMessage || teamServiceInfo?.message || '稳定地址不会随 Wi-Fi 的数字 IP 一起变化。'}
           </p>
         </section>
-        {!localHostActive && (
+        {dataMode === 'team' && !teamConnectionActive && (
           <section className="teamDiscoveryPanel" aria-label="自动发现团队主机">
             <div className="teamHostHeader">
               <div>
                 <strong>自动发现团队主机</strong>
               </div>
-              <button type="button" onClick={discoverHosts} disabled={discoveryBusy || Boolean(pairingHostUrl)}>
+              <button type="button" onClick={() => void discoverHosts()} disabled={discoveryBusy || Boolean(pairingHostUrl)}>
                 {discoveryBusy ? <RefreshCw className="spinning" size={15} /> : <Search size={15} />}
-                {discoveryBusy ? '正在查找' : '发现主机'}
+                {discoveryBusy ? '正在查找' : '重新扫描'}
               </button>
             </div>
-            {discoveredHosts.length > 0 && (
-              <div className="teamDiscoveryHosts">
-                {discoveredHosts.map((host) => (
-                  <div key={host.serverUrl}>
-                    <span>
-                      <strong>{host.hostName}</strong>
-                      <em>{host.serverUrl}</em>
-                    </span>
-                    <button type="button" onClick={() => requestHostConnection(host)} disabled={Boolean(pairingHostUrl)}>
-                      {pairingHostUrl === host.serverUrl ? '等待同意' : '请求连接'}
-                    </button>
-                  </div>
-                ))}
-              </div>
-            )}
             {discoveryMessage && <p>{discoveryMessage}</p>}
           </section>
         )}
@@ -5907,6 +6017,61 @@ function DataModeModal({
         </div>
       </section>
     </div>
+    {showDiscoveryDialog && (
+      <div
+        className="teamConnectionRequestBackdrop"
+        role="presentation"
+        onMouseDown={(event) => {
+          event.stopPropagation()
+          closeDiscoveryDialog()
+        }}
+      >
+        <section className="financeEntryModal teamConnectionRequestModal" role="dialog" aria-modal="true" aria-label="请求连接团队主机" onMouseDown={(event) => event.stopPropagation()}>
+          <header>
+            <div>
+              <span className="eyebrow">团队模式</span>
+              <h2>{pairingHostUrl ? '等待主机同意' : '发现团队主机'}</h2>
+            </div>
+            <button type="button" onClick={closeDiscoveryDialog} title="关闭">
+              <X size={18} />
+            </button>
+          </header>
+          <div className="teamConnectionRequestBody">
+            {pairingHostUrl ? (
+              <div className="teamConnectionWaiting">
+                <RefreshCw className="spinning" size={24} />
+                <strong>{discoveredHosts.find((host) => host.serverUrl === pairingHostUrl)?.hostName ?? '团队主机'}</strong>
+                <span>{discoveryMessage}</span>
+              </div>
+            ) : (
+              <div className="teamConnectionHostList">
+                {discoveredHosts.map((host) => (
+                  <div key={host.serverUrl}>
+                    <span>
+                      <strong>{host.hostName}</strong>
+                      <em>{host.serverUrl}</em>
+                    </span>
+                    <button className="primaryButton" type="button" onClick={() => void requestHostConnection(host)}>
+                      请求连接
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+            {!pairingHostUrl && discoveryMessage && <p>{discoveryMessage}</p>}
+          </div>
+          <footer>
+            <button type="button" onClick={() => void discoverHosts()} disabled={discoveryBusy || Boolean(pairingHostUrl)}>
+              {discoveryBusy ? '正在扫描' : '重新扫描'}
+            </button>
+            <button type="button" onClick={closeDiscoveryDialog}>
+              {pairingHostUrl ? '取消申请' : '关闭'}
+            </button>
+          </footer>
+        </section>
+      </div>
+    )}
+    </>
   )
 }
 
@@ -11263,6 +11428,45 @@ const defaultAssistantSettings: AssistantSettings = {
   secureStorageAvailable: true,
 }
 
+const assistantOnlinePresets: AssistantOnlinePreset[] = [
+  {
+    id: 'openrouter-free',
+    label: 'OpenRouter 免费模型',
+    onlineBaseUrl: 'https://openrouter.ai/api/v1',
+    onlineModel: 'openrouter/free',
+  },
+  {
+    id: 'deepseek-v4-flash',
+    label: 'DeepSeek V4 Flash',
+    onlineBaseUrl: 'https://api.deepseek.com',
+    onlineModel: 'deepseek-v4-flash',
+  },
+  {
+    id: 'kimi-k3-cn',
+    label: 'Kimi K3（国内）',
+    onlineBaseUrl: 'https://api.moonshot.cn/v1',
+    onlineModel: 'kimi-k3',
+  },
+  {
+    id: 'minimax-m3-cn',
+    label: 'MiniMax M3（国内）',
+    onlineBaseUrl: 'https://api.minimaxi.com/v1',
+    onlineModel: 'MiniMax-M3',
+  },
+  {
+    id: 'qwen-plus-cn',
+    label: '通义千问 Plus（国内）',
+    onlineBaseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+    onlineModel: 'qwen-plus',
+  },
+  {
+    id: 'glm-5-3-cn',
+    label: '智谱 GLM 5.3（国内）',
+    onlineBaseUrl: 'https://open.bigmodel.cn/api/paas/v4',
+    onlineModel: 'glm-5.3',
+  },
+]
+
 const assistantImageMimeTypes = new Set(['image/jpeg', 'image/png', 'image/gif', 'image/webp'])
 const assistantImageCountLimit = 4
 const assistantImageSizeLimit = 10 * 1024 * 1024
@@ -11426,13 +11630,24 @@ function CrewFlowAssistant({
   const [messages, setMessages] = useState<AssistantMessage[]>([
     {
       from: 'assistant',
-      text: '我可以帮你整理项目、任务、交付节点、资料和工作提醒。',
+      text: '我可以帮你整理项目、任务、交付节点、资料库、团队连接和风险提醒。',
     },
   ])
   const suggestions = assistantSuggestions(role, section, projects, tasks, calendarItems, financeRecords, libraryCollections, libraryItems)
   const modeLabel = assistantModeLabel(settings.mode)
   const onlineProfiles = settings.onlineProfiles ?? []
   const selectedOnlineProfile = onlineProfiles.find((profile) => profile.id === settingsDraft.activeOnlineProfileId)
+  const selectedOnlinePreset = settingsDraft.activeOnlineProfileId
+    ? undefined
+    : assistantOnlinePresets.find(
+        (preset) =>
+          preset.onlineBaseUrl === settingsDraft.onlineBaseUrl && preset.onlineModel === settingsDraft.onlineModel,
+      )
+  const onlineModelSelection = selectedOnlineProfile
+    ? `profile:${selectedOnlineProfile.id}`
+    : selectedOnlinePreset
+      ? `preset:${selectedOnlinePreset.id}`
+      : ''
   const hasSavedOnlineApiKey =
     selectedOnlineProfile?.hasApiKey ?? (onlineProfiles.length === 0 ? settings.hasApiKey : false)
 
@@ -11771,7 +11986,7 @@ function CrewFlowAssistant({
       setApiKey('')
       setOnlineTestPassed(false)
       setSettingsMessage(
-        clearApiKey ? 'API Key 已清除' : saveOnlineProfile ? '设置已保存，并加入常用在线模型' : '设置已保存',
+        clearApiKey ? 'API Key 已清除' : saveOnlineProfile ? '设置已保存，并加入我的模型' : '设置已保存',
       )
     } catch (error) {
       setSettingsMessage(assistantErrorMessage(error))
@@ -11808,16 +12023,18 @@ function CrewFlowAssistant({
     }
   }
 
-  function selectOnlineProfile(profileId: string) {
-    const profile = onlineProfiles.find((item) => item.id === profileId)
+  function selectOnlineModel(selection: string) {
+    const [kind, id] = selection.split(':', 2)
+    const profile = kind === 'profile' ? onlineProfiles.find((item) => item.id === id) : undefined
+    const preset = kind === 'preset' ? assistantOnlinePresets.find((item) => item.id === id) : undefined
     setApiKey('')
     setOnlineTestPassed(false)
     setSettingsMessage('')
     setSettingsDraft((current) => ({
       ...current,
       activeOnlineProfileId: profile?.id ?? '',
-      onlineBaseUrl: profile?.onlineBaseUrl ?? '',
-      onlineModel: profile?.onlineModel ?? '',
+      onlineBaseUrl: profile?.onlineBaseUrl ?? preset?.onlineBaseUrl ?? '',
+      onlineModel: profile?.onlineModel ?? preset?.onlineModel ?? '',
     }))
   }
 
@@ -11970,18 +12187,26 @@ function CrewFlowAssistant({
                 <label>
                   <span>常用在线模型</span>
                   <select
-                    value={settingsDraft.activeOnlineProfileId}
-                    disabled={onlineProfiles.length === 0}
-                    onChange={(event) => selectOnlineProfile(event.target.value)}
+                    value={onlineModelSelection}
+                    onChange={(event) => selectOnlineModel(event.target.value)}
                   >
-                    <option value="">
-                      {onlineProfiles.length === 0 ? '测试成功并保存后显示在这里' : '手动填写新模型'}
-                    </option>
-                    {onlineProfiles.map((profile) => (
-                      <option key={profile.id} value={profile.id}>
-                        {assistantOnlineProfileLabel(profile)}
-                      </option>
-                    ))}
+                    <option value="">手动填写新模型</option>
+                    <optgroup label="内置预设">
+                      {assistantOnlinePresets.map((preset) => (
+                        <option key={preset.id} value={`preset:${preset.id}`}>
+                          {preset.label}
+                        </option>
+                      ))}
+                    </optgroup>
+                    {onlineProfiles.length > 0 && (
+                      <optgroup label="我的模型">
+                        {onlineProfiles.map((profile) => (
+                          <option key={profile.id} value={`profile:${profile.id}`}>
+                            {assistantOnlineProfileLabel(profile)}
+                          </option>
+                        ))}
+                      </optgroup>
+                    )}
                   </select>
                 </label>
                 <button
@@ -12038,7 +12263,7 @@ function CrewFlowAssistant({
                 />
               </label>
               <p className="assistantPrivacyNote">
-                连接测试成功后保存，会加入常用模型。每套 API Key 只加密保存在当前电脑，不写入团队数据库。
+                内置预设会自动填写地址和模型。连接测试成功后保存，会加入我的模型；API Key 只加密保存在当前电脑。
               </p>
             </div>
           )}
@@ -12655,7 +12880,7 @@ function assistantSuggestions(
     return [
       { label: `资料集 ${libraryCollections.length}`, prompt: '当前资料库里有哪些资料集？' },
       { label: `资料 ${libraryItems.length}`, prompt: '概括当前资料库中已经保存的资料。' },
-      { label: '如何添加', prompt: '资料库怎么使用，上传文稿、视频/共享文件和在线链接有什么区别？' },
+      { label: '如何添加', prompt: '资料库怎么使用，上传文稿、视频/共享路径和在线链接有什么区别？' },
     ]
   }
 
@@ -12672,7 +12897,7 @@ function assistantSuggestions(
 function assistantReply(
   prompt: string,
   role: Role,
-  section: Section,
+  _section: Section,
   projects: Project[],
   tasks: Task[],
   calendarItems: CalendarItem[],
@@ -12681,45 +12906,112 @@ function assistantReply(
   libraryItems: LibraryItem[],
   canCreateProject: boolean,
 ) {
-  const riskProjects = projects.filter((project) => isProjectAtRisk(project, new Date(), calendarItems))
+  const now = new Date()
+  const riskProjects = projects.filter((project) => isProjectAtRisk(project, now, calendarItems))
   const waitingProjects = projects.filter(isWaitingProject)
   const revisionTasks = tasks.filter((task) => task.status === '修改中')
   const activeTasks = tasks.filter((task) => task.status === '制作中' || task.status === '未开始')
+  const openTasks = tasks.filter((task) => task.status !== '已完成')
   const financeRisks = financeRecords.filter((record) => record.settlementStatus === '逾期' || record.invoiceStatus !== '已开票')
   const lowerPrompt = prompt.toLowerCase()
-  const canAnswerLocally = /新建项目|创建项目|立项|录入项目|款|开票|财务|交付|日程|撞期|任务|项目|风险|反馈|优先|今天|安排|进度|状态|延期|归档|负责人|项目经理|拍摄|素材|收款|合同|资料库|资料集|上传文稿|引用路径|共享文件|视频|在线链接|表格预览|怎么用|如何使用|使用说明|单人模式|团队模式|数据保存|权限|账号管理|人员管理|选项管理|软件更新/.test(prompt)
+  const cleanPrompt = prompt.trim()
+  const mentionedProject = [...projects]
+    .filter((project) => project.name.trim().length >= 2 && cleanPrompt.includes(project.name.trim()))
+    .sort((left, right) => right.name.length - left.name.length)[0]
+  const canAnswerLocally = Boolean(mentionedProject) || /新建项目|创建项目|立项|录入项目|款|开票|财务|交付|日程|撞期|任务|项目|风险|反馈|优先|今天|接下来|下一步|安排|进度|状态|延期|归档|负责人|项目经理|人员负载|工作量|拍摄|素材|收款|合同|资料库|资料集|上传文稿|引用路径|共享路径|共享文件|文件夹|视频|在线链接|表格预览|怎么用|如何使用|使用说明|单人模式|团队模式|团队服务|发现主机|自动发现|请求连接|连接申请|局域网|访问密钥|VPN|数据保存|权限|账号管理|人员管理|选项管理|软件更新|检查更新|模型|API Key|API 地址|Ollama|能做什么|会什么/.test(prompt)
 
   if (/智障|傻|乱答|不对|驴唇不对马嘴/.test(prompt)) {
     return [
       '这个问题我现在答得不够准。',
-      '我可以整理项目、任务、交付日历、资料库和财务提醒，或打开新建项目窗口。',
-      '其他问题我会尽量明确说明，避免给出没把握的回答。',
+      '你可以直接告诉我要查哪个项目、任务、日期或功能，我会按当前可见数据重新整理。',
+      '如果需要开放式分析，可以切换到在线 AI 或本地模型。',
+    ].join('\n')
+  }
+
+  if (/^(你好|您好|嗨|在吗|hello|hi)[！!。.？?\s]*$/i.test(cleanPrompt)) {
+    return '你好，我在。你可以直接问项目进度、今日优先事项、风险、任务、交付日历、资料库或团队连接。'
+  }
+
+  if (/^(谢谢|感谢|辛苦了|明白了|知道了|好的|好|ok|okay)[！!。.\s]*$/i.test(cleanPrompt)) {
+    return '好的，需要时继续告诉我。'
+  }
+
+  if (/能做什么|能干什么|会什么|有什么能力|怎么帮/.test(prompt)) {
+    return [
+      '本地规则可以读取当前账号可见的项目、任务、交付节点、资料库和财务摘要，整理风险、待反馈、人员负载和今日优先事项。',
+      '它也能说明团队连接、权限、更新和资料库用法，并按项目名称给出概览。新建或修改数据仍会先打开确认界面。',
+      '需要理解长聊天记录、图片或开放式问题时，可以切换到在线 AI 或本地模型。',
+    ].join('\n')
+  }
+
+  if (/在线模型|在线 AI|API Key|API 地址|常用在线模型|本地模型|Ollama|本地规则/.test(prompt)) {
+    return [
+      '打开助理右上角设置，可以切换“本地规则”“在线 AI”和“本地模型”。',
+      '在线 AI 可从内置预设选择 OpenRouter 免费模型、DeepSeek、Kimi、MiniMax、通义千问或智谱 GLM，也可以手动填写其他 OpenAI 兼容地址；填入自己的 API Key，测试成功后再保存。',
+      'API Key 只加密保存在当前电脑。使用 Ollama 时选择“本地模型”，通常使用 http://127.0.0.1:11434。',
     ].join('\n')
   }
 
   if (!canAnswerLocally) {
     return [
       '这个问题我现在还不能准确回答。',
-      '你可以这样问我：今天优先处理什么、哪些项目需要关注、我有哪些任务、哪些款项要跟进，或者让我新建项目。',
+      '你可以问我：今天优先处理什么、某个项目进度如何、哪些项目有风险、谁的任务较多、如何发现团队主机、共享文件夹怎么打开，或者让我新建项目。',
       '切换到在线 AI 或本地模型后，还可以粘贴聊天记录并提取交付日历候选。',
     ].join('\n')
   }
 
-  if (/资料库|资料集|上传文稿|引用路径|共享文件|视频|在线链接|表格预览/.test(prompt) || section === 'library') {
+  if (mentionedProject && /项目|进度|状态|负责人|项目经理|交付|客户|公司|对接人|类型|任务|概况|情况/.test(prompt)) {
+    const projectTasks = openTasks.filter((task) => task.projectId === mentionedProject.id)
+    const projectStatus = projectDisplayStatus(mentionedProject, now, calendarItems)
+    return [
+      `${mentionedProject.name}：${statusLabel[projectStatus]}，当前进度 ${mentionedProject.progress}%，制作状态为${mentionedProject.workStatus}。`,
+      `项目类型：${mentionedProject.type || '未填写'}；公司：${mentionedProject.client || '未填写'}；对接人：${mentionedProject.clientContact || '未填写'}。`,
+      `项目负责人：${mentionedProject.manager || mentionedProject.owner || '未指定'}；最终交付：${formatDeliveryDate(mentionedProject.due)}。`,
+      projectTasks.length > 0
+        ? `还有 ${projectTasks.length} 个未完成任务：${projectTasks.slice(0, 4).map((task) => task.title).join('、')}${projectTasks.length > 4 ? '等' : ''}。`
+        : '当前没有未完成任务。',
+    ].join('\n')
+  }
+
+  if (/资料库|资料集|上传文稿|引用路径|共享路径|共享文件|文件夹|视频|在线链接|表格预览/.test(prompt)) {
     const collectionNames = libraryCollections.slice(0, 6).map((collection) => collection.name)
     return [
       `当前资料库有 ${libraryCollections.length} 个资料集、${libraryItems.length} 项资料。`,
       collectionNames.length > 0 ? `资料集包括：${collectionNames.join('、')}${libraryCollections.length > collectionNames.length ? '等' : ''}。` : '总控或管理员可以先新建资料集。',
-      '小型文稿、表格、PDF 和图片可用“上传文稿”复制进 CrewFlow，单个最大 200MB；视频、大文件和 NAS 资料使用“视频/共享文件”，网页资料使用“在线链接”。',
-      '团队模式中的路径记录所有人都能看到，但文件本体不会同步；本地路径只在原电脑可用，NAS 或共享盘路径需要每台电脑都具备访问权限。视频会在专用播放窗口中打开，不支持的编码可改用系统播放器。',
+      '小型文稿、表格、PDF 和图片可用“上传文稿”复制进 CrewFlow，单个最大 200MB；视频、大文件、NAS 文件和共享文件夹使用“视频/共享路径”，网页资料使用“在线链接”。',
+      '文件夹路径保存后，点击资料卡会直接用系统文件管理器打开。团队模式只同步路径记录，不复制文件；NAS 或共享盘需要每台电脑都具备访问权限。',
+      'SMB/NAS 资料会自动适配 Mac 和 Windows 的路径前缀；当前电脑尚未连接 NAS 时，系统会打开自身的登录窗口，认证后继续打开资料。',
       'PDF、图片、文本、Word 和 Excel 可在软件内预览；Word 使用白色分页视图，Excel 使用白色工作表视图并支持切换工作表、分页查看、常见样式和内嵌图片。超过 80MB 或含复杂图表、宏、嵌入对象时请使用“系统打开”。',
     ].join('\n')
   }
 
-  if (/怎么用|如何使用|使用说明|单人模式|团队模式|数据保存|权限|账号管理|人员管理|选项管理|软件更新/.test(prompt)) {
+  if (/团队模式|团队服务|发现主机|自动发现|请求连接|连接申请|局域网|访问密钥|VPN|服务地址/.test(prompt)) {
+    return [
+      '主机电脑在“工作模式”中开启团队服务；其他电脑处于同一局域网时，选择“团队模式”会自动扫描主机，发现后在弹窗中请求连接，主机同意后会自动连接，不需要手动填写地址和密钥。',
+      '主机本机使用本地连接，不受 Wi-Fi 数字 IP 变化影响。自动发现不可用时，再使用主机显示的稳定地址、IP 备用地址和访问密钥。',
+      'VPN 通常不影响；如果开启了禁止访问局域网或 Kill Switch，需要允许本地网络、绕过局域网，或暂时关闭 VPN 后重试。',
+    ].join('\n')
+  }
+
+  if (/软件更新|检查更新|版本更新|下载安装|升级软件/.test(prompt)) {
+    return [
+      '发现新版本时，左上角版本号附近会出现提示；点击版本号可以查看更新内容并下载。',
+      '团队环境建议先更新常驻主机，再更新其他电脑。单人数据、团队数据库和助理 API Key 都保存在程序目录之外。',
+    ].join('\n')
+  }
+
+  if (/权限|账号管理|人员管理|选项管理|角色/.test(prompt)) {
+    return [
+      `当前账号角色是${roleLabelFor(role)}，能看到和编辑的内容以当前界面实际开放范围为准。`,
+      '总控负责全局账号、人员、选项、团队和财务；管理员负责日常项目与团队维护；项目经理推进自己负责的项目；执行成员处理自己的任务；财务维护商务记录。',
+      '账号、人员和可选项需要分别维护，不要多人共用同一个账号。',
+    ].join('\n')
+  }
+
+  if (/怎么用|如何使用|使用说明|单人模式|数据保存/.test(prompt)) {
     return [
       'CrewFlow 的常用顺序是：选择单人或团队模式，登录后配置人员与账号，再新建项目、设置任务和交付节点，最后在任务面板、交付日历、团队负载、资料库和财务页面持续更新。',
-      '单人模式的数据只保存在当前电脑；团队模式由一台常驻电脑开启 CrewFlow Server，其他电脑填写服务地址连接。',
+      '单人模式的数据只保存在当前电脑；团队模式由一台常驻电脑开启服务，其他电脑通过局域网发现主机、申请并等待主机同意。',
       '左侧底部可以随时打开“使用说明”，里面有安装、角色权限、数据备份、团队部署和更新方法。',
     ].join('\n')
   }
@@ -12736,35 +13028,77 @@ function assistantReply(
       '客户单位：',
       '项目类型：',
       '项目负责人：',
-      '交付日期：2026-07-03',
+      '交付日期：YYYY-MM-DD',
       '任务分工：方案、执行、审核',
-      '项目文件夹：',
+      '项目文件夹路径（可添加多个）：',
     ].join('\n')
   }
 
-  if (section === 'finance' || prompt.includes('款') || prompt.includes('开票')) {
+  if (
+    /今天|优先|接下来|下一步|先做什么|怎么安排/.test(prompt) &&
+    !/款|开票|财务|风险|延期|反馈|交付|日程|撞期|任务|人员负载|工作量|归档|复盘/.test(prompt)
+  ) {
+    const priorityProjects = [...projects]
+      .filter((project) => !isArchivedProject(project))
+      .sort(
+        (left, right) =>
+          projectPriorityScore(right, calendarItems) - projectPriorityScore(left, calendarItems) ||
+          compareProjectsByFinalDelivery(left, right),
+      )
+      .slice(0, 4)
+    const todayTasks = openTasks.filter((task) => isTaskDueToday(task, now) || task.status === '修改中').slice(0, 4)
+
+    if (priorityProjects.length === 0 && todayTasks.length === 0) {
+      return '当前没有可见的进行中项目或今日紧急任务。可以先检查是否有新反馈，再安排下一批任务。'
+    }
+
     return [
-      `财务侧当前有 ${financeRisks.length} 个项目需要跟进。`,
-      ...financeRisks.slice(0, 3).map((record) => {
-        const project = projects.find((item) => item.id === record.projectId) ?? projects[0]
-        return `${project.name}：${record.settlementStatus}，开票 ${record.invoiceStatus}。`
+      '建议按这个顺序处理：',
+      ...priorityProjects.map(
+        (project) =>
+          `- ${project.name}：${statusLabel[projectDisplayStatus(project, now, calendarItems)]}，${formatDeliveryDate(project.due)}交付，负责人${project.manager || project.owner || '未指定'}。`,
+      ),
+      ...(todayTasks.length > 0
+        ? [`今日到期或正在修改的任务：${todayTasks.map((task) => `${task.project} · ${task.title}`).join('、')}。`]
+        : []),
+      '先确认延期和有风险项目的实际交付时间，再处理修改任务和临近节点。',
+    ].join('\n')
+  }
+
+  if (/款|开票|财务|合同|结算/.test(prompt)) {
+    return [
+      `财务侧当前有 ${financeRisks.length} 条记录需要跟进。`,
+      ...financeRisks.slice(0, 3).flatMap((record) => {
+        const project = projects.find((item) => item.id === record.projectId)
+        return project ? [`${project.name}：${record.settlementStatus}，开票 ${record.invoiceStatus}。`] : []
       }),
       '建议先处理逾期收款，再处理待开票。'
     ].join('\n')
   }
 
   if (/项目.{0,8}风险|风险.{0,8}项目|延期/.test(prompt)) {
-    const alerts = projectRiskAlertsForProjects(projects, calendarItems, new Date())
+    const alerts = projectRiskAlertsForProjects(projects, calendarItems, now)
     if (alerts.length === 0) return '当前可见项目没有明确的延期、逾期节点或手动风险标记。'
 
     return [
-      `当前有 ${alerts.length} 个项目需要关注：`,
+      `当前有 ${alerts.length} 条项目风险提醒：`,
       ...alerts.slice(0, 5).map((alert) => `- ${alert.projectName}：${alert.reason}（${alert.detail}）`),
       '建议先确认最紧急项目的实际可交付时间和负责人，再同步客户预期；节点逾期的项目要补充恢复时间，手动风险项目要确认风险是否仍然有效。',
     ].join('\n')
   }
 
-  if (section === 'calendar' || prompt.includes('交付') || prompt.includes('日程') || prompt.includes('撞期')) {
+  if (/反馈|催反馈|等待确认/.test(prompt)) {
+    if (waitingProjects.length === 0) return '当前可见项目中没有处于等待反馈状态的项目。'
+    return [
+      `当前有 ${waitingProjects.length} 个项目在等待反馈：`,
+      ...waitingProjects.slice(0, 5).map(
+        (project) => `- ${project.name}：${project.workStatus}，负责人${project.manager || project.owner || '未指定'}。`,
+      ),
+      '建议记录最后一次沟通时间、明确需要对方确认的内容，并给出下一次跟进时间。',
+    ].join('\n')
+  }
+
+  if (/交付|日程|撞期|节点|排期/.test(prompt)) {
     const busyDays = Array.from(new Set(calendarItems.map((item) => item.time.split(' ')[0]))).slice(0, 4)
     return [
       `当前可见交付节点 ${calendarItems.length} 个，涉及 ${new Set(calendarItems.map((item) => item.projectId)).size} 个项目。`,
@@ -12773,7 +13107,43 @@ function assistantReply(
     ].join('\n')
   }
 
-  if (section === 'tasks' || role === 'member' || lowerPrompt.includes('task') || prompt.includes('任务')) {
+  if (/人员负载|工作量|谁.*忙|任务.*集中/.test(prompt)) {
+    const workloadByPerson = new Map<string, { count: number; projects: Set<string> }>()
+    openTasks
+      .filter((task) => task.assignmentMode !== 'external' && task.assignee.trim())
+      .forEach((task) => {
+        const current = workloadByPerson.get(task.assignee) ?? { count: 0, projects: new Set<string>() }
+        current.count += 1
+        if (task.project.trim()) current.projects.add(task.project.trim())
+        workloadByPerson.set(task.assignee, current)
+      })
+    const workload = Array.from(workloadByPerson.entries())
+      .sort((left, right) => right[1].count - left[1].count || left[0].localeCompare(right[0], 'zh-CN'))
+      .slice(0, 6)
+
+    if (workload.length === 0) return '当前没有可用于分析人员负载的未完成内部任务。'
+    return [
+      `当前共有 ${openTasks.length} 个未完成任务，内部任务主要集中在：`,
+      ...workload.map(([name, item]) => {
+        const projectNames = Array.from(item.projects).slice(0, 3)
+        return `- ${name}：${item.count} 个任务${projectNames.length > 0 ? `，涉及${projectNames.join('、')}${item.projects.size > 3 ? '等项目' : ''}` : ''}。`
+      }),
+      '任务数量只能反映当前分派情况，调整前还要结合任务难度和交付日期。',
+    ].join('\n')
+  }
+
+  if (/归档|复盘|归档检查/.test(prompt)) {
+    const archivedProjects = projects.filter(isArchivedProject)
+    return [
+      `当前可见归档项目 ${archivedProjects.length} 个。`,
+      archivedProjects.length > 0
+        ? `最近可复盘的项目包括：${archivedProjects.slice(0, 5).map((project) => project.name).join('、')}。`
+        : '目前没有可见的归档项目。',
+      '归档前建议确认最终交付、任务完成、客户反馈、收款开票、项目文件路径和复盘结论。',
+    ].join('\n')
+  }
+
+  if (lowerPrompt.includes('task') || prompt.includes('任务')) {
     return [
       `你当前可见任务 ${tasks.length} 个，其中制作中/未开始 ${activeTasks.length} 个，修改中 ${revisionTasks.length} 个。`,
       ...activeTasks.slice(0, 3).map((task) => `${task.assignee}：${task.title}，截止 ${task.due}。`),
@@ -13982,6 +14352,17 @@ function formatClock(date: Date) {
     minute: '2-digit',
     hour12: false,
   })
+}
+
+function createProjectId(date = new Date()) {
+  const datePart = [date.getFullYear(), date.getMonth() + 1, date.getDate()]
+    .map((value, index) => String(value).padStart(index === 0 ? 4 : 2, '0'))
+    .join('')
+  const timePart = [date.getHours(), date.getMinutes(), date.getSeconds()]
+    .map((value) => String(value).padStart(2, '0'))
+    .join('')
+  const milliseconds = String(date.getMilliseconds()).padStart(3, '0')
+  return `P-${datePart}-${timePart}-${milliseconds}`
 }
 
 function weatherDescription(code: number) {

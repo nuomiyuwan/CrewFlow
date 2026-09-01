@@ -11,6 +11,7 @@ contextBridge.exposeInMainWorld('desktopBridge', {
   selectProjectFile: (title) => ipcRenderer.invoke('project-file:select', title),
   openProjectFile: (filePath) => ipcRenderer.invoke('project-file:open', filePath),
   selectLibraryFile: (purpose) => ipcRenderer.invoke('library-file:select', purpose),
+  identifyLibraryPath: (filePath) => ipcRenderer.invoke('library-path:identify', filePath),
   importLibraryFile: (payload) => ipcRenderer.invoke('library-file:import', payload),
   readLibraryFile: (payload) => ipcRenderer.invoke('library-file:read', payload),
   deleteLibraryFile: (payload) => ipcRenderer.invoke('library-file:delete', payload),

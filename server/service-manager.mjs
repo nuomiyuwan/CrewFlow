@@ -1,4 +1,4 @@
-import { mkdir, readFile, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { randomBytes } from 'node:crypto'
 import dgram from 'node:dgram'
 import os from 'node:os'
@@ -39,6 +39,10 @@ export function serviceRuntimeMetadataPath(options = {}) {
   return path.join(defaultServiceDataDir(options), 'service-runtime.json')
 }
 
+export function serviceStatePath(options = {}) {
+  return path.join(defaultServiceDataDir(options), 'service-state.json')
+}
+
 export async function readServiceRuntimeMetadata(options = {}) {
   try {
     const value = JSON.parse(await readFile(serviceRuntimeMetadataPath(options), 'utf8'))
@@ -47,6 +51,7 @@ export async function readServiceRuntimeMetadata(options = {}) {
       executable: typeof value.executable === 'string' ? value.executable : '',
       appVersion: typeof value.appVersion === 'string' ? value.appVersion : '',
       platform: typeof value.platform === 'string' ? value.platform : '',
+      mode: typeof value.mode === 'string' ? value.mode : '',
       installedAt: typeof value.installedAt === 'string' ? value.installedAt : '',
     }
   } catch {
@@ -64,6 +69,7 @@ export async function writeServiceRuntimeMetadata(runtime, options = {}) {
         executable: runtime.executable,
         appVersion: typeof options.appVersion === 'string' ? options.appVersion : '',
         platform: options.platform ?? process.platform,
+        mode: typeof runtime.mode === 'string' ? runtime.mode : '',
         installedAt: new Date().toISOString(),
       },
       null,
@@ -71,6 +77,37 @@ export async function writeServiceRuntimeMetadata(runtime, options = {}) {
     )}\n`,
     'utf8',
   )
+}
+
+export async function readServiceState(options = {}) {
+  try {
+    const value = JSON.parse(await readFile(serviceStatePath(options), 'utf8'))
+    if (!value || typeof value !== 'object') return null
+    return {
+      enabled: value.enabled === true,
+      hostMode: value.hostMode === 'app' ? 'app' : '',
+      legacyCleanupComplete: value.legacyCleanupComplete === true,
+      updatedAt: typeof value.updatedAt === 'string' ? value.updatedAt : '',
+    }
+  } catch {
+    return null
+  }
+}
+
+export async function writeServiceState(patch = {}, options = {}) {
+  const statePath = serviceStatePath(options)
+  const temporaryPath = `${statePath}.${process.pid}.tmp`
+  const current = await readServiceState(options)
+  const next = {
+    enabled: patch.enabled ?? current?.enabled ?? false,
+    hostMode: patch.hostMode ?? current?.hostMode ?? '',
+    legacyCleanupComplete: patch.legacyCleanupComplete ?? current?.legacyCleanupComplete ?? false,
+    updatedAt: new Date().toISOString(),
+  }
+  await mkdir(path.dirname(statePath), { recursive: true })
+  await writeFile(temporaryPath, `${JSON.stringify(next, null, 2)}\n`, 'utf8')
+  await rename(temporaryPath, statePath)
+  return next
 }
 
 export async function readOrCreateAccessKey(options = {}) {
@@ -315,10 +352,6 @@ function escapePlistValue(value) {
     .replaceAll("'", '&apos;')
 }
 
-function quoteWindowsArgument(value) {
-  return `"${String(value).replaceAll('"', '\\"')}"`
-}
-
 function run(cmd, args, options = {}) {
   const result = spawnSync(cmd, args, {
     stdio: options.stdio ?? 'inherit',
@@ -408,61 +441,22 @@ function macStatus() {
   run('launchctl', ['print', `gui/${process.getuid()}/${serviceLabel}`], { allowFailure: true })
 }
 
-async function windowsInstall(options = {}) {
-  windowsStopProcess(options)
-  const runtime = serviceRuntime(options)
-  const accessKey = await readOrCreateAccessKey(options)
-  const logsDir = path.join(process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming'), 'CrewFlow Server', 'logs')
-  const scriptDir = path.join(process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming'), 'CrewFlow Server')
-  const cmdPath = path.join(scriptDir, 'start-crewflow-server.cmd')
-  const commandLine = [
-    quoteWindowsArgument(runtime.executable),
-    ...runtime.args.map(quoteWindowsArgument),
-    '>>',
-    quoteWindowsArgument(path.join(logsDir, 'server.log')),
-    '2>>',
-    quoteWindowsArgument(path.join(logsDir, 'server-error.log')),
-  ].join(' ')
-
-  await mkdir(logsDir, { recursive: true })
-  await mkdir(scriptDir, { recursive: true })
-  await writeFile(
-    cmdPath,
-    `@echo off\r\nset CREWFLOW_HOST=${host}\r\nset CREWFLOW_PORT=${port}\r\nset CREWFLOW_ACCESS_KEY=${accessKey}\r\n${Object.entries(runtime.env)
-      .map(([key, value]) => `set ${key}=${value}\r\n`)
-      .join('')}cd /d "${commandWorkingDirectory(runtime)}"\r\n${commandLine}\r\n`,
-    'utf8',
-  )
-  run('schtasks', ['/Create', '/TN', taskName, '/TR', `"${cmdPath}"`, '/SC', 'ONLOGON', '/RL', 'HIGHEST', '/F'])
-  run('schtasks', ['/Run', '/TN', taskName], { allowFailure: true })
-  await writeServiceRuntimeMetadata(runtime, options)
-  console.log(`CrewFlow Server task installed: ${taskName}`)
+export function hasLegacyWindowsService(options = {}) {
+  if ((options.platform ?? process.platform) !== 'win32') return false
+  const query = run('schtasks', ['/Query', '/TN', taskName], { allowFailure: true, stdio: 'ignore' })
+  if (query.error) throw query.error
+  return query.status === 0
 }
 
-function windowsStopProcess(options = {}) {
-  const runtime = serviceRuntime(options)
-  const ps = `Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '${runtime.processMatch}' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }`
-  run('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', ps], { allowFailure: true })
-}
-
-function windowsStart() {
-  run('schtasks', ['/Run', '/TN', taskName])
-}
-
-function windowsStop(options = {}) {
-  windowsStopProcess(options)
-}
-
-function windowsStatus(options = {}) {
-  const runtime = serviceRuntime(options)
-  run('schtasks', ['/Query', '/TN', taskName, '/V', '/FO', 'LIST'], { allowFailure: true })
-  const ps = `Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '${runtime.processMatch}' } | Select-Object ProcessId,CommandLine`
-  run('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', ps], { allowFailure: true })
-}
-
-function windowsUninstall(options = {}) {
-  windowsStopProcess(options)
-  run('schtasks', ['/Delete', '/TN', taskName, '/F'], { allowFailure: true })
+export async function cleanupLegacyWindowsService(options = {}) {
+  if ((options.platform ?? process.platform) !== 'win32') return false
+  if (hasLegacyWindowsService(options)) {
+    run('schtasks', ['/End', '/TN', taskName], { allowFailure: true, stdio: 'ignore' })
+    const deletion = run('schtasks', ['/Delete', '/TN', taskName, '/F'], { allowFailure: true, stdio: 'ignore' })
+    if (deletion.error || deletion.status !== 0) throw deletion.error || new Error('旧团队服务任务删除失败')
+  }
+  await rm(path.join(defaultServiceDataDir(options), 'start-crewflow-server.cmd'), { force: true })
+  return true
 }
 
 export async function manageCrewFlowService(action, options = {}) {
@@ -485,15 +479,17 @@ export async function manageCrewFlowService(action, options = {}) {
   }
 
   if (platform === 'win32') {
-    if (action === 'install') await windowsInstall(options)
-    if (action === 'start') windowsStart()
-    if (action === 'stop') windowsStop(options)
-    if (action === 'restart') {
-      windowsStop(options)
-      windowsStart()
+    if (action === 'stop' || action === 'uninstall') await cleanupLegacyWindowsService(options)
+    if (action === 'uninstall') {
+      await writeServiceState({ enabled: false, hostMode: 'app', legacyCleanupComplete: true }, options)
     }
-    if (action === 'status') windowsStatus(options)
-    if (action === 'uninstall') windowsUninstall(options)
+    if (action === 'status') {
+      const state = await readServiceState(options)
+      console.log(state?.enabled ? 'CrewFlow App 托管服务已启用' : 'CrewFlow App 托管服务未启用')
+    }
+    if (action === 'install' || action === 'start' || action === 'restart') {
+      throw new Error('请在 CrewFlow App 中开启团队服务')
+    }
     return
   }
 

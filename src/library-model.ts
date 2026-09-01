@@ -18,6 +18,7 @@ export type LibraryItem = {
   extension?: string
   size?: number
   path?: string
+  networkPath?: string
   url?: string
   note?: string
   createdAt: string
@@ -28,6 +29,7 @@ export type LibraryItem = {
 
 export type LibraryFileSelection = {
   path: string
+  networkPath?: string
   fileName: string
   extension: string
   mimeType: string
@@ -42,6 +44,11 @@ function createLibraryId(prefix: string) {
 
 function cleanLibraryText(value: unknown, maxLength: number) {
   return typeof value === 'string' ? value.trim().slice(0, maxLength) : ''
+}
+
+function cleanLibraryNetworkPath(value: unknown) {
+  const networkPath = cleanLibraryText(value, 2_000)
+  return /^smb:\/\/[^/?#@]+\/[^?#]+$/i.test(networkPath) ? networkPath : ''
 }
 
 export function normalizeLibraryCollection(value: unknown, index = 0): LibraryCollection {
@@ -71,6 +78,7 @@ export function normalizeLibraryItem(value: unknown): LibraryItem {
     extension: cleanLibraryText(source.extension, 24).toLowerCase() || undefined,
     size: Number.isFinite(source.size) ? Math.max(0, Number(source.size)) : undefined,
     path: cleanLibraryText(source.path, 2_000) || undefined,
+    networkPath: cleanLibraryNetworkPath(source.networkPath) || undefined,
     url: cleanLibraryText(source.url, 2_000) || undefined,
     note: cleanLibraryText(source.note, 1_000) || undefined,
     createdAt,

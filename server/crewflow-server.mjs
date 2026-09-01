@@ -445,6 +445,7 @@ export function startCrewFlowServer({
   host = defaultHost,
   port = defaultPort,
   accessKey = defaultAccessKey,
+  handleProcessSignals = true,
   onReady = ({ store }) => {
     console.log(`CrewFlow Server listening on http://${host}:${port}`)
     console.log(`Data file: ${store.dataFile}`)
@@ -456,11 +457,15 @@ export function startCrewFlowServer({
     server.close(() => process.exit(0))
   }
 
-  process.once('SIGINT', shutdown)
-  process.once('SIGTERM', shutdown)
+  if (handleProcessSignals) {
+    process.once('SIGINT', shutdown)
+    process.once('SIGTERM', shutdown)
+  }
   server.once('close', () => {
-    process.removeListener('SIGINT', shutdown)
-    process.removeListener('SIGTERM', shutdown)
+    if (handleProcessSignals) {
+      process.removeListener('SIGINT', shutdown)
+      process.removeListener('SIGTERM', shutdown)
+    }
   })
 
   let discoverySocket = null

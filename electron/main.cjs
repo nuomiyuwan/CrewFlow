@@ -1,4 +1,4 @@
-const { app, BrowserWindow, clipboard, dialog, ipcMain, safeStorage, shell } = require('electron')
+const { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, nativeImage, safeStorage, shell, Tray } = require('electron')
 const { autoUpdater } = require('electron-updater')
 const { spawn } = require('child_process')
 const { createHash } = require('crypto')
@@ -23,12 +23,29 @@ const {
   releaseFeedUrl,
   validateCrewFlowReleaseAssetUrl,
 } = require('./update-source.cjs')
+const {
+  clearLibraryNetworkMountCache,
+  identifyLibraryNetworkPath,
+  libraryNetworkLoginTarget,
+  macPathExists,
+  parseLibraryNetworkPath,
+  parseUncPath,
+  resolveLibraryNetworkPath,
+  windowsNetworkPathExists,
+} = require('./library-network-path.cjs')
 
 const isDev = !app.isPackaged
 const isTeamServerMode = process.argv.includes('--team-server')
+const isWindowsBackgroundLaunch = process.platform === 'win32' && process.argv.includes('--background')
 let saveQueue = Promise.resolve()
 let mainWindow = null
 let showMainWindowWhenReady = false
+let windowsTray = null
+let windowsHostedTeamServer = null
+let windowsTeamServiceEnabled = false
+let windowsTeamServiceOperation = Promise.resolve()
+let appQuitRequested = false
+let appQuitCleanupRunning = false
 let windowsUpdaterConfigured = false
 let windowsUpdateDownloaded = false
 let windowsUpdaterSuppressErrors = false
@@ -38,6 +55,8 @@ let downloadedWindowsUpdatePath = ''
 let appUpdateInstallPending = false
 let localLibraryFileStorePromise = null
 const libraryPreviewWindows = new Map()
+const libraryNetworkConnectionPromises = new Map()
+const libraryPathProbePromises = new Map()
 let appUpdateState = {
   status: 'idle',
   percent: 0,
@@ -63,6 +82,45 @@ function showPrimaryWindow() {
   if (mainWindow.isMinimized()) mainWindow.restore()
   if (!mainWindow.isVisible()) mainWindow.show()
   mainWindow.focus()
+}
+
+function ensureWindowsTray() {
+  if (process.platform !== 'win32' || windowsTray || !app.isReady()) return windowsTray
+  const trayIcon = nativeImage.createFromPath(path.join(__dirname, '../dist/app-icon.png')).resize({ width: 20, height: 20 })
+  windowsTray = new Tray(trayIcon)
+  windowsTray.setToolTip('CrewFlow 团队服务')
+  windowsTray.setContextMenu(Menu.buildFromTemplate([
+    { label: '打开 CrewFlow', click: showPrimaryWindow },
+    { type: 'separator' },
+    {
+      label: '退出 CrewFlow',
+      click: () => {
+        appQuitRequested = true
+        app.quit()
+      },
+    },
+  ]))
+  windowsTray.on('double-click', showPrimaryWindow)
+  return windowsTray
+}
+
+function destroyWindowsTray() {
+  if (!windowsTray) return
+  windowsTray.destroy()
+  windowsTray = null
+}
+
+function setWindowsTeamLoginItem(enabled) {
+  if (process.platform !== 'win32' || !app.isPackaged) return
+  try {
+    app.setLoginItemSettings({
+      openAtLogin: enabled,
+      path: process.execPath,
+      args: ['--background'],
+    })
+  } catch (error) {
+    console.error('CrewFlow login item update failed:', error)
+  }
 }
 
 if (hasPrimaryInstanceLock && process.platform === 'win32' && !isTeamServerMode) {
@@ -758,12 +816,90 @@ function libraryTeamFileUrl(serverUrl, id) {
   return url.toString()
 }
 
+function waitForLibraryNetwork(delay) {
+  return new Promise((resolve) => setTimeout(resolve, delay))
+}
+
+async function libraryPathExists(filePath, timeout = 1_500) {
+  if (!filePath || parseLibraryNetworkPath(filePath)) return false
+  if (process.platform === 'darwin') return macPathExists(filePath, timeout)
+  if (process.platform === 'win32' && parseUncPath(filePath)) return windowsNetworkPathExists(filePath, timeout)
+  let access = libraryPathProbePromises.get(filePath)
+  if (!access) {
+    access = fs.promises.access(filePath).then(() => true, () => false).finally(() => {
+      if (libraryPathProbePromises.get(filePath) === access) libraryPathProbePromises.delete(filePath)
+    })
+    libraryPathProbePromises.set(filePath, access)
+  }
+  let timer
+  const expired = new Promise((resolve) => {
+    timer = setTimeout(() => resolve(false), timeout)
+  })
+  return Promise.race([access, expired]).finally(() => clearTimeout(timer))
+}
+
+async function libraryNetworkPathFromPayload(payload = {}) {
+  const stored = parseLibraryNetworkPath(payload.networkPath)
+  if (stored) return stored.networkPath
+  return identifyLibraryNetworkPath(typeof payload.path === 'string' ? payload.path : '')
+}
+
+async function resolvedLibrarySourcePath(payload = {}, connect = true) {
+  const sourcePath = typeof payload.path === 'string' ? payload.path.trim() : ''
+  const storedNetworkPath = parseLibraryNetworkPath(payload.networkPath)?.networkPath || ''
+  if (!storedNetworkPath && await libraryPathExists(sourcePath)) return sourcePath
+
+  const networkPath = storedNetworkPath || await libraryNetworkPathFromPayload(payload)
+  if (!networkPath) return sourcePath
+
+  let resolvedPath = await resolveLibraryNetworkPath(networkPath)
+  if (await libraryPathExists(resolvedPath)) return resolvedPath
+  if (!connect) return resolvedPath || sourcePath
+
+  const loginTarget = libraryNetworkLoginTarget(networkPath)
+  if (process.platform === 'darwin' && resolvedPath) {
+    const relativeSegments = parseLibraryNetworkPath(networkPath)?.relativeSegments ?? []
+    const mountRoot = relativeSegments.reduce((current) => path.dirname(current), resolvedPath)
+    if (await libraryPathExists(mountRoot)) return resolvedPath
+  }
+  if (process.platform === 'win32' && await libraryPathExists(loginTarget)) return resolvedPath
+
+  let connection = libraryNetworkConnectionPromises.get(networkPath)
+  if (!connection) {
+    connection = (async () => {
+      libraryPathProbePromises.delete(resolvedPath)
+      libraryPathProbePromises.delete(loginTarget)
+      if (process.platform === 'darwin') await shell.openExternal(loginTarget)
+      else if (process.platform === 'win32') {
+        const openError = await shell.openPath(loginTarget)
+        if (openError) await shell.openExternal(pathToFileURL(loginTarget).href)
+      }
+
+      const retryDelays = [350, 500, 750, 1_000, 1_500, 2_000, 3_000, 4_000, 5_000, 6_000]
+      for (const delay of retryDelays) {
+        await waitForLibraryNetwork(delay)
+        clearLibraryNetworkMountCache()
+        const currentPath = await resolveLibraryNetworkPath(networkPath, process.platform, true)
+        if (await libraryPathExists(currentPath, 1_200)) return currentPath
+      }
+      throw new Error('当前电脑暂时无法连接这个 NAS，请在系统登录窗口完成认证后重试')
+    })().finally(() => {
+      libraryNetworkConnectionPromises.delete(networkPath)
+    })
+    libraryNetworkConnectionPromises.set(networkPath, connection)
+  }
+  return connection
+}
+
 async function selectedLibraryFile(purpose = 'reference') {
   const upload = purpose === 'upload'
+  const folder = purpose === 'folder'
   const result = await dialog.showOpenDialog({
-    title: upload ? '选择要上传的文稿' : '选择视频、本地或共享文件',
-    properties: ['openFile'],
-    filters: upload
+    title: upload ? '选择要上传的文稿' : folder ? '选择本地或共享文件夹' : '选择视频、本地或共享文件',
+    properties: folder ? ['openDirectory'] : ['openFile'],
+    filters: folder
+      ? undefined
+      : upload
       ? [
           { name: '文稿、表格和图片', extensions: [...libraryUploadExtensions] },
           { name: '所有文件', extensions: ['*'] },
@@ -774,6 +910,19 @@ async function selectedLibraryFile(purpose = 'reference') {
 
   const sourcePath = result.filePaths[0]
   const fileInfo = await fs.promises.stat(sourcePath)
+  const networkPath = upload ? '' : await identifyLibraryNetworkPath(sourcePath)
+  if (folder) {
+    if (!fileInfo.isDirectory()) throw new Error('请选择一个文件夹')
+    return {
+      path: sourcePath,
+      fileName: path.basename(sourcePath) || sourcePath,
+      extension: '',
+      mimeType: 'inode/directory',
+      size: 0,
+      uploadable: false,
+      networkPath: networkPath || undefined,
+    }
+  }
   if (!fileInfo.isFile()) throw new Error('请选择一个文件')
   const extension = libraryFileExtension(sourcePath)
   return {
@@ -783,12 +932,13 @@ async function selectedLibraryFile(purpose = 'reference') {
     mimeType: libraryMimeType(sourcePath),
     size: fileInfo.size,
     uploadable: libraryUploadExtensions.has(extension) && fileInfo.size <= maxLibraryUploadBytes,
+    networkPath: networkPath || undefined,
   }
 }
 
 async function readLibrarySource(payload = {}) {
   if (payload.sourceType === 'path') {
-    const sourcePath = typeof payload.path === 'string' ? payload.path : ''
+    const sourcePath = await resolvedLibrarySourcePath(payload)
     const fileInfo = await fs.promises.stat(sourcePath)
     if (!fileInfo.isFile()) throw new Error('资料路径不是文件')
     if (fileInfo.size > maxLibraryUploadBytes) throw new Error('这个文件超过 200MB，请使用系统应用打开')
@@ -829,7 +979,7 @@ async function importLibraryFile(payload = {}) {
   const fileInfo = await fs.promises.stat(sourcePath)
   if (!fileInfo.isFile()) throw new Error('请选择一个文件')
   const extension = libraryFileExtension(sourcePath)
-  if (!libraryUploadExtensions.has(extension)) throw new Error('视频和大文件请使用“视频/共享文件”或“在线链接”')
+  if (!libraryUploadExtensions.has(extension)) throw new Error('视频和大文件请使用“视频/共享路径”或“在线链接”')
   if (fileInfo.size > maxLibraryUploadBytes) throw new Error('上传文件不能超过 200MB')
 
   const fileName = cleanLibraryFileName(payload.fileName) || path.basename(sourcePath)
@@ -892,7 +1042,7 @@ async function previewLibraryResource(payload = {}) {
     if (url.protocol !== 'http:' && url.protocol !== 'https:') throw new Error('只支持 http 或 https 链接')
     targetUrl = url.toString()
   } else {
-    sourcePath = typeof payload.path === 'string' ? payload.path : ''
+    sourcePath = await resolvedLibrarySourcePath(payload)
     let fileInfo
     try {
       fileInfo = await fs.promises.stat(sourcePath)
@@ -1015,6 +1165,156 @@ async function startTeamServerMode() {
   startCrewFlowServer()
 }
 
+function queueWindowsTeamServiceOperation(operation) {
+  const next = windowsTeamServiceOperation.then(operation, operation)
+  windowsTeamServiceOperation = next.catch(() => {})
+  return next
+}
+
+async function migrateLegacyWindowsTeamService(serviceManager, state) {
+  if (state?.legacyCleanupComplete) return state
+  await serviceManager.cleanupLegacyWindowsService()
+  if (!(await waitForLocalTeamService(false, 4500))) {
+    throw new Error('旧团队服务仍在运行，请重启电脑后再开启新版团队服务')
+  }
+  return serviceManager.writeServiceState({
+    hostMode: 'app',
+    legacyCleanupComplete: true,
+  })
+}
+
+async function startWindowsHostedTeamService() {
+  const serviceManager = await import(serverModuleUrl('service-manager.mjs'))
+  const state = await serviceManager.readServiceState()
+  await migrateLegacyWindowsTeamService(serviceManager, state)
+
+  if (windowsHostedTeamServer?.server?.listening) {
+    windowsTeamServiceEnabled = true
+    await serviceManager.writeServiceState({ enabled: true, hostMode: 'app', legacyCleanupComplete: true })
+    setWindowsTeamLoginItem(true)
+    ensureWindowsTray()
+    return true
+  }
+
+  const existingHealth = await fetchLocalTeamHealth()
+  if (existingHealth?.ok) {
+    throw new Error('本机已有独立团队服务仍在运行，请先停止后重试')
+  }
+
+  const [{ defaultServerDataDir, startCrewFlowServer }, accessKey] = await Promise.all([
+    import(serverModuleUrl('crewflow-server.mjs')),
+    serviceManager.readOrCreateAccessKey(),
+  ])
+  let instance = null
+
+  try {
+    await new Promise((resolve, reject) => {
+      const handleStartupError = (error) => reject(error)
+      instance = startCrewFlowServer({
+        dataDir: defaultServerDataDir(),
+        host: '0.0.0.0',
+        port: Number(process.env.CREWFLOW_PORT || 8787),
+        accessKey,
+        handleProcessSignals: false,
+        onReady: () => {
+          instance.server.removeListener('error', handleStartupError)
+          resolve()
+        },
+      })
+      instance.server.once('error', handleStartupError)
+    })
+  } catch (error) {
+    instance?.store?.close?.()
+    throw error
+  }
+
+  windowsHostedTeamServer = instance
+  instance.server.on('error', (error) => {
+    console.error('CrewFlow hosted team service error:', error)
+  })
+  instance.server.once('close', () => {
+    if (windowsHostedTeamServer !== instance) return
+    windowsHostedTeamServer = null
+    if (!windowsTeamServiceEnabled || appQuitRequested) return
+    setTimeout(() => {
+      if (!windowsTeamServiceEnabled || appQuitRequested) return
+      queueWindowsTeamServiceOperation(() => startWindowsHostedTeamService()).catch((error) => {
+        console.error('CrewFlow hosted team service restart failed:', error)
+      })
+    }, 1000)
+  })
+
+  try {
+    await serviceManager.writeServiceRuntimeMetadata(
+      {
+        mode: 'app-hosted',
+        executable: process.execPath,
+      },
+      { appVersion: app.getVersion(), platform: 'win32' },
+    )
+    await serviceManager.writeServiceState({ enabled: true, hostMode: 'app', legacyCleanupComplete: true })
+    windowsTeamServiceEnabled = true
+    setWindowsTeamLoginItem(true)
+    ensureWindowsTray()
+  } catch (error) {
+    windowsHostedTeamServer = null
+    windowsTeamServiceEnabled = false
+    await closeWindowsHostedTeamServerInstance(instance)
+    throw error
+  }
+  return true
+}
+
+async function closeWindowsHostedTeamServerInstance(instance) {
+  if (!instance?.server) {
+    instance?.store?.close?.()
+    return
+  }
+  const server = instance.server
+  await new Promise((resolve) => {
+    let completed = false
+    const finish = () => {
+      if (completed) return
+      completed = true
+      clearTimeout(forceTimer)
+      clearTimeout(finishTimer)
+      resolve()
+    }
+    const forceTimer = setTimeout(() => server.closeAllConnections?.(), 5000)
+    const finishTimer = setTimeout(finish, 6000)
+    if (!server.listening) {
+      finish()
+      return
+    }
+    server.close(finish)
+    server.closeIdleConnections?.()
+  })
+  instance.store?.close?.()
+}
+
+async function stopWindowsHostedTeamService({ preserveEnabled = false } = {}) {
+  const serviceManager = await import(serverModuleUrl('service-manager.mjs'))
+  const instance = windowsHostedTeamServer
+  windowsHostedTeamServer = null
+
+  if (instance?.server) {
+    await closeWindowsHostedTeamServerInstance(instance)
+  } else if (await fetchLocalTeamHealth()) {
+    await serviceManager.cleanupLegacyWindowsService()
+    if (!(await waitForLocalTeamService(false, 4500))) {
+      throw new Error('旧团队服务仍在运行，请重启电脑后再开启新版团队服务')
+    }
+  }
+
+  if (!preserveEnabled) {
+    windowsTeamServiceEnabled = false
+    await serviceManager.writeServiceState({ enabled: false, hostMode: 'app', legacyCleanupComplete: true })
+    setWindowsTeamLoginItem(false)
+    destroyWindowsTray()
+  }
+  return true
+}
+
 async function fetchLocalTeamHealth() {
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), 1200)
@@ -1094,9 +1394,26 @@ async function getTeamServiceInfo(message = '') {
   }
 }
 
-async function manageTeamService(action) {
+async function manageTeamService(action, options = {}) {
   if (process.platform !== 'darwin' && process.platform !== 'win32') {
     return getTeamServiceInfo('当前系统暂不支持一键安装团队服务')
+  }
+
+  if (process.platform === 'win32') {
+    return queueWindowsTeamServiceOperation(async () => {
+      if (action === 'stop') {
+        await stopWindowsHostedTeamService({ preserveEnabled: options.preserveEnabled === true })
+      } else if (action === 'restart') {
+        await stopWindowsHostedTeamService({ preserveEnabled: true })
+        await startWindowsHostedTeamService()
+      } else if (action === 'install') {
+        if (windowsHostedTeamServer?.server?.listening) {
+          await stopWindowsHostedTeamService({ preserveEnabled: true })
+        }
+        await startWindowsHostedTeamService()
+      }
+      return getTeamServiceInfo(action === 'stop' ? '团队服务已停止' : '团队服务已开启')
+    })
   }
 
   const { manageCrewFlowService, readOrCreateAccessKey } = await import(serverModuleUrl('service-manager.mjs'))
@@ -1224,7 +1541,7 @@ async function prepareLocalTeamServiceForUpdate() {
   if (!health?.ok) return false
 
   await writeTeamServiceRecoveryMarker(appUpdateState.version)
-  await manageTeamService('stop')
+  await manageTeamService('stop', { preserveEnabled: true })
   const stopped = await waitForLocalTeamService(false)
   if (!stopped) throw new Error('团队服务未能安全停止，请稍后重试')
   return true
@@ -1254,10 +1571,47 @@ async function confirmApplicationUpdate({ isTeamHost, platform }) {
   return result.response === 0
 }
 
+async function shouldRunWindowsHostedTeamService() {
+  const serviceManager = await import(serverModuleUrl('service-manager.mjs'))
+  const [marker, state] = await Promise.all([
+    readTeamServiceRecoveryMarker(),
+    serviceManager.readServiceState(),
+  ])
+  return Boolean(marker || state?.enabled || (!state && serviceManager.hasLegacyWindowsService()))
+}
+
 async function restoreOrRepairLocalTeamService() {
   if (!app.isPackaged || (process.platform !== 'darwin' && process.platform !== 'win32')) return
 
   const marker = await readTeamServiceRecoveryMarker()
+
+  if (process.platform === 'win32') {
+    const serviceManager = await import(serverModuleUrl('service-manager.mjs'))
+    windowsTeamServiceEnabled = await shouldRunWindowsHostedTeamService()
+
+    if (!windowsTeamServiceEnabled) {
+      setWindowsTeamLoginItem(false)
+      if (isWindowsBackgroundLaunch) {
+        appQuitRequested = true
+        app.quit()
+      }
+      return
+    }
+
+    await serviceManager.writeServiceState({ enabled: true, hostMode: 'app' })
+    try {
+      await manageTeamService('install')
+      const restored = await waitForLocalTeamService(true)
+      if (!restored) throw new Error('团队服务启动超时')
+      await fs.promises.rm(updateRecoveryMarkerPath(), { force: true })
+    } catch (error) {
+      setWindowsTeamLoginItem(true)
+      ensureWindowsTray()
+      console.error('CrewFlow team service recovery failed:', error)
+    }
+    return
+  }
+
   const health = await fetchLocalTeamHealth()
   const { readServiceRuntimeMetadata } = await import(serverModuleUrl('service-manager.mjs'))
   const runtime = await readServiceRuntimeMetadata()
@@ -1402,6 +1756,7 @@ async function createWindow() {
     height: 930,
     minWidth: 1180,
     minHeight: 760,
+    show: !(isWindows && isWindowsBackgroundLaunch),
     title: 'CrewFlow',
     backgroundColor: '#080d18',
     autoHideMenuBar: true,
@@ -1437,6 +1792,17 @@ async function createWindow() {
     return { action: 'deny' }
   })
 
+  mainWindow.on('close', (event) => {
+    if (!isWindows || !windowsTeamServiceEnabled || appQuitRequested) return
+    event.preventDefault()
+    mainWindow.hide()
+    libraryPreviewWindows.forEach((previewWindow) => {
+      if (!previewWindow.isDestroyed()) previewWindow.close()
+    })
+    libraryPreviewWindows.clear()
+    ensureWindowsTray()
+  })
+
   mainWindow.on('closed', () => {
     mainWindow = null
     libraryPreviewWindows.forEach((previewWindow) => {
@@ -1459,7 +1825,7 @@ if (!hasPrimaryInstanceLock) {
     app.quit()
   })
 } else {
-  app.whenReady().then(() => {
+  app.whenReady().then(async () => {
     configureWindowsUpdater()
 
     ipcMain.handle('window-control:minimize', (event) => {
@@ -1528,6 +1894,10 @@ if (!hasPrimaryInstanceLock) {
       return selectedLibraryFile(purpose)
     })
 
+    ipcMain.handle('library-path:identify', async (_event, filePath) => {
+      return identifyLibraryNetworkPath(typeof filePath === 'string' ? filePath : '')
+    })
+
     ipcMain.handle('library-file:import', async (_event, payload) => {
       return importLibraryFile(payload)
     })
@@ -1546,7 +1916,8 @@ if (!hasPrimaryInstanceLock) {
 
     ipcMain.handle('library-file:open', async (_event, payload) => {
       if (payload?.sourceType === 'path') {
-        const error = await shell.openPath(typeof payload.path === 'string' ? payload.path : '')
+        const sourcePath = await resolvedLibrarySourcePath(payload)
+        const error = await shell.openPath(sourcePath)
         if (error) throw new Error(error)
         return true
       }
@@ -1649,7 +2020,15 @@ if (!hasPrimaryInstanceLock) {
     cleanupCompletedUpdateDownloads().catch((error) => {
       console.error('CrewFlow completed update cleanup failed:', error)
     })
-    createWindow()
+    if (process.platform === 'win32' && app.isPackaged) {
+      windowsTeamServiceEnabled = await shouldRunWindowsHostedTeamService()
+      if (isWindowsBackgroundLaunch && !windowsTeamServiceEnabled) {
+        appQuitRequested = true
+        app.quit()
+        return
+      }
+    }
+    await createWindow()
     restoreOrRepairLocalTeamService().catch((error) => {
       console.error('CrewFlow team service startup repair failed:', error)
     })
@@ -1662,7 +2041,28 @@ if (!hasPrimaryInstanceLock) {
   })
 }
 
+app.on('before-quit', (event) => {
+  appQuitRequested = true
+  if (process.platform !== 'win32' || !windowsHostedTeamServer || appQuitCleanupRunning) {
+    destroyWindowsTray()
+    return
+  }
+
+  event.preventDefault()
+  appQuitCleanupRunning = true
+  queueWindowsTeamServiceOperation(() => stopWindowsHostedTeamService({ preserveEnabled: true }))
+    .catch((error) => console.error('CrewFlow hosted team service shutdown failed:', error))
+    .finally(() => {
+      destroyWindowsTray()
+      app.quit()
+    })
+})
+
 app.on('window-all-closed', () => {
+  if (process.platform === 'win32' && windowsTeamServiceEnabled && !appQuitRequested) {
+    ensureWindowsTray()
+    return
+  }
   if (!isTeamServerMode && process.platform !== 'darwin') {
     app.quit()
   }

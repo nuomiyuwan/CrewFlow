@@ -48,13 +48,13 @@ http://HOST_LAN_IP:8787
 
 ## 后台常驻服务
 
-临时运行 `npm run team:server` 时，终端关闭服务就会停止。正式使用建议在常驻电脑打开 CrewFlow，在“工作模式”里点击“开启团队服务”。App 会安装后台服务，并显示其他电脑要填写的局域网地址。
+临时运行 `npm run team:server` 时，终端关闭服务就会停止。正式使用建议在常驻电脑打开 CrewFlow，在“工作模式”里点击“开启团队服务”。App 会启动团队服务，并显示其他电脑要使用的局域网地址。
 
 后台服务会自动生成并保存访问密钥，后续重启会继续使用同一个密钥。
 
-打包版会优先把后台服务指向当前 CrewFlow App 的 `--team-server` 模式；开发环境下才使用 Node 运行 `server/crewflow-server.mjs`。
+macOS 打包版使用当前 CrewFlow App 自带的运行环境；Windows 由主 App 直接托管服务，关闭主窗口后驻留系统托盘。
 
-开发或排障时也可以用命令安装后台服务。
+macOS 开发或排障时也可以用命令安装后台服务。
 
 安装后台服务：
 
@@ -72,7 +72,7 @@ npm run team:service-status
 npm run team:uninstall-service
 ```
 
-Mac 使用当前用户的 `launchd` LaunchAgent；Windows 使用当前用户登录时自动运行的计划任务。安装后终端窗口可以关闭。
+Mac 使用当前用户的 `launchd` LaunchAgent；Windows 使用普通用户权限随 CrewFlow 启动，不创建最高权限计划任务或命令脚本。
 
 ## 环境变量
 

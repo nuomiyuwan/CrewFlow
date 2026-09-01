@@ -4,7 +4,7 @@ CrewFlow is a desktop command center for project intake, task assignment, delive
 
 It is built with Electron, React, and Vite, and supports both single-user local data and LAN team mode through a lightweight CrewFlow Server.
 
-Current stable version: **v1.5.2**. See [CHANGELOG.md](CHANGELOG.md) for release details.
+Current stable version: **v1.5.3**. See [CHANGELOG.md](CHANGELOG.md) for release details.
 
 中文使用说明：[CrewFlow 用户使用说明](docs/USER_GUIDE.zh-CN.md)
 
@@ -83,7 +83,7 @@ Typical connection URL:
 http://HOST_LAN_IP:8787
 ```
 
-For daily use, open CrewFlow on the host computer and click “开启团队服务” in “工作模式”. The app installs a background service and shows the LAN address and access key for other clients.
+For daily use, open CrewFlow on the host computer and click “开启团队服务” in “工作模式”. macOS uses a user LaunchAgent, while Windows keeps the host app running in the system tray. The app shows the LAN address and access key for other clients.
 
 See [server/README.md](server/README.md) for CrewFlow Server details.
 
@@ -123,19 +123,20 @@ npm run build
 
 ## Packaging
 
-Build the macOS Apple Silicon unpacked app:
+Build the default macOS Universal DMG:
 
 ```bash
 npm run package:mac
 ```
 
-Build an Intel Mac version:
+Build architecture-specific macOS DMGs when needed:
 
 ```bash
+npm run package:mac:arm64
 npm run package:mac:x64
 ```
 
-Build a universal Mac version:
+The explicit Universal command is equivalent to the default:
 
 ```bash
 npm run package:mac:universal

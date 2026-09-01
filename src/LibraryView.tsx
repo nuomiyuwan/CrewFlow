@@ -21,7 +21,7 @@ import {
   Video,
   X,
 } from 'lucide-react'
-import type { CSSProperties, ErrorInfo, MouseEvent as ReactMouseEvent, ReactNode } from 'react'
+import type { CSSProperties, Dispatch, ErrorInfo, MouseEvent as ReactMouseEvent, ReactNode, SetStateAction } from 'react'
 import type { Border, Cell, Color, Fill, Workbook, Worksheet } from 'exceljs'
 import type { LibraryCollection, LibraryFileSelection, LibraryItem, LibraryItemSourceType } from './library-model'
 
@@ -82,13 +82,14 @@ type LibraryViewProps = {
   teamAccessKey: string
   searchQuery: string
   onCollectionsChange: (collections: LibraryCollection[]) => void
-  onItemsChange: (items: LibraryItem[]) => void
+  onItemsChange: Dispatch<SetStateAction<LibraryItem[]>>
 }
 
 const maxPreviewTextLength = 500_000
 const maxDocumentPreviewBytes = 80 * 1024 * 1024
 const maxSpreadsheetPreviewBytes = 80 * 1024 * 1024
 const tablePageSize = 80
+const libraryFolderMimeType = 'inode/directory'
 
 class LibraryPreviewErrorBoundary extends Component<{ children: ReactNode }, { failed: boolean }> {
   state = { failed: false }
@@ -476,12 +477,16 @@ function friendlyLibraryError(error: unknown, fallback: string) {
 
 function sourceLabel(item: LibraryItem, dataMode: DataMode) {
   if (item.sourceType === 'url') return '在线链接'
-  if (item.sourceType === 'path') return /^(mp4|mov|m4v|webm)$/i.test(item.extension ?? '') ? '视频路径' : '路径引用'
+  if (item.sourceType === 'path') {
+    if (item.mimeType === libraryFolderMimeType) return '文件夹路径'
+    return /^(mp4|mov|m4v|webm)$/i.test(item.extension ?? '') ? '视频路径' : '路径引用'
+  }
   return dataMode === 'team' ? '团队文件' : '本机文件'
 }
 
 function itemIcon(item: LibraryItem) {
   if (item.sourceType === 'url') return Link
+  if (item.mimeType === libraryFolderMimeType) return Folder
   if (item.mimeType?.startsWith('image/')) return ImageIcon
   if (item.mimeType?.startsWith('video/') || /^(mp4|mov|m4v|webm)$/i.test(item.extension ?? '')) return Video
   if (item.extension === 'xlsx' || item.extension === 'xls' || item.extension === 'csv') return FileSpreadsheet
@@ -502,6 +507,7 @@ function libraryStoragePayload(
     serverUrl: teamServerUrl,
     accessKey: teamAccessKey,
     path: item.path,
+    networkPath: item.networkPath,
     url: item.url,
     fileName: item.fileName,
     mimeType: item.mimeType,
@@ -559,8 +565,12 @@ export default function LibraryView({
   const [tablePage, setTablePage] = useState(0)
   const [busy, setBusy] = useState(false)
   const [message, setMessage] = useState('')
+  const [networkPathScanRevision, setNetworkPathScanRevision] = useState(0)
+  const networkPathScanSignatureRef = useRef('')
   const canManageCollections = role === 'controller' || role === 'admin'
   const selectedCollection = sortedCollections.find((collection) => collection.id === selectedCollectionId) ?? sortedCollections[0] ?? null
+  const selectedPath = itemEditor?.draft.sourceType === 'path' ? itemEditor.draft.selection : null
+  const selectedPathIsFolder = selectedPath?.mimeType === libraryFolderMimeType
 
   useEffect(() => {
     if (selectedCollection && selectedCollection.id !== selectedCollectionId) setSelectedCollectionId(selectedCollection.id)
@@ -577,6 +587,39 @@ export default function LibraryView({
     setTableSheetIndex(0)
     setTablePage(0)
   }, [preview])
+
+  useEffect(() => {
+    const refreshNetworkPaths = () => {
+      networkPathScanSignatureRef.current = ''
+      setNetworkPathScanRevision((current) => current + 1)
+    }
+    window.addEventListener('focus', refreshNetworkPaths)
+    return () => window.removeEventListener('focus', refreshNetworkPaths)
+  }, [])
+
+  useEffect(() => {
+    const bridge = window.desktopBridge
+    if (!bridge?.identifyLibraryPath) return
+    const candidates = items.filter((item) => item.sourceType === 'path' && item.path && !item.networkPath)
+    const signature = candidates.map((item) => `${item.id}:${item.path}`).join('|')
+    if (!signature || networkPathScanSignatureRef.current === signature) return
+    networkPathScanSignatureRef.current = signature
+    void Promise.all(candidates.map(async (item) => [item.id, item.path!, await bridge.identifyLibraryPath(item.path!)] as const))
+      .then((results) => {
+        const detected = new Map(results.filter((entry) => entry[2]).map(([id, sourcePath, networkPath]) => [id, { sourcePath, networkPath }]))
+        if (detected.size === 0) {
+          networkPathScanSignatureRef.current = ''
+          return
+        }
+        onItemsChange((currentItems) => currentItems.map((item) => {
+          const match = detected.get(item.id)
+          return match && !item.networkPath && item.path === match.sourcePath ? { ...item, networkPath: match.networkPath } : item
+        }))
+      })
+      .catch(() => {
+        networkPathScanSignatureRef.current = ''
+      })
+  }, [items, networkPathScanRevision, onItemsChange])
 
   const collectionCounts = useMemo(() => {
     const counts = new Map<string, number>()
@@ -698,6 +741,7 @@ export default function LibraryView({
         selection: item.path
           ? {
               path: item.path,
+              networkPath: item.networkPath,
               fileName: item.fileName ?? item.path.split(/[\\/]/).at(-1) ?? '资料文件',
               extension: item.extension ?? '',
               mimeType: item.mimeType ?? 'application/octet-stream',
@@ -709,23 +753,23 @@ export default function LibraryView({
     })
   }
 
-  async function chooseFile() {
+  async function chooseFile(purpose: 'upload' | 'reference' | 'folder') {
     if (!itemEditor || !window.desktopBridge?.selectLibraryFile) return
     try {
       setBusy(true)
       setMessage('')
-      const selection = await window.desktopBridge.selectLibraryFile(itemEditor.draft.sourceType === 'uploaded' ? 'upload' : 'reference')
+      const selection = await window.desktopBridge.selectLibraryFile(purpose)
       if (!selection) return
       setItemEditor((current) => current ? {
         ...current,
         draft: {
           ...current.draft,
-          title: current.draft.title || selection.fileName.replace(/\.[^.]+$/, ''),
+          title: current.draft.title || (selection.mimeType === libraryFolderMimeType ? selection.fileName : selection.fileName.replace(/\.[^.]+$/, '')),
           selection,
         },
       } : current)
     } catch (error) {
-      setMessage(friendlyLibraryError(error, '文件选择失败'))
+      setMessage(friendlyLibraryError(error, purpose === 'folder' ? '文件夹选择失败' : '文件选择失败'))
     } finally {
       setBusy(false)
     }
@@ -744,7 +788,7 @@ export default function LibraryView({
       return
     }
     if (!itemEditor.itemId && draft.sourceType !== 'url' && !draft.selection) {
-      setMessage(draft.sourceType === 'uploaded' ? '请选择要上传的文稿' : '请选择视频、本地或共享文件')
+      setMessage(draft.sourceType === 'uploaded' ? '请选择要上传的文稿' : '请选择视频、共享文件或文件夹')
       return
     }
 
@@ -798,6 +842,7 @@ export default function LibraryView({
           extension: draft.selection?.extension,
           size: draft.selection?.size,
           path: draft.sourceType === 'path' ? draft.selection?.path : undefined,
+          networkPath: draft.sourceType === 'path' ? draft.selection?.networkPath : undefined,
           url: draft.sourceType === 'url' ? url : undefined,
           note: draft.note.trim().slice(0, 1_000) || undefined,
           createdAt: now,
@@ -851,6 +896,10 @@ export default function LibraryView({
 
   async function previewItem(item: LibraryItem) {
     const extension = (item.extension ?? item.fileName?.split('.').at(-1) ?? '').toLowerCase()
+    if (item.mimeType === libraryFolderMimeType) {
+      await openItem(item)
+      return
+    }
     if (item.sourceType === 'url' || /^(mp4|mov|m4v|webm|mp3|wav|m4a)$/i.test(extension)) {
       await openItem(item)
       return
@@ -995,7 +1044,7 @@ export default function LibraryView({
                   <small>{[formatSize(item.size), item.createdByName, formatLibraryDate(item.updatedAt)].filter(Boolean).join(' · ')}</small>
                 </div>
                 <div className="libraryResourceActions">
-                  <button type="button" title="预览" disabled={busy} onClick={() => void previewItem(item)}><ExternalLink size={17} /></button>
+                  <button type="button" title={item.mimeType === libraryFolderMimeType ? '打开文件夹' : '预览'} disabled={busy} onClick={() => void previewItem(item)}><ExternalLink size={17} /></button>
                   {canEditItem(item) && <button type="button" title="编辑" disabled={busy} onClick={() => openItemEdit(item)}><Pencil size={17} /></button>}
                   {canEditItem(item) && <button className="danger" type="button" title="删除" disabled={busy} onClick={() => void deleteItem(item)}><Trash2 size={17} /></button>}
                 </div>
@@ -1006,7 +1055,7 @@ export default function LibraryView({
             <div className="libraryResourcesEmpty">
               <FileText size={32} />
               <strong>{searchQuery.trim() ? '没有匹配的资料' : '这个资料集还是空的'}</strong>
-              {!searchQuery.trim() && <span>可添加文稿本体、文件路径或在线链接</span>}
+              {!searchQuery.trim() && <span>可添加文稿本体、文件或文件夹路径、在线链接</span>}
             </div>
           )}
           {!selectedCollection && (
@@ -1021,7 +1070,7 @@ export default function LibraryView({
               )}
               <div className="libraryOnboardingTypes" aria-label="资料库支持的资料类型">
                 <span><Upload size={19} />上传文稿</span>
-                <span><Video size={19} />视频/共享文件</span>
+                <span><Video size={19} />视频/共享路径</span>
                 <span><Link size={19} />在线链接</span>
               </div>
             </div>
@@ -1084,7 +1133,7 @@ export default function LibraryView({
             {!itemEditor.itemId && (
               <div className="librarySourceTabs">
                 <button className={itemEditor.draft.sourceType === 'uploaded' ? 'active' : ''} type="button" onClick={() => setItemEditor({ ...itemEditor, draft: { ...emptyDraft(itemEditor.draft.collectionId), sourceType: 'uploaded' } })}><Upload size={17} />上传文稿</button>
-                <button className={itemEditor.draft.sourceType === 'path' ? 'active' : ''} type="button" onClick={() => setItemEditor({ ...itemEditor, draft: { ...emptyDraft(itemEditor.draft.collectionId), sourceType: 'path' } })}><Video size={17} />视频/共享文件</button>
+                <button className={itemEditor.draft.sourceType === 'path' ? 'active' : ''} type="button" onClick={() => setItemEditor({ ...itemEditor, draft: { ...emptyDraft(itemEditor.draft.collectionId), sourceType: 'path' } })}><Video size={17} />视频/共享路径</button>
                 <button className={itemEditor.draft.sourceType === 'url' ? 'active' : ''} type="button" onClick={() => setItemEditor({ ...itemEditor, draft: { ...emptyDraft(itemEditor.draft.collectionId), sourceType: 'url' } })}><Link size={17} />在线链接</button>
               </div>
             )}
@@ -1100,14 +1149,32 @@ export default function LibraryView({
                 </select>
               </label>
             </div>
-            {!itemEditor.itemId && itemEditor.draft.sourceType !== 'url' && (
-              <button className="libraryFilePicker" type="button" disabled={busy} onClick={() => void chooseFile()}>
-                {itemEditor.draft.sourceType === 'uploaded' ? <Upload size={20} /> : <Video size={20} />}
+            {!itemEditor.itemId && itemEditor.draft.sourceType === 'uploaded' && (
+              <button className="libraryFilePicker" type="button" disabled={busy} onClick={() => void chooseFile('upload')}>
+                <Upload size={20} />
                 <span>
-                  <strong>{itemEditor.draft.selection?.fileName ?? (itemEditor.draft.sourceType === 'uploaded' ? '选择要上传的文稿' : '选择视频、本地或共享文件')}</strong>
-                  <small>{itemEditor.draft.selection ? [itemEditor.draft.selection.path, formatSize(itemEditor.draft.selection.size)].filter(Boolean).join(' · ') : itemEditor.draft.sourceType === 'uploaded' ? '支持文稿、表格、PDF 和图片，最大 200MB' : dataMode === 'team' ? '只同步路径，不复制文件；建议选择所有成员可访问的 NAS 或共享盘' : '支持视频和大型文件；只保存路径，不复制文件本体'}</small>
+                  <strong>{itemEditor.draft.selection?.fileName ?? '选择要上传的文稿'}</strong>
+                  <small>{itemEditor.draft.selection ? [itemEditor.draft.selection.path, formatSize(itemEditor.draft.selection.size)].filter(Boolean).join(' · ') : '支持文稿、表格、PDF 和图片，最大 200MB'}</small>
                 </span>
               </button>
+            )}
+            {!itemEditor.itemId && itemEditor.draft.sourceType === 'path' && (
+              <div className="libraryPathPickers">
+                <button className={`libraryFilePicker${selectedPath && !selectedPathIsFolder ? ' selected' : ''}`} type="button" disabled={busy} onClick={() => void chooseFile('reference')}>
+                  <Video size={20} />
+                  <span>
+                    <strong>{selectedPath && !selectedPathIsFolder ? selectedPath.fileName : '选择视频或共享文件'}</strong>
+                    <small>{selectedPath && !selectedPathIsFolder ? [selectedPath.path, formatSize(selectedPath.size)].filter(Boolean).join(' · ') : '保存文件路径，不复制文件本体'}</small>
+                  </span>
+                </button>
+                <button className={`libraryFilePicker${selectedPathIsFolder ? ' selected' : ''}`} type="button" disabled={busy} onClick={() => void chooseFile('folder')}>
+                  <Folder size={20} />
+                  <span>
+                    <strong>{selectedPathIsFolder ? selectedPath?.fileName : '选择共享文件夹'}</strong>
+                    <small>{selectedPathIsFolder ? selectedPath?.path : dataMode === 'team' ? '请选择所有成员可访问的 NAS 或共享盘文件夹' : '点击资料后直接打开这个文件夹'}</small>
+                  </span>
+                </button>
+              </div>
             )}
             {itemEditor.draft.sourceType === 'url' && (
               <label className="libraryField">
@@ -1136,7 +1203,7 @@ export default function LibraryView({
               <strong>{preview.title}</strong>
               <div className="libraryPreviewHeaderActions">
                 {previewSourceItem && (
-                  <button className="libraryPreviewSystemOpen" type="button" title="用系统应用打开完整文件" onClick={() => void openItem(previewSourceItem)}>
+                  <button className="libraryPreviewSystemOpen" type="button" title="用系统应用打开完整文件" disabled={busy} onClick={() => void openItem(previewSourceItem)}>
                     <ExternalLink size={16} />
                     系统打开
                   </button>
