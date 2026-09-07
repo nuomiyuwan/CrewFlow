@@ -33,6 +33,9 @@ const {
   resolveLibraryNetworkPath,
   windowsNetworkPathExists,
 } = require('./library-network-path.cjs')
+const { createUtilityToolsService } = require('./utility-tools.cjs')
+const { createProjectWorkbookBuffer } = require('./project-export.cjs')
+const { AUDIO_EXTENSIONS, VIDEO_EXTENSIONS, SPECIAL_AUDIO_EXTENSIONS } = require('./audio/formats.cjs')
 
 const isDev = !app.isPackaged
 const isTeamServerMode = process.argv.includes('--team-server')
@@ -54,6 +57,7 @@ let downloadedMacUpdatePath = ''
 let downloadedWindowsUpdatePath = ''
 let appUpdateInstallPending = false
 let localLibraryFileStorePromise = null
+let utilityToolsService = null
 const libraryPreviewWindows = new Map()
 const libraryNetworkConnectionPromises = new Map()
 const libraryPathProbePromises = new Map()
@@ -141,6 +145,19 @@ function libraryFilesPath() {
 
 function libraryOpenCachePath() {
   return path.join(app.getPath('temp'), 'CrewFlow Library')
+}
+
+function getUtilityToolsService() {
+  if (!utilityToolsService) {
+    utilityToolsService = createUtilityToolsService({
+      platform: process.platform,
+      arch: process.arch,
+      userDataPath: app.getPath('userData'),
+      tempPath: app.getPath('temp'),
+      resourcesPath: process.resourcesPath,
+    })
+  }
+  return utilityToolsService
 }
 
 function escapeLibraryPreviewHtml(value) {
@@ -820,6 +837,21 @@ function waitForLibraryNetwork(delay) {
   return new Promise((resolve) => setTimeout(resolve, delay))
 }
 
+function openWindowsExplorer(targetPath, select = false) {
+  return new Promise((resolve, reject) => {
+    const child = spawn('explorer.exe', [select ? `/select,${targetPath}` : targetPath], {
+      detached: true,
+      stdio: 'ignore',
+      windowsHide: false,
+    })
+    child.once('error', reject)
+    child.once('spawn', () => {
+      child.unref()
+      resolve(true)
+    })
+  })
+}
+
 async function libraryPathExists(filePath, timeout = 1_500) {
   if (!filePath || parseLibraryNetworkPath(filePath)) return false
   if (process.platform === 'darwin') return macPathExists(filePath, timeout)
@@ -871,11 +903,15 @@ async function resolvedLibrarySourcePath(payload = {}, connect = true) {
       libraryPathProbePromises.delete(loginTarget)
       if (process.platform === 'darwin') await shell.openExternal(loginTarget)
       else if (process.platform === 'win32') {
-        const openError = await shell.openPath(loginTarget)
-        if (openError) await shell.openExternal(pathToFileURL(loginTarget).href)
+        try {
+          await openWindowsExplorer(loginTarget)
+        } catch {
+          const openError = await shell.openPath(loginTarget)
+          if (openError) await shell.openExternal(pathToFileURL(loginTarget).href)
+        }
       }
 
-      const retryDelays = [350, 500, 750, 1_000, 1_500, 2_000, 3_000, 4_000, 5_000, 6_000]
+      const retryDelays = [350, 500, 750, 1_000, 1_500, 2_000, 3_000, 4_000, 5_000, 6_000, 8_000, 10_000]
       for (const delay of retryDelays) {
         await waitForLibraryNetwork(delay)
         clearLibraryNetworkMountCache()
@@ -934,6 +970,37 @@ async function selectedLibraryFile(purpose = 'reference') {
     uploadable: libraryUploadExtensions.has(extension) && fileInfo.size <= maxLibraryUploadBytes,
     networkPath: networkPath || undefined,
   }
+}
+
+async function selectedUtilityFiles(options = {}) {
+  const multiple = options.multiple === true
+  const pdfOnly = options.pdfOnly === true
+  const result = await dialog.showOpenDialog({
+    title: typeof options.title === 'string' && options.title.trim() ? options.title.trim() : '选择要处理的文件',
+    properties: multiple ? ['openFile', 'multiSelections'] : ['openFile'],
+    filters: pdfOnly
+      ? [{ name: 'PDF 文件', extensions: ['pdf'] }]
+      : [
+          { name: '支持的文件', extensions: ['pdf', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx', 'png', 'jpg', 'jpeg', 'webp', 'bmp', 'tif', 'tiff', 'heic', 'heif', ...AUDIO_EXTENSIONS, ...SPECIAL_AUDIO_EXTENSIONS, ...VIDEO_EXTENSIONS] },
+          { name: '视频', extensions: VIDEO_EXTENSIONS },
+          { name: '音频与专属音乐', extensions: [...AUDIO_EXTENSIONS, ...SPECIAL_AUDIO_EXTENSIONS] },
+          { name: '所有文件', extensions: ['*'] },
+        ],
+  })
+  if (result.canceled || result.filePaths.length === 0) return []
+
+  const files = []
+  for (const filePath of result.filePaths) {
+    const fileInfo = await fs.promises.stat(filePath)
+    if (!fileInfo.isFile()) continue
+    files.push({
+      path: filePath,
+      name: path.basename(filePath),
+      extension: path.extname(filePath).slice(1).toLowerCase(),
+      size: fileInfo.size,
+    })
+  }
+  return files
 }
 
 async function readLibrarySource(payload = {}) {
@@ -1022,15 +1089,37 @@ async function deleteLibraryFile(payload = {}) {
   return store.remove(payload.id)
 }
 
-async function openLibraryBytes(payload = {}) {
+async function cacheLibraryBytes(payload = {}) {
   const { data, metadata } = await readLibrarySource(payload)
   const id = /^[A-Za-z0-9_-]{1,120}$/.test(payload.id || '') ? payload.id : `item-${Date.now()}`
   const directory = path.join(libraryOpenCachePath(), id)
   const targetPath = path.join(directory, cleanLibraryFileName(payload.fileName) || metadata.fileName || '资料文件')
   await fs.promises.mkdir(directory, { recursive: true })
   await fs.promises.writeFile(targetPath, data)
+  return targetPath
+}
+
+async function openLibraryBytes(payload = {}) {
+  const targetPath = await cacheLibraryBytes(payload)
   const error = await shell.openPath(targetPath)
   if (error) throw new Error(error)
+  return true
+}
+
+async function revealLibraryResource(payload = {}) {
+  if (payload.sourceType === 'url') {
+    const url = new URL(typeof payload.url === 'string' ? payload.url : '')
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') throw new Error('只支持 http 或 https 链接')
+    await shell.openExternal(url.toString())
+    return true
+  }
+
+  const targetPath = payload.sourceType === 'path'
+    ? await resolvedLibrarySourcePath(payload)
+    : await cacheLibraryBytes(payload)
+  await fs.promises.stat(targetPath)
+  if (process.platform === 'win32' && parseUncPath(targetPath)) await openWindowsExplorer(targetPath, true)
+  else shell.showItemInFolder(targetPath)
   return true
 }
 
@@ -1890,6 +1979,70 @@ if (!hasPrimaryInstanceLock) {
       return error === ''
     })
 
+    ipcMain.handle('projects:export', async (_event, payload = {}) => {
+      const projects = Array.isArray(payload.projects) ? payload.projects : []
+      if (projects.length === 0) throw new Error('请选择要导出的项目')
+      const date = new Date()
+      const dateText = [date.getFullYear(), date.getMonth() + 1, date.getDate()].map((value, index) => String(value).padStart(index === 0 ? 4 : 2, '0')).join('-')
+      const options = {
+        title: '导出项目表格',
+        defaultPath: path.join(app.getPath('documents'), `CrewFlow-项目数据-${dateText}.xlsx`),
+        filters: [{ name: 'Excel 表格', extensions: ['xlsx'] }],
+      }
+      const result = mainWindow && !mainWindow.isDestroyed()
+        ? await dialog.showSaveDialog(mainWindow, options)
+        : await dialog.showSaveDialog(options)
+      if (result.canceled || !result.filePath) return { canceled: true }
+      const outputPath = result.filePath.toLowerCase().endsWith('.xlsx') ? result.filePath : `${result.filePath}.xlsx`
+      await fs.promises.writeFile(outputPath, await createProjectWorkbookBuffer(payload))
+      return { canceled: false, filePath: outputPath }
+    })
+
+    ipcMain.handle('utility-tools:select-files', async (_event, options = {}) => {
+      return selectedUtilityFiles(options)
+    })
+
+    ipcMain.handle('utility-tools:convert', async (event, payload = {}) => {
+      return getUtilityToolsService().convertDocument(payload, (state) => {
+        if (!event.sender.isDestroyed()) event.sender.send('utility-tools:progress', state)
+      })
+    })
+
+    ipcMain.handle('utility-tools:pdf', async (event, payload = {}) => {
+      return getUtilityToolsService().runPdfTool(payload, (state) => {
+        if (!event.sender.isDestroyed()) event.sender.send('utility-tools:progress', state)
+      })
+    })
+
+    ipcMain.handle('utility-tools:cancel', async (_event, jobId) => {
+      return getUtilityToolsService().cancel(jobId)
+    })
+
+    ipcMain.handle('utility-tools:outputs-exist', async (_event, filePaths = []) => {
+      if (!Array.isArray(filePaths)) return []
+      return Promise.all(filePaths.slice(0, 50).map(async (filePath) => {
+        if (typeof filePath !== 'string' || !path.isAbsolute(filePath)) return false
+        try {
+          await fs.promises.stat(filePath)
+          return true
+        } catch (error) {
+          return !['ENOENT', 'ENOTDIR'].includes(error?.code)
+        }
+      }))
+    })
+
+    ipcMain.handle('utility-tools:reveal', async (_event, filePath) => {
+      if (typeof filePath !== 'string' || !path.isAbsolute(filePath)) return false
+      try {
+        await fs.promises.stat(filePath)
+      } catch (error) {
+        if (['ENOENT', 'ENOTDIR'].includes(error?.code)) return false
+        throw error
+      }
+      shell.showItemInFolder(filePath)
+      return true
+    })
+
     ipcMain.handle('library-file:select', async (_event, purpose) => {
       return selectedLibraryFile(purpose)
     })
@@ -1923,6 +2076,10 @@ if (!hasPrimaryInstanceLock) {
       }
       if (payload?.sourceType === 'url') return previewLibraryResource(payload)
       return openLibraryBytes(payload)
+    })
+
+    ipcMain.handle('library-file:reveal', async (_event, payload) => {
+      return revealLibraryResource(payload)
     })
 
     ipcMain.handle('library-resource:preview', async (_event, payload) => {

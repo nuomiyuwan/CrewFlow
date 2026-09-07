@@ -45,11 +45,13 @@ import {
   RefreshCw,
   Trash2,
   Users,
+  Wrench,
   X,
 } from 'lucide-react'
 import './App.css'
 import userGuideMarkdown from '../docs/USER_GUIDE.zh-CN.md?raw'
 import LibraryView from './LibraryView'
+import UtilityToolsView from './UtilityToolsView'
 import {
   normalizeLibraryCollection,
   normalizeLibraryItem,
@@ -73,6 +75,7 @@ type Section =
   | 'projects'
   | 'tasks'
   | 'calendar'
+  | 'tools'
   | 'team'
   | 'people'
   | 'archive'
@@ -377,9 +380,41 @@ type ProjectRiskAlertMemoryEntry = {
 
 type ProjectRiskAlertMemory = Record<string, ProjectRiskAlertMemoryEntry>
 
+type UtilityFileSelection = {
+  path: string
+  name: string
+  extension: string
+  size: number
+  mimeType?: string
+}
+
+type UtilityTaskResult = {
+  jobId: string
+  outputPath?: string
+  outputPaths?: string[]
+  message?: string
+  warning?: string
+}
+
+type UtilityProgress = {
+  jobId: string
+  phase: string
+  percent: number
+  message: string
+}
+
+type ProjectExportPayload = {
+  projects: Record<string, string | number>[]
+  tasks: Record<string, string | number>[]
+  calendarItems: Record<string, string | number>[]
+  financeRecords: Record<string, string | number>[]
+  financeLedger: Record<string, string | number>[]
+}
+
 type DesktopBridge = {
   platform: string
   arch: string
+  getPathForFile: (file: File) => string
   minimizeWindow: () => Promise<boolean>
   toggleMaximizeWindow: () => Promise<boolean>
   closeWindow: () => Promise<boolean>
@@ -387,6 +422,7 @@ type DesktopBridge = {
   openProjectFolder: (folderPath: string) => Promise<boolean>
   selectProjectFile: (title: string) => Promise<string | null>
   openProjectFile: (filePath: string) => Promise<boolean>
+  exportProjects: (payload: ProjectExportPayload) => Promise<{ canceled: boolean; filePath?: string }>
   selectLibraryFile: (purpose: 'upload' | 'reference' | 'folder') => Promise<LibraryFileSelection | null>
   identifyLibraryPath: (filePath: string) => Promise<string>
   importLibraryFile: (payload: Record<string, unknown>) => Promise<Record<string, unknown>>
@@ -396,7 +432,15 @@ type DesktopBridge = {
   }>
   deleteLibraryFile: (payload: Record<string, unknown>) => Promise<boolean>
   openLibraryFile: (payload: Record<string, unknown>) => Promise<boolean>
+  revealLibraryFile: (payload: Record<string, unknown>) => Promise<boolean>
   previewLibraryResource: (payload: Record<string, unknown>) => Promise<boolean>
+  selectUtilityFiles: (options?: Record<string, unknown>) => Promise<UtilityFileSelection[]>
+  convertUtilityDocument: (payload: Record<string, unknown>) => Promise<UtilityTaskResult>
+  runUtilityPdfTool: (payload: Record<string, unknown>) => Promise<UtilityTaskResult>
+  cancelUtilityTask: (jobId: string) => Promise<boolean>
+  utilityOutputPathsExist: (filePaths: string[]) => Promise<boolean[]>
+  revealUtilityOutput: (filePath: string) => Promise<boolean>
+  onUtilityProgress: (listener: (progress: UtilityProgress) => void) => () => void
   loadAppData: () => Promise<AppData | null>
   saveAppData: (data: Partial<AppData>) => Promise<boolean>
   getTeamServiceInfo: () => Promise<TeamServiceInfo>
@@ -1019,6 +1063,7 @@ const navItems: Array<{ id: Section; label: string; icon: typeof LayoutDashboard
   { id: 'projects', label: '项目中心', icon: FolderKanban },
   { id: 'tasks', label: '我的任务', icon: ListChecks },
   { id: 'calendar', label: '交付日历', icon: CalendarDays },
+  { id: 'tools', label: '实用工具', icon: Wrench },
   { id: 'team', label: '团队负载', icon: Users },
   { id: 'people', label: '人员管理', icon: Users },
   { id: 'library', label: '资料库', icon: BookOpen },
@@ -1030,6 +1075,7 @@ const financeNavItems: Array<{ id: Section; label: string; icon: typeof LayoutDa
   { id: 'finance', label: '财务结算', icon: DollarSign },
   { id: 'projects', label: '项目中心', icon: FolderKanban },
   { id: 'calendar', label: '交付日历', icon: CalendarDays },
+  { id: 'tools', label: '实用工具', icon: Wrench },
   { id: 'library', label: '资料库', icon: BookOpen },
   { id: 'archive', label: '项目归档', icon: Archive },
 ]
@@ -1882,6 +1928,7 @@ function App() {
   const [section, setSection] = useState<Section>(() => navItemsForRole(loadStoredAccounts().find((account) => account.id === loadStoredAccountId())?.role ?? 'controller')[0]?.id ?? 'dashboard')
   const [selectedProjectId, setSelectedProjectId] = useState(projects[0]?.id ?? '')
   const [showNewProjectModal, setShowNewProjectModal] = useState(false)
+  const [showProjectExportModal, setShowProjectExportModal] = useState(false)
   const [assistantNewProjectDraft, setAssistantNewProjectDraft] = useState<AssistantNewProjectDraft | null>(null)
   const [assistantProjectEditDraft, setAssistantProjectEditDraft] = useState<AssistantProjectEditDraft | null>(null)
   const [assistantTaskEditDraft, setAssistantTaskEditDraft] = useState<AssistantTaskEditDraft | null>(null)
@@ -1935,6 +1982,7 @@ function App() {
   const teamServiceInfoRef = useRef<TeamServiceInfo | null>(null)
   const seenTeamPairingRequestIdsRef = useRef(new Set<string>())
   const updateCheckPendingRef = useRef(false)
+  const announcedUpdateVersionRef = useRef('')
   const weatherRequestIdRef = useRef(0)
   const chinaHolidayRequestIdRef = useRef(0)
   const remoteTeamDataRef = useRef<AppData | null>(null)
@@ -2448,6 +2496,13 @@ function App() {
     if (!currentAccount?.id) return
     void checkForUpdates()
   }, [checkForUpdates, currentAccount?.id])
+
+  useEffect(() => {
+    if (!currentAccount?.id || updateCheckStatus !== 'available' || !availableUpdate) return
+    if (announcedUpdateVersionRef.current === availableUpdate.version) return
+    announcedUpdateVersionRef.current = availableUpdate.version
+    setShowUpdateDialog(true)
+  }, [availableUpdate, currentAccount?.id, updateCheckStatus])
 
   useEffect(() => {
     const timer = window.setInterval(() => setNow(new Date()), 30 * 1000)
@@ -4363,6 +4418,17 @@ function App() {
             <button className={showFilterPanel ? 'iconButton active' : 'iconButton'} type="button" title="筛选" onClick={() => setShowFilterPanel((value) => !value)}>
               <Filter size={18} />
             </button>
+            {section === 'projects' && role === 'controller' && (
+              <button
+                className="projectExportButton"
+                type="button"
+                disabled={appProjects.length === 0}
+                onClick={() => setShowProjectExportModal(true)}
+              >
+                <Download size={17} />
+                <span>导出项目</span>
+              </button>
+            )}
             {canCreateProject && (
               <button
                 className="primaryButton"
@@ -4480,6 +4546,7 @@ function App() {
             onAssistantDraftHandled={() => setAssistantCalendarDrafts((current) => current.slice(1))}
           />
         )}
+        {section === 'tools' && <UtilityToolsView key="utility-tools-page" />}
         {section === 'team' && (
           <TeamLoad
             projects={appProjects}
@@ -4631,6 +4698,17 @@ function App() {
             }}
             onCreateProject={handleCreateProject}
           />
+      )}
+      {showProjectExportModal && role === 'controller' && (
+        <ProjectExportModal
+          projects={appProjects}
+          tasks={appTasks}
+          calendarItems={appCalendarItems}
+          financeRecords={appFinanceRecords}
+          workflowOptions={appWorkflowOptions}
+          loadAppData={loadCurrentAppData}
+          onClose={() => setShowProjectExportModal(false)}
+        />
       )}
       {setupDraft && (
         <ProjectSetupModal
@@ -4792,6 +4870,243 @@ function App() {
         />
       )}
       {showUserGuide && <UserGuideModal sections={userGuideSections} onClose={() => setShowUserGuide(false)} />}
+    </div>
+  )
+}
+
+function ProjectExportModal({
+  projects,
+  tasks,
+  calendarItems,
+  financeRecords,
+  workflowOptions,
+  loadAppData,
+  onClose,
+}: {
+  projects: Project[]
+  tasks: Task[]
+  calendarItems: CalendarItem[]
+  financeRecords: FinanceRecord[]
+  workflowOptions: WorkflowOptions
+  loadAppData: AppDataLoader
+  onClose: () => void
+}) {
+  const [query, setQuery] = useState('')
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set())
+  const [exporting, setExporting] = useState(false)
+  const [error, setError] = useState('')
+  const displayedProjects = useMemo(() => {
+    const cleanQuery = query.trim().toLowerCase()
+    return [...projects]
+      .filter((project) => !cleanQuery || projectMatchesSearch(project, cleanQuery))
+      .sort(compareProjectsByFinalDelivery)
+  }, [projects, query])
+  const allDisplayedSelected = displayedProjects.length > 0 && displayedProjects.every((project) => selectedIds.has(project.id))
+
+  function toggleProject(projectId: string) {
+    setSelectedIds((current) => {
+      const next = new Set(current)
+      if (next.has(projectId)) next.delete(projectId)
+      else next.add(projectId)
+      return next
+    })
+  }
+
+  function toggleDisplayedProjects() {
+    setSelectedIds((current) => {
+      const next = new Set(current)
+      displayedProjects.forEach((project) => {
+        if (allDisplayedSelected) next.delete(project.id)
+        else next.add(project.id)
+      })
+      return next
+    })
+  }
+
+  async function exportSelectedProjects() {
+    if (selectedIds.size === 0 || exporting) return
+    const bridge = window.desktopBridge?.exportProjects
+    if (!bridge) {
+      setError('请在 CrewFlow 桌面版中导出项目表格。')
+      return
+    }
+
+    setExporting(true)
+    setError('')
+    try {
+      const exportDate = new Date()
+      const selectedProjects = projects
+        .filter((project) => selectedIds.has(project.id))
+        .sort(compareProjectsByFinalDelivery)
+      const selectedProjectIds = new Set(selectedProjects.map((project) => project.id))
+      const selectedProjectById = new Map(selectedProjects.map((project) => [project.id, project]))
+      const savedData = await loadAppData()
+      const currentFinanceRecords = savedData?.financeRecords ?? financeRecords
+      const currentFinanceLedger = savedData?.financeLedger ?? loadStoredFinanceLedger()
+      const exportPayload: ProjectExportPayload = {
+        projects: selectedProjects.map((project) => {
+          const status = isArchivedProject(project)
+            ? '已归档'
+            : statusLabel[projectDisplayStatus(project, exportDate, calendarItems)]
+          return {
+            id: project.id,
+            name: project.name,
+            type: project.type,
+            client: project.client || '',
+            clientContact: project.clientContact || '',
+            manager: project.manager || '',
+            owner: project.owner || '',
+            executor: currentExecutorForProject(project.id, tasks, projects),
+            status,
+            healthStatus: statusLabel[project.status],
+            healthStatusExplicit: project.healthStatusExplicit ? '是' : '否',
+            progress: progressForProject(project, workflowOptions.workflowStages) / 100,
+            workStatus: project.workStatus,
+            stage: project.stage,
+            nextMilestone: project.nextMilestone || '',
+            calendarTitle: project.calendarTitle || '',
+            due: project.due || '',
+            path: project.path || '',
+            additionalPaths: (project.additionalPaths ?? []).join('\n'),
+            creatorAccountId: project.creatorAccountId || '',
+          }
+        }),
+        tasks: tasks
+          .filter((task) => selectedProjectIds.has(task.projectId))
+          .map((task) => {
+            const project = selectedProjectById.get(task.projectId)
+            return {
+              projectId: task.projectId,
+              projectName: project?.name || task.project,
+              id: task.id,
+              workType: project ? taskWorkType(task, project, workflowOptions.taskWorkTypes) : task.workType || '',
+              title: task.title,
+              assignmentMode: isExternalTask(task) ? '外包' : '内部',
+              assignee: task.assignee || '',
+              due: task.due || '',
+              status: task.status,
+              note: task.note || '',
+              evidencePath: task.evidencePath || '',
+            }
+          }),
+        calendarItems: calendarItems
+          .filter((item) => selectedProjectIds.has(item.projectId))
+          .sort((left, right) => dateForCalendarItem(exportDate, left).localeCompare(dateForCalendarItem(exportDate, right)))
+          .map((item) => ({
+            projectId: item.projectId,
+            projectName: selectedProjectById.get(item.projectId)?.name || item.project,
+            id: item.id || '',
+            date: dateForCalendarItem(exportDate, item),
+            day: item.day,
+            time: item.time || '',
+            title: item.title || '',
+            type: item.type || '',
+            owner: item.owner || '',
+            isFinalDelivery: item.isFinalDelivery ? '是' : '否',
+            completed: item.completed ? '是' : '否',
+          })),
+        financeRecords: selectedProjects.map((project) => {
+          const record = normalizeFinanceRecord(currentFinanceRecords.find((item) => item.projectId === project.id) ?? createBlankFinanceRecord(project.id))
+          return {
+            ...record,
+            projectId: project.id,
+            projectName: project.name,
+            quoteFile: record.quoteFile || '',
+            comparisonFile: record.comparisonFile || '',
+            contractFile: record.contractFile || '',
+            nextCollectionDate: record.nextCollectionDate || '',
+            nextCollectionNote: record.nextCollectionNote || '',
+            unreceivedAmount: Math.max(0, record.contractAmount - record.receivedAmount),
+          }
+        }),
+        financeLedger: Object.entries(currentFinanceLedger).flatMap(([projectId, ledger]) => {
+          if (!selectedProjectIds.has(projectId)) return []
+          const projectName = selectedProjectById.get(projectId)?.name || ''
+          const categories: Array<['payments' | 'invoices' | 'outsourcing' | 'followUps', string]> = [
+            ['payments', '收款'],
+            ['invoices', '开票'],
+            ['outsourcing', '外包'],
+            ['followUps', '跟进'],
+          ]
+          return categories.flatMap(([key, category]) => (ledger[key] ?? []).map((entry) => ({
+            projectId,
+            projectName,
+            category,
+            id: entry.id,
+            date: entry.date || '',
+            title: entry.title || '',
+            amount: entry.amount ?? '',
+            note: entry.note || '',
+            materialFile: entry.materialFile || '',
+          })))
+        }),
+      }
+      const result = await bridge(exportPayload)
+      if (!result.canceled) onClose()
+    } catch (exportError) {
+      setError(exportError instanceof Error ? exportError.message : '项目表格导出失败，请重试。')
+    } finally {
+      setExporting(false)
+    }
+  }
+
+  return (
+    <div className="modalBackdrop" role="presentation" onMouseDown={exporting ? undefined : onClose}>
+      <section className="financeEntryModal projectExportModal" role="dialog" aria-modal="true" aria-label="导出项目" onMouseDown={(event) => event.stopPropagation()}>
+        <header>
+          <div>
+            <span className="eyebrow">项目数据</span>
+            <h2>导出项目</h2>
+          </div>
+          <button type="button" disabled={exporting} onClick={onClose} title="关闭">
+            <X size={18} />
+          </button>
+        </header>
+
+        <div className="projectExportBody">
+          <div className="projectExportToolbar">
+            <label>
+              <Search size={17} />
+              <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索项目名称、公司或负责人" autoFocus />
+            </label>
+            <button type="button" onClick={toggleDisplayedProjects} disabled={displayedProjects.length === 0}>
+              {allDisplayedSelected ? '取消全选' : '全选当前'}
+            </button>
+          </div>
+
+          <div className="projectExportList">
+            {displayedProjects.length === 0 && <EmptyState title="没有找到项目" note="请调整搜索内容后再试。" />}
+            {displayedProjects.map((project) => {
+              const status = isArchivedProject(project)
+                ? '已归档'
+                : statusLabel[projectDisplayStatus(project, new Date(), calendarItems)]
+              return (
+                <label className={selectedIds.has(project.id) ? 'selected' : ''} key={project.id}>
+                  <input type="checkbox" checked={selectedIds.has(project.id)} onChange={() => toggleProject(project.id)} />
+                  <span>
+                    <strong>{project.name}</strong>
+                    <small>{project.type || '类型未填写'} · {project.client || '公司未填写'} · {project.manager || project.owner || '负责人未填写'}</small>
+                  </span>
+                  <em>{status}</em>
+                  <time>{project.due || '未设置交付日期'}</time>
+                </label>
+              )
+            })}
+          </div>
+          {error && <p className="settingsError">{error}</p>}
+        </div>
+
+        <footer>
+          <span className="settingsFooterNote">已选择 {selectedIds.size} 个项目</span>
+          <div className="settingsFooterActions">
+            <button type="button" disabled={exporting} onClick={onClose}>取消</button>
+            <button className="settingsPrimaryButton" type="button" disabled={selectedIds.size === 0 || exporting} onClick={() => void exportSelectedProjects()}>
+              <Download size={16} />
+              {exporting ? '正在导出' : '导出 Excel'}
+            </button>
+          </div>
+        </footer>
+      </section>
     </div>
   )
 }
@@ -5298,7 +5613,7 @@ function updateRuntimeGuide() {
       steps: [
         '点击“下载更新”，等待安装程序下载完成。',
         '点击“安装并重启”，CrewFlow 会在原安装位置完成替换。',
-        '首次从压缩包版迁移时，安装程序会创建固定安装目录和快捷方式。',
+        '首次从压缩包版迁移时，按安装程序提示选择安装位置并创建快捷方式。',
         '新版确认正常后，可以删除以前的压缩包程序文件夹。',
       ],
     }
@@ -12848,6 +13163,13 @@ function assistantSuggestions(
       { label: '整理日程', prompt: '按项目整理接下来的交付日程。' },
     ]
   }
+  if (section === 'tools') {
+    return [
+      { label: '文档转 PDF', prompt: 'Word、Excel 和 PowerPoint 怎么转换为 PDF？' },
+      { label: 'PDF 转 Word', prompt: 'PDF 转 Word 有什么要求？' },
+      { label: 'PDF 工具', prompt: 'PDF 合并、拆分和压缩怎么使用？' },
+    ]
+  }
   if (section === 'tasks' || role === 'member') {
     return [
       { label: labelWithCount(role === 'member' ? '我的待办' : '待办', openTasks.length), prompt: '按优先级整理我当前需要处理的任务。' },
@@ -12918,7 +13240,7 @@ function assistantReply(
   const mentionedProject = [...projects]
     .filter((project) => project.name.trim().length >= 2 && cleanPrompt.includes(project.name.trim()))
     .sort((left, right) => right.name.length - left.name.length)[0]
-  const canAnswerLocally = Boolean(mentionedProject) || /新建项目|创建项目|立项|录入项目|款|开票|财务|交付|日程|撞期|任务|项目|风险|反馈|优先|今天|接下来|下一步|安排|进度|状态|延期|归档|负责人|项目经理|人员负载|工作量|拍摄|素材|收款|合同|资料库|资料集|上传文稿|引用路径|共享路径|共享文件|文件夹|视频|在线链接|表格预览|怎么用|如何使用|使用说明|单人模式|团队模式|团队服务|发现主机|自动发现|请求连接|连接申请|局域网|访问密钥|VPN|数据保存|权限|账号管理|人员管理|选项管理|软件更新|检查更新|模型|API Key|API 地址|Ollama|能做什么|会什么/.test(prompt)
+  const canAnswerLocally = Boolean(mentionedProject) || /新建项目|创建项目|立项|录入项目|导出项目|项目导出|导出表格|款|开票|财务|交付|日程|撞期|任务|项目|风险|反馈|优先|今天|接下来|下一步|安排|进度|状态|延期|归档|负责人|项目经理|人员负载|工作量|拍摄|素材|收款|合同|资料库|资料集|上传文稿|引用路径|共享路径|共享文件|文件夹|视频|在线链接|表格预览|实用工具|格式转换|转 PDF|转 Word|PDF 合并|合并 PDF|PDF 拆分|拆分 PDF|PDF 压缩|压缩 PDF|怎么用|如何使用|使用说明|单人模式|团队模式|团队服务|发现主机|自动发现|请求连接|连接申请|局域网|访问密钥|VPN|数据保存|权限|账号管理|人员管理|选项管理|软件更新|检查更新|模型|API Key|API 地址|Ollama|能做什么|会什么/.test(prompt)
 
   if (/智障|傻|乱答|不对|驴唇不对马嘴/.test(prompt)) {
     return [
@@ -12952,7 +13274,12 @@ function assistantReply(
     ].join('\n')
   }
 
-  if (!canAnswerLocally) {
+  if (/导出项目|项目导出|导出表格/.test(prompt)) {
+    if (role !== 'controller') return '项目数据导出仅对总控开放。'
+    return '进入“项目中心”，点击顶部的“导出项目”，勾选需要的项目后导出 Excel。表格包含项目总览、任务明细、交付节点、财务结算和财务流水。'
+  }
+
+  if (!canAnswerLocally && !/提取音频|音频转换|转\s*(?:MP4|MP3|WAV|M4A|FLAC|OPUS)/i.test(prompt)) {
     return [
       '这个问题我现在还不能准确回答。',
       '你可以问我：今天优先处理什么、某个项目进度如何、哪些项目有风险、谁的任务较多、如何发现团队主机、共享文件夹怎么打开，或者让我新建项目。',
@@ -12982,6 +13309,15 @@ function assistantReply(
       '文件夹路径保存后，点击资料卡会直接用系统文件管理器打开。团队模式只同步路径记录，不复制文件；NAS 或共享盘需要每台电脑都具备访问权限。',
       'SMB/NAS 资料会自动适配 Mac 和 Windows 的路径前缀；当前电脑尚未连接 NAS 时，系统会打开自身的登录窗口，认证后继续打开资料。',
       'PDF、图片、文本、Word 和 Excel 可在软件内预览；Word 使用白色分页视图，Excel 使用白色工作表视图并支持切换工作表、分页查看、常见样式和内嵌图片。超过 80MB 或含复杂图表、宏、嵌入对象时请使用“系统打开”。',
+    ].join('\n')
+  }
+
+  if (/实用工具|格式转换|转 PDF|转 Word|PDF 合并|合并 PDF|PDF 拆分|拆分 PDF|PDF 压缩|压缩 PDF|视频转(?:换|码|音频|声音)|提取音频|音频转换|转\s*(?:MP4|MP3|WAV|M4A|FLAC|OPUS)/i.test(prompt)) {
+    return [
+      '打开左侧“实用工具”，拖入文档、图片、音频或视频，再点击亮起的目标格式。转换结果会用新文件名保存在原文件旁边，不会覆盖原文件。',
+      '视频点击 MP4 即可转换，不需要设置编码；点击 MP3、WAV、FLAC、M4A 或 OPUS 可提取第一个音轨。HDR 和杜比视界视频暂不支持转 MP4，但可以提取音频。',
+      '首次使用会按需下载并校验转换组件，之后可离线使用。转换工作文件保存在 CrewFlow 的系统临时目录，不会在桌面建立临时文件夹。macOS 需要 15 或更新版本。PDF 和图片可识别文字、表格，复杂排版及识别结果请核对。',
+      '下方 PDF 工具支持合并、逐页拆分和结构优化。完成后可从“最近转换”在系统文件管理器中定位并选中输出文件；已删除文件的记录会自动移除。',
     ].join('\n')
   }
 

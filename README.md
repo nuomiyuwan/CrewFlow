@@ -4,7 +4,7 @@ CrewFlow is a desktop command center for project intake, task assignment, delive
 
 It is built with Electron, React, and Vite, and supports both single-user local data and LAN team mode through a lightweight CrewFlow Server.
 
-Current stable version: **v1.5.3**. See [CHANGELOG.md](CHANGELOG.md) for release details.
+Current stable version: **v1.5.4**. See [CHANGELOG.md](CHANGELOG.md) for release details.
 
 中文使用说明：[CrewFlow 用户使用说明](docs/USER_GUIDE.zh-CN.md)
 
@@ -24,6 +24,7 @@ Current stable version: **v1.5.3**. See [CHANGELOG.md](CHANGELOG.md) for release
 - Project intake, project details, task assignment, and workflow tracking
 - Personal task view for assigned work
 - Delivery calendar for project milestones
+- Local Office, PDF, image and editable table conversion with on-demand OCR components; audio conversion and NCM/UC, static QMC and KWM restoration; PDF merge, split, and optimization tools
 - Read-only China public-holiday and adjusted-workday display with offline caching
 - Team workload overview
 - Staff, account, and option management

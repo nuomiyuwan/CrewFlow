@@ -1,0 +1,36 @@
+Audio and video components are downloaded unmodified and executed as separate programs.
+FFmpeg and ffprobe 8.1.2: https://ffmpeg.org/
+Source: https://ffmpeg.org/releases/ffmpeg-8.1.2.tar.xz
+Binary distributor, exact dependency versions and build/source instructions:
+https://github.com/shaka-project/static-ffmpeg-binaries/releases/tag/n8.1.2-1
+https://github.com/shaka-project/static-ffmpeg-binaries/tree/n8.1.2-1
+These builds use GPLv3-or-later (see COPYING.GPLv3). The license reported by
+each executable is saved as ffmpeg-LICENSE.txt or ffprobe-LICENSE.txt.
+
+Audio format adapters are adapted from Unlock Music:
+https://git.unlock-music.dev/um/web
+https://github.com/Magiicccc/music-batch-unlock/tree/main/src/decrypt
+Static QMC reference: commit 6e8e8e87942da389fa6a4d04f10d4cb5de06849c, src/decrypt/qmc_cipher.ts.
+CrewFlow uses bounded, streaming Node.js adapters for NCM, UC, KWM and static QMC only.
+
+MIT License
+
+Copyright (c) 2019-2025 MengYX
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.

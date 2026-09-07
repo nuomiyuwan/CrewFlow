@@ -1,0 +1,6 @@
+-r requirements-base.in
+rapidocr==2.1.0
+rapid-table==3.0.2
+onnxruntime==1.20.1
+numpy==1.26.4
+opencv-python==4.11.0.86

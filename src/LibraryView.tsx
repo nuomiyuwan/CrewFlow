@@ -6,11 +6,8 @@ import {
   ChevronLeft,
   ChevronRight,
   ExternalLink,
-  File,
   Folder,
-  FileSpreadsheet,
   FileText,
-  Image as ImageIcon,
   Link,
   MoreHorizontal,
   Pencil,
@@ -36,6 +33,8 @@ type LibraryItemDraft = {
   url: string
   selection: LibraryFileSelection | null
 }
+
+type LibraryIconTone = 'link' | 'folder' | 'image' | 'video' | 'audio' | 'pdf' | 'word' | 'spreadsheet' | 'presentation' | 'text' | 'archive' | 'generic'
 
 type LibraryPreview =
   | { kind: 'loading'; title: string }
@@ -484,14 +483,110 @@ function sourceLabel(item: LibraryItem, dataMode: DataMode) {
   return dataMode === 'team' ? '团队文件' : '本机文件'
 }
 
-function itemIcon(item: LibraryItem) {
-  if (item.sourceType === 'url') return Link
-  if (item.mimeType === libraryFolderMimeType) return Folder
-  if (item.mimeType?.startsWith('image/')) return ImageIcon
-  if (item.mimeType?.startsWith('video/') || /^(mp4|mov|m4v|webm)$/i.test(item.extension ?? '')) return Video
-  if (item.extension === 'xlsx' || item.extension === 'xls' || item.extension === 'csv') return FileSpreadsheet
-  if (item.extension === 'pdf' || item.extension === 'doc' || item.extension === 'docx' || item.extension === 'txt' || item.extension === 'md') return FileText
-  return File
+function itemIcon(item: LibraryItem): { tone: LibraryIconTone; documentLabel?: string } {
+  const extension = (item.extension ?? item.fileName?.split('.').at(-1) ?? '').toLowerCase()
+  const mimeType = item.mimeType?.toLowerCase() ?? ''
+  if (item.sourceType === 'url') return { tone: 'link' }
+  if (mimeType === libraryFolderMimeType) return { tone: 'folder' }
+  if (mimeType.startsWith('image/') || /^(png|jpg|jpeg|gif|webp|bmp|svg|heic|heif|tif|tiff)$/.test(extension)) return { tone: 'image' }
+  if (mimeType.startsWith('video/') || /^(mp4|mov|m4v|webm|avi|mkv|wmv|flv|mpeg|mpg)$/.test(extension)) return { tone: 'video' }
+  if (mimeType.startsWith('audio/') || /^(mp3|wav|m4a|aac|flac|ogg|opus|wma|aif|aiff)$/.test(extension)) return { tone: 'audio' }
+  if (extension === 'pdf') return { tone: 'pdf', documentLabel: 'PDF' }
+  if (/^(doc|docx|odt|rtf|pages)$/.test(extension)) return { tone: 'word', documentLabel: 'W' }
+  if (/^(xlsx|xls|csv|ods|numbers)$/.test(extension)) return { tone: 'spreadsheet', documentLabel: 'X' }
+  if (/^(ppt|pptx|odp|key)$/.test(extension)) return { tone: 'presentation', documentLabel: 'P' }
+  if (/^(txt|md|json|xml|yaml|yml)$/.test(extension) || mimeType.startsWith('text/')) return { tone: 'text' }
+  if (/^(zip|rar|7z|tar|gz|bz2|xz)$/.test(extension)) return { tone: 'archive' }
+  return { tone: 'generic' }
+}
+
+function LibraryCategoryIcon({ tone }: { tone: LibraryIconTone }) {
+  if (tone === 'folder') {
+    return (
+      <svg className="libraryStandaloneIcon" viewBox="0 0 40 40" aria-hidden="true">
+        <path className="libraryIconShade" d="M4 10a3 3 0 0 1 3-3h9l4 4h13a3 3 0 0 1 3 3v5H4Z" />
+        <path className="libraryIconMain" d="M4 15h32a2.5 2.5 0 0 1 2.4 3.2l-4 13.5A3.2 3.2 0 0 1 31.3 34H7a3 3 0 0 1-3-3Z" />
+        <path className="libraryIconLight" d="M8 18h25.8l-3.5 12H8Z" />
+      </svg>
+    )
+  }
+  if (tone === 'video') {
+    return (
+      <svg className="libraryStandaloneIcon" viewBox="0 0 40 40" aria-hidden="true">
+        <rect className="libraryIconMain" x="4" y="12" width="32" height="24" rx="5" />
+        <rect className="libraryIconShade" x="3" y="5" width="34" height="10" rx="4" />
+        <rect className="libraryIconLight" x="7" y="8" width="8" height="4" rx="2" />
+        <rect className="libraryIconLight" x="18" y="8" width="7" height="4" rx="2" />
+        <rect className="libraryIconLight" x="28" y="8" width="5" height="4" rx="2" />
+        <path className="libraryIconLight" d="m16 19 11 6.5L16 32Z" />
+      </svg>
+    )
+  }
+  if (tone === 'audio') {
+    return (
+      <svg className="libraryStandaloneIcon" viewBox="0 0 40 40" aria-hidden="true">
+        <rect className="libraryIconLight" x="3" y="16" width="4" height="8" rx="2" />
+        <rect className="libraryIconMain" x="8" y="12" width="4" height="16" rx="2" />
+        <rect className="libraryIconShade" x="13" y="7" width="4" height="26" rx="2" />
+        <rect className="libraryIconMain" x="18" y="3" width="4" height="34" rx="2" />
+        <rect className="libraryIconLight" x="23" y="8" width="4" height="24" rx="2" />
+        <rect className="libraryIconShade" x="28" y="12" width="4" height="16" rx="2" />
+        <rect className="libraryIconMain" x="33" y="16" width="4" height="8" rx="2" />
+      </svg>
+    )
+  }
+  if (tone === 'image') {
+    return (
+      <svg className="libraryStandaloneIcon" viewBox="0 0 40 40" aria-hidden="true">
+        <rect className="libraryIconMain" x="4" y="6" width="32" height="28" rx="5" />
+        <circle className="libraryIconLight" cx="13" cy="14" r="4" />
+        <path className="libraryIconShade" d="m7 30 9-10 6 6 5-7 7 11Z" />
+      </svg>
+    )
+  }
+  if (tone === 'link') {
+    return (
+      <svg className="libraryStandaloneIcon" viewBox="0 0 40 40" aria-hidden="true">
+        <path className="libraryIconShade" fillRule="evenodd" d="M11 11h4a9 9 0 1 1 0 18h-4a9 9 0 1 1 0-18Zm0 5a4 4 0 1 0 0 8h4a4 4 0 1 0 0-8Z" />
+        <path className="libraryIconMain" fillRule="evenodd" d="M25 11h4a9 9 0 1 1 0 18h-4a9 9 0 1 1 0-18Zm0 5a4 4 0 1 0 0 8h4a4 4 0 1 0 0-8Z" />
+        <rect className="libraryIconLight" x="15" y="17" width="10" height="6" rx="3" />
+      </svg>
+    )
+  }
+  if (tone === 'archive') {
+    return (
+      <svg className="libraryStandaloneIcon" viewBox="0 0 40 40" aria-hidden="true">
+        <rect className="libraryIconMain" x="5" y="3" width="30" height="34" rx="7" />
+        <path className="libraryIconShade" d="M12 3h16a7 7 0 0 1 7 7v3H5v-3a7 7 0 0 1 7-7Z" />
+        <rect className="libraryIconShade" x="18" y="3" width="4" height="23" rx="2" />
+        <rect className="libraryIconLight" x="15" y="7" width="3" height="3" rx="1" />
+        <rect className="libraryIconLight" x="22" y="11" width="3" height="3" rx="1" />
+        <rect className="libraryIconLight" x="15" y="15" width="3" height="3" rx="1" />
+        <rect className="libraryIconLight" x="22" y="19" width="3" height="3" rx="1" />
+        <path className="libraryIconLight" d="M15 24h10l2 5-7 6-7-6Z" />
+        <circle className="libraryIconShade" cx="20" cy="29" r="2" />
+      </svg>
+    )
+  }
+  if (tone === 'text') {
+    return (
+      <svg className="libraryStandaloneIcon" viewBox="0 0 40 40" aria-hidden="true">
+        <rect className="libraryIconMain" x="6" y="4" width="28" height="32" rx="5" />
+        <rect className="libraryIconLight" x="11" y="11" width="18" height="3" rx="1.5" />
+        <rect className="libraryIconLight" x="11" y="18" width="18" height="3" rx="1.5" />
+        <rect className="libraryIconShade" x="11" y="25" width="12" height="3" rx="1.5" />
+      </svg>
+    )
+  }
+  return (
+    <svg className="libraryStandaloneIcon" viewBox="0 0 40 40" aria-hidden="true">
+      <path className="libraryIconMain" d="M8 4h17l7 7v21a4 4 0 0 1-4 4H12a4 4 0 0 1-4-4Z" />
+      <path className="libraryIconLight" d="M25 4v8h7Z" />
+      <circle className="libraryIconShade" cx="14" cy="27" r="2" />
+      <circle className="libraryIconShade" cx="20" cy="27" r="2" />
+      <circle className="libraryIconShade" cx="26" cy="27" r="2" />
+    </svg>
+  )
 }
 
 function libraryStoragePayload(
@@ -894,6 +989,19 @@ export default function LibraryView({
     }
   }
 
+  async function revealItem(item: LibraryItem) {
+    try {
+      setBusy(true)
+      setMessage('')
+      if (!window.desktopBridge?.revealLibraryFile) throw new Error('请在 CrewFlow 桌面 App 中打开资料位置')
+      await window.desktopBridge.revealLibraryFile(libraryStoragePayload(item, dataMode, teamServerUrl, teamAccessKey))
+    } catch (error) {
+      setMessage(friendlyLibraryError(error, '资料位置打开失败'))
+    } finally {
+      setBusy(false)
+    }
+  }
+
   async function previewItem(item: LibraryItem) {
     const extension = (item.extension ?? item.fileName?.split('.').at(-1) ?? '').toLowerCase()
     if (item.mimeType === libraryFolderMimeType) {
@@ -1029,11 +1137,18 @@ export default function LibraryView({
 
         <div className="libraryResourceList">
           {visibleItems.map((item) => {
-            const Icon = itemIcon(item)
+            const { tone, documentLabel } = itemIcon(item)
             return (
               <article className="libraryResourceRow" key={item.id}>
                 <button className="libraryResourceMain" type="button" disabled={busy} onClick={() => void previewItem(item)}>
-                  <span className="libraryResourceIcon"><Icon size={21} /></span>
+                  <span className={`libraryResourceIcon ${tone}`}>
+                    {documentLabel ? (
+                      <span className={`libraryFormatBadge ${tone}${documentLabel.length > 1 ? ' compact' : ''}`} aria-hidden="true">
+                        <FileText className="libraryFormatBadgeSheet" />
+                        <b>{documentLabel}</b>
+                      </span>
+                    ) : <LibraryCategoryIcon tone={tone} />}
+                  </span>
                   <span className="libraryResourceText">
                     <strong>{item.title}</strong>
                     <span>{[item.note, item.fileName || item.url || item.path].filter(Boolean).join(' · ') || '无补充说明'}</span>
@@ -1044,7 +1159,7 @@ export default function LibraryView({
                   <small>{[formatSize(item.size), item.createdByName, formatLibraryDate(item.updatedAt)].filter(Boolean).join(' · ')}</small>
                 </div>
                 <div className="libraryResourceActions">
-                  <button type="button" title={item.mimeType === libraryFolderMimeType ? '打开文件夹' : '预览'} disabled={busy} onClick={() => void previewItem(item)}><ExternalLink size={17} /></button>
+                  <button type="button" title={item.sourceType === 'url' ? '在浏览器中打开' : '打开所在位置'} disabled={busy} onClick={() => void revealItem(item)}><ExternalLink size={17} /></button>
                   {canEditItem(item) && <button type="button" title="编辑" disabled={busy} onClick={() => openItemEdit(item)}><Pencil size={17} /></button>}
                   {canEditItem(item) && <button className="danger" type="button" title="删除" disabled={busy} onClick={() => void deleteItem(item)}><Trash2 size={17} /></button>}
                 </div>
