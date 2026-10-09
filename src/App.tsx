@@ -52,6 +52,8 @@ import './App.css'
 import userGuideMarkdown from '../docs/USER_GUIDE.zh-CN.md?raw'
 import LibraryView from './LibraryView'
 import UtilityToolsView from './UtilityToolsView'
+import CommercialModal from './CommercialModal'
+import { emptyCommercialRecord, workSummary, type CommercialRecord } from './commercial-model'
 import {
   normalizeLibraryCollection,
   normalizeLibraryItem,
@@ -409,6 +411,8 @@ type ProjectExportPayload = {
   calendarItems: Record<string, string | number>[]
   financeRecords: Record<string, string | number>[]
   financeLedger: Record<string, string | number>[]
+  workEvidence?: Record<string, string | number>[]
+  quoteRows?: Record<string, string | number>[]
 }
 
 type DesktopBridge = {
@@ -423,6 +427,7 @@ type DesktopBridge = {
   selectProjectFile: (title: string) => Promise<string | null>
   openProjectFile: (filePath: string) => Promise<boolean>
   exportProjects: (payload: ProjectExportPayload) => Promise<{ canceled: boolean; filePath?: string }>
+  exportQuote: (payload: Record<string, unknown>) => Promise<{ canceled: boolean; filePath?: string }>
   selectLibraryFile: (purpose: 'upload' | 'reference' | 'folder') => Promise<LibraryFileSelection | null>
   identifyLibraryPath: (filePath: string) => Promise<string>
   importLibraryFile: (payload: Record<string, unknown>) => Promise<Record<string, unknown>>
@@ -654,6 +659,7 @@ type AppData = {
   calendarItems: CalendarItem[]
   financeRecords: FinanceRecord[]
   financeLedger: FinanceLedger
+  commercialRecords?: CommercialRecord[]
   staffMembers?: StaffMember[]
   accounts?: Account[]
   holidayItems?: HolidayItem[]
@@ -668,6 +674,7 @@ type CustomerFieldLabels = {
   secondary: string
 }
 type WorkflowOptions = {
+  commercialEnabled?: boolean
   taskWorkTypes: string[]
   nodeStatuses: string[]
   workflowStages: string[]
@@ -683,8 +690,8 @@ type WorkflowOptionRename = {
   to: string
 }
 type AppDataLoader = () => Promise<AppData | null>
-type AppDataSaver = (data: Partial<AppData>) => Promise<boolean>
-type AppDataSliceKey = 'projects' | 'tasks' | 'calendarItems' | 'financeRecords' | 'staffMembers' | 'accounts' | 'holidayItems' | 'libraryCollections' | 'libraryItems' | 'workflowOptions'
+type AppDataSaver = (data: Partial<AppData>, expectedCommercial?: { id: string; value?: CommercialRecord }) => Promise<boolean>
+type AppDataSliceKey = 'projects' | 'tasks' | 'calendarItems' | 'financeRecords' | 'commercialRecords' | 'staffMembers' | 'accounts' | 'holidayItems' | 'libraryCollections' | 'libraryItems' | 'workflowOptions'
 type TeamDataArrayCollection = Exclude<AppDataSliceKey, 'workflowOptions'>
 type TeamDataCollection = AppDataSliceKey | 'financeLedger'
 type TeamDataMutation = {
@@ -807,6 +814,7 @@ const defaultStaffTagOptions = [
 ]
 const protectedStaffTags = ['项目负责人', '项目经理', '财务', '行政']
 const defaultWorkflowOptions: WorkflowOptions = {
+  commercialEnabled: false,
   taskWorkTypes: defaultTaskWorkOptions,
   nodeStatuses: defaultNodeStatusOptions,
   workflowStages: defaultWorkflowStageOptions,
@@ -1614,6 +1622,7 @@ const teamArrayCollections: TeamDataArrayCollection[] = [
   'tasks',
   'calendarItems',
   'financeRecords',
+  'commercialRecords',
   'staffMembers',
   'accounts',
   'holidayItems',
@@ -1633,6 +1642,7 @@ function normalizeTeamAppData(savedData: AppData): AppData {
     calendarItems: savedData.calendarItems ?? [],
     financeRecords: (savedData.financeRecords ?? []).map(normalizeFinanceRecord),
     financeLedger: savedData.financeLedger ?? {},
+    commercialRecords: savedData.commercialRecords ?? [],
     staffMembers: (savedData.staffMembers ?? []).map(normalizeStaffMember),
     accounts: mergeStoredAccounts(savedData.accounts ?? loginAccounts),
     holidayItems: (savedData.holidayItems ?? []).map(normalizeHolidayItem),
@@ -1907,6 +1917,13 @@ function App() {
   const [appCalendarItems, setAppCalendarItems] = useState<CalendarItem[]>(() => loadStoredCalendarItems())
   const [assistantCalendarDrafts, setAssistantCalendarDrafts] = useState<ProjectPlanPayload[]>([])
   const [appFinanceRecords, setAppFinanceRecords] = useState<FinanceRecord[]>(() => loadStoredFinanceRecords())
+  const [appCommercialRecords, setAppCommercialRecords] = useState<CommercialRecord[]>(() => {
+    try {
+      const records = JSON.parse(localStorage.getItem('crewflow-commercial-records') || '[]')
+      return Array.isArray(records) ? records : []
+    } catch { return [] }
+  })
+  const [commercialProjectId, setCommercialProjectId] = useState('')
   const [appStaffMembers, setAppStaffMembers] = useState<StaffMember[]>(() => loadStoredStaffMembers())
   const [appAccounts, setAppAccounts] = useState<Account[]>(() => loadStoredAccounts())
   const [appHolidayItems, setAppHolidayItems] = useState<HolidayItem[]>(() => loadStoredHolidayItems())
@@ -1997,6 +2014,7 @@ function App() {
       calendarItems: JSON.stringify(normalizedData.calendarItems),
       financeRecords: JSON.stringify(normalizedData.financeRecords),
       financeLedger: JSON.stringify(normalizedData.financeLedger),
+      commercialRecords: JSON.stringify(normalizedData.commercialRecords),
       staffMembers: JSON.stringify(normalizedData.staffMembers),
       accounts: JSON.stringify(normalizedData.accounts),
       holidayItems: JSON.stringify(normalizedData.holidayItems),
@@ -2220,6 +2238,7 @@ function App() {
       setAppTasks(normalizedData.tasks)
       setAppCalendarItems(calendarItems)
       setAppFinanceRecords(normalizedData.financeRecords)
+      setAppCommercialRecords(normalizedData.commercialRecords ?? [])
       setAppStaffMembers(normalizedData.staffMembers ?? [])
       setAppAccounts(normalizedData.accounts ?? loginAccounts)
       setAppHolidayItems(normalizedData.holidayItems ?? [])
@@ -2238,7 +2257,7 @@ function App() {
     return window.desktopBridge?.loadAppData?.() ?? null
   }, [dataMode, rememberRemoteSlices, teamAccessKey, teamServerUrl])
   const saveCurrentAppData = useCallback<AppDataSaver>(
-    async (data) => {
+    async (data, expectedCommercial) => {
       if (dataMode === 'team') {
         teamSavePendingRef.current += 1
 
@@ -2247,8 +2266,17 @@ function App() {
             // Effects can update several data slices in one user action. Serialize them so every
             // request uses the revision returned by the preceding local save.
             const baseline = remoteTeamDataRef.current
+            if (expectedCommercial && JSON.stringify(baseline?.commercialRecords?.find((item) => item.id === expectedCommercial.id)) !== JSON.stringify(expectedCommercial.value)) {
+              setAppCommercialRecords(baseline?.commercialRecords ?? [])
+              throw new Error('此项目的明细已被其他成员更新，请重新载入后编辑。')
+            }
+            const requestedRecord = expectedCommercial && data.commercialRecords?.find((item) => item.id === expectedCommercial.id)
+            const patch = expectedCommercial && baseline ? {
+              ...data,
+              commercialRecords: [...(baseline.commercialRecords ?? []).filter((item) => item.id !== expectedCommercial.id), ...(requestedRecord ? [requestedRecord] : [])],
+            } : data
             if (teamIncrementalCapabilityRef.current !== 'legacy' && baseline) {
-              const mutations = createTeamDataMutations(data, baseline)
+              const mutations = createTeamDataMutations(patch, baseline)
               if (mutations.length === 0) {
                 setTeamConnectionStatus('connected')
                 setTeamConnectionMessage('团队数据已同步')
@@ -2308,7 +2336,7 @@ function App() {
 
             setTeamConnectionStatus('checking')
             setTeamConnectionMessage('正在保存团队数据')
-            const savedData = await saveLegacyTeamAppData(teamServerUrl, teamAccessKey, data, teamDataRevisionRef.current)
+            const savedData = await saveLegacyTeamAppData(teamServerUrl, teamAccessKey, patch, teamDataRevisionRef.current)
             rememberRemoteSlices(savedData)
             rememberConnectedTeamHost()
             setTeamConnectionStatus('connected')
@@ -2360,6 +2388,7 @@ function App() {
       calendarItems: appCalendarItems,
       financeRecords: appFinanceRecords,
       financeLedger: {},
+      commercialRecords: appCommercialRecords,
       staffMembers: appStaffMembers,
       accounts: appAccounts,
       holidayItems: appHolidayItems,
@@ -2367,7 +2396,7 @@ function App() {
       libraryItems: appLibraryItems,
       workflowOptions: appWorkflowOptions,
     }),
-    [appAccounts, appCalendarItems, appFinanceRecords, appHolidayItems, appLibraryCollections, appLibraryItems, appProjects, appStaffMembers, appTasks, appWorkflowOptions],
+    [appAccounts, appCalendarItems, appFinanceRecords, appCommercialRecords, appHolidayItems, appLibraryCollections, appLibraryItems, appProjects, appStaffMembers, appTasks, appWorkflowOptions],
   )
   const currentAppDataSnapshotRef = useRef(currentAppDataSnapshot)
   currentAppDataSnapshotRef.current = currentAppDataSnapshot
@@ -3151,6 +3180,37 @@ function App() {
     return projectEditScope(project) === 'full'
   }
 
+  function canViewCommercial(project: Project) {
+    return Boolean(appWorkflowOptions.commercialEnabled && (role === 'controller' || role === 'admin' || role === 'finance' || (role === 'manager' && isProjectLead(project, currentUser))))
+  }
+
+  async function saveCommercialRecord(next: CommercialRecord, previous?: CommercialRecord) {
+    const project = appProjects.find((item) => item.id === next.id)
+    if (!project || !canViewCommercial(project) || !dataSourceReady) throw new Error('当前无法保存此项目的明细')
+    const canWork = canEditProject(project)
+    const canQuote = role === 'controller' || role === 'finance'
+    const before = previous ?? emptyCommercialRecord(project.id)
+    if (!canWork && JSON.stringify(next.statement) !== JSON.stringify(before.statement)) throw new Error('只有项目负责人可以修改工作量依据')
+    if (!canQuote && (JSON.stringify(next.draft) !== JSON.stringify(before.draft) || JSON.stringify(next.versions) !== JSON.stringify(before.versions))) throw new Error('只有总控和财务可以修改报价')
+    if (JSON.stringify(next.versions.slice(0, before.versions.length)) !== JSON.stringify(before.versions)) throw new Error('已确认报价版本不能覆盖')
+    const latest = await loadCurrentAppData()
+    if (dataMode === 'team' && !Array.isArray(latest?.commercialRecords)) throw new Error('请先更新团队主机，以支持工作量与报价')
+    if (latest && !latest.projects.some((item) => item.id === project.id)) throw new Error('该项目已被移除，请重新同步')
+    const records = latest?.commercialRecords ?? appCommercialRecords
+    if (JSON.stringify(records.find((item) => item.id === next.id)) !== JSON.stringify(previous)) {
+      setAppCommercialRecords(records)
+      throw new Error('此项目的明细已更新，请重新载入后编辑。')
+    }
+    const updated = [...records.filter((item) => item.id !== next.id), next]
+    if (window.desktopBridge || dataMode === 'team') {
+      const saved = await saveCurrentAppData({ version: projectDataStorageVersion, commercialRecords: updated }, { id: next.id, value: previous })
+      if (!saved) throw new Error('保存未完成，请重新载入后重试')
+    }
+    const savedRecords = dataMode === 'team' ? remoteTeamDataRef.current?.commercialRecords ?? updated : updated
+    localStorage.setItem('crewflow-commercial-records', JSON.stringify(savedRecords))
+    setAppCommercialRecords(savedRecords)
+  }
+
   function closeWelcomeGuide() {
     setShowWelcomeGuide(false)
   }
@@ -3453,6 +3513,7 @@ function App() {
 
   function handleUpdateWorkflowOptions(nextOptions: WorkflowOptions, renames: WorkflowOptionRename[] = []) {
     const normalizedOptions = normalizeWorkflowOptions(nextOptions)
+    if (role !== 'controller') normalizedOptions.commercialEnabled = appWorkflowOptions.commercialEnabled
     const taskWorkRename = new Map(
       renames.filter((item) => item.category === 'taskWorkTypes' && item.from !== item.to).map((item) => [item.from, item.to]),
     )
@@ -3757,10 +3818,39 @@ function App() {
     return Boolean(currentAccount?.id && project.creatorAccountId === currentAccount.id)
   }
 
-  function handleDeleteProject(project: Project) {
+  async function handleDeleteProject(project: Project) {
     if (!canDeleteProject(project)) return
     const confirmed = window.confirm(`确认删除项目“${project.name}”吗？相关任务、日历和财务记录也会一起删除。`)
     if (!confirmed) return
+
+    if (appCommercialRecords.some((item) => item.id === project.id)) {
+      try {
+        const latest = await loadCurrentAppData()
+        const records = latest?.commercialRecords ?? appCommercialRecords
+        const nextRecords = records.filter((item) => item.id !== project.id)
+        const patch = {
+          version: projectDataStorageVersion,
+          projects: (latest?.projects ?? appProjects).filter((item) => item.id !== project.id),
+          tasks: (latest?.tasks ?? appTasks).filter((item) => item.projectId !== project.id),
+          calendarItems: (latest?.calendarItems ?? appCalendarItems).filter((item) => item.projectId !== project.id),
+          financeRecords: (latest?.financeRecords ?? appFinanceRecords).filter((item) => item.projectId !== project.id),
+          commercialRecords: nextRecords,
+        }
+        if ((window.desktopBridge || dataMode === 'team') && !await saveCurrentAppData(patch, { id: project.id, value: appCommercialRecords.find((item) => item.id === project.id) })) throw new Error('删除未完成，请重新同步后重试')
+        localStorage.setItem('crewflow-commercial-records', JSON.stringify(nextRecords))
+        setAppCommercialRecords(nextRecords)
+        setAppProjects(patch.projects)
+        setAppTasks(patch.tasks)
+        setAppCalendarItems(patch.calendarItems)
+        setAppFinanceRecords(patch.financeRecords)
+        setSelectedProjectId((current) => current === project.id ? '' : current)
+        setEditingProject(null)
+        return
+      } catch (error) {
+        window.alert(error instanceof Error ? error.message : '删除失败')
+        return
+      }
+    }
 
     setAppProjects((current) => current.filter((item) => item.id !== project.id))
     setAppTasks((current) => current.filter((task) => task.projectId !== project.id))
@@ -4520,6 +4610,8 @@ function App() {
             onUpdateTaskStatus={handleUpdateTaskStatus}
             onUpdateTask={handleUpdateTask}
             onOpenHandoff={setHandoffProject}
+            onOpenCommercial={(project) => setCommercialProjectId(project.id)}
+            canViewCommercial={canViewCommercial}
           />
         )}
         {section === 'tasks' && <Tasks tasks={visibleTasks} mode={role === 'controller' ? 'global' : 'personal'} onUpdateTaskStatus={role === 'controller' ? undefined : handleUpdateTaskStatus} />}
@@ -4596,6 +4688,9 @@ function App() {
             canEditArchivedProject={canEditProject}
             canEditAllArchivedProjects={canEditArchivedProjects}
             onEditProject={openProjectEditor}
+            onOpenCommercial={(project) => setCommercialProjectId(project.id)}
+            canViewCommercial={canViewCommercial}
+            commercialRecords={appCommercialRecords}
           />
         )}
         {section === 'finance' && (
@@ -4608,6 +4703,9 @@ function App() {
             loadAppData={loadCurrentAppData}
             saveAppData={saveCurrentAppData}
             onRecordsChange={setAppFinanceRecords}
+            commercialEnabled={Boolean(appWorkflowOptions.commercialEnabled)}
+            commercialRecords={appCommercialRecords}
+            onOpenCommercial={(project) => setCommercialProjectId(project.id)}
           />
         )}
         </main>
@@ -4829,11 +4927,26 @@ function App() {
       {showWorkflowOptionsModal && (
         <WorkflowOptionsModal
           options={appWorkflowOptions}
+          canManageCommercial={role === 'controller'}
           onClose={() => setShowWorkflowOptionsModal(false)}
           onSave={handleUpdateWorkflowOptions}
           onReset={() => handleUpdateWorkflowOptions(defaultWorkflowOptions)}
         />
       )}
+      {commercialProjectId && (() => {
+        const project = appProjects.find((item) => item.id === commercialProjectId)
+        return project && canViewCommercial(project) ? <CommercialModal
+          key={`${dataSourceKey}:${currentAccountId}:${project.id}`}
+          project={project}
+          tasks={appTasks.filter((task) => task.projectId === project.id)}
+          record={appCommercialRecords.find((item) => item.id === project.id)}
+          canEditWork={canEditProject(project)}
+          canQuote={role === 'controller' || role === 'finance'}
+          actor={presenceAccountName}
+          onSave={saveCommercialRecord}
+          onClose={() => setCommercialProjectId('')}
+        /> : null
+      })()}
       {showUpdateDialog && (
         <VersionUpdateModal
           version={appVersion}
@@ -5039,6 +5152,14 @@ function ProjectExportModal({
             note: entry.note || '',
             materialFile: entry.materialFile || '',
           })))
+        }),
+        workEvidence: (savedData?.commercialRecords ?? []).filter((record) => selectedProjectIds.has(record.id)).flatMap((record) => {
+          const sources = [{ label: '当前依据', statement: record.statement }, ...record.versions.map((quote, index) => ({ label: `报价第${index + 1}版依据`, statement: quote.source }))]
+          return sources.flatMap(({ label, statement }) => statement.lines.map((line) => ({ ...line, projectId: record.id, projectName: selectedProjectById.get(record.id)?.name || '', version: label, revision: statement.revision, status: statement.status === 'confirmed' ? '已确认' : '待确认', confirmedBy: statement.confirmedBy, confirmedAt: statement.confirmedAt, quantity: line.quantity ?? '', days: line.days ?? '', cost: line.cost ?? '' })))
+        }),
+        quoteRows: (savedData?.commercialRecords ?? []).filter((record) => selectedProjectIds.has(record.id)).flatMap((record) => {
+          const quotes = [...record.versions.map((quote, index) => ({ label: `第${index + 1}版`, quote })), ...(record.draft ? [{ label: '草稿', quote: record.draft }] : [])]
+          return quotes.flatMap(({ label, quote }) => quote.lines.map((line) => ({ ...line, projectId: record.id, projectName: selectedProjectById.get(record.id)?.name || '', version: label, title: quote.title, customer: quote.customer, issuer: quote.issuer, quoteNote: quote.note, sourceRevision: quote.sourceRevision, sourceIds: line.sourceIds.join('、'), confirmedBy: quote.confirmedBy, confirmedAt: quote.confirmedAt, quantity: line.quantity ?? '', days: line.days ?? '', price: line.price ?? '' })))
         }),
       }
       const result = await bridge(exportPayload)
@@ -6426,11 +6547,13 @@ function DataPathRow({
 
 function WorkflowOptionsModal({
   options,
+  canManageCommercial,
   onClose,
   onSave,
   onReset,
 }: {
   options: WorkflowOptions
+  canManageCommercial: boolean
   onClose: () => void
   onSave: (options: WorkflowOptions, renames: WorkflowOptionRename[]) => void
   onReset: () => void
@@ -6508,6 +6631,10 @@ function WorkflowOptionsModal({
           </button>
         </header>
         <div className="workflowOptionsBody">
+          {canManageCommercial && <label className="commercialFeatureToggle">
+            <input type="checkbox" checked={Boolean(draft.commercialEnabled)} onChange={(event) => setDraft((current) => ({ ...current, commercialEnabled: event.target.checked }))} />
+            <span>工作量与报价</span><small>项目明细、完工补录与报价导出</small>
+          </label>}
           <WorkflowOptionSection
             title="项目类型"
             note="用于新建项目、项目筛选和项目编辑。初始为空，可按公司业务自行添加。"
@@ -7019,6 +7146,8 @@ function Projects({
   onUpdateTaskStatus,
   onUpdateTask,
   onOpenHandoff,
+  onOpenCommercial,
+  canViewCommercial,
 }: {
   projects: Project[]
   allProjects: Project[]
@@ -7036,6 +7165,8 @@ function Projects({
   onUpdateTaskStatus: (taskId: string, status: TaskStatus) => void
   onUpdateTask: (task: Task) => void
   onOpenHandoff: (handoff: { project: Project; personName: string }) => void
+  onOpenCommercial: (project: Project) => void
+  canViewCommercial: (project: Project) => boolean
 }) {
   const selectedProjectTasks = selectedProject ? allTasks.filter((task) => task.projectId === selectedProject.id) : []
   const departedStaff = useMemo(() => staffMembers.filter((member) => member.status === '离职'), [staffMembers])
@@ -7147,6 +7278,7 @@ function Projects({
                 编辑项目
               </button>
             )}
+            {canViewCommercial(selectedProject) && <button type="button" onClick={() => onOpenCommercial(selectedProject)}>工作量与费用明细</button>}
             {canDeleteSelectedProject && (
               <button className="dangerButton" type="button" onClick={() => onDeleteProject(selectedProject)}>
                 删除项目
@@ -7360,6 +7492,9 @@ function ArchiveView({
   canEditArchivedProject,
   canEditAllArchivedProjects,
   onEditProject,
+  onOpenCommercial,
+  canViewCommercial,
+  commercialRecords,
 }: {
   projects: Project[]
   allTasks: Task[]
@@ -7367,6 +7502,9 @@ function ArchiveView({
   canEditArchivedProject: (project: Project) => boolean
   canEditAllArchivedProjects: boolean
   onEditProject: (project: Project) => void
+  onOpenCommercial: (project: Project) => void
+  canViewCommercial: (project: Project) => boolean
+  commercialRecords: CommercialRecord[]
 }) {
   return (
     <div className="contentGrid">
@@ -7402,8 +7540,10 @@ function ArchiveView({
                   <InfoLine label="任务完成" value={`${doneTasks}/${projectTasks.length}`} />
                   <InfoLine label="交付时间" value={project.due} />
                   <InfoLine label="财务状态" value={financeState.label} />
+                  {canViewCommercial(project) && <InfoLine label="工作量依据" value={commercialRecords.find((item) => item.id === project.id)?.statement.status === 'confirmed' ? '已确认' : commercialRecords.some((item) => item.id === project.id) ? '待确认' : '待补充'} />}
                 </div>
                 <div className="archiveActions">
+                  {canViewCommercial(project) && <button type="button" onClick={() => onOpenCommercial(project)}>工作量与费用明细</button>}
                   {projectFolderPaths(project).map((folderPath, index) => (
                     <button type="button" key={folderPath} onClick={() => openProjectPath(folderPath)} title={folderPath}>
                       {index === 0 ? '打开主路径' : `打开路径 ${index + 1}`}
@@ -10341,6 +10481,15 @@ function TeamLoad({
   )
 }
 
+type FinanceProjectTaskPopoverState = {
+  projectId: string
+  left: number
+  top: number
+  phase: 'visible' | 'leaving'
+}
+
+const financeProjectTaskPopoverExitMs = 180
+
 function FinanceView({
   role,
   projects,
@@ -10350,6 +10499,9 @@ function FinanceView({
   loadAppData,
   saveAppData,
   onRecordsChange,
+  commercialEnabled,
+  commercialRecords,
+  onOpenCommercial,
 }: {
   role: Role
   projects: Project[]
@@ -10359,6 +10511,9 @@ function FinanceView({
   loadAppData: AppDataLoader
   saveAppData: AppDataSaver
   onRecordsChange?: (records: FinanceRecord[]) => void
+  commercialEnabled: boolean
+  commercialRecords: CommercialRecord[]
+  onOpenCommercial: (project: Project) => void
 }) {
   const [activeFinanceView, setActiveFinanceView] = useState<'settlement' | 'participation'>('settlement')
   const [selectedFinanceProjectId, setSelectedFinanceProjectId] = useState(projects[0]?.id ?? '')
@@ -10367,6 +10522,10 @@ function FinanceView({
   const [activeAction, setActiveAction] = useState<FinanceAction | null>(null)
   const [editingEntry, setEditingEntry] = useState<{ action: FinanceAction; entry: FinanceLedgerEntry } | null>(null)
   const [financeReady, setFinanceReady] = useState(false)
+  const [projectTaskPopover, setProjectTaskPopover] = useState<FinanceProjectTaskPopoverState | null>(null)
+  const projectTaskPopoverAnchorRef = useRef<HTMLElement | null>(null)
+  const projectTaskPopoverHideTimerRef = useRef<number | null>(null)
+  const projectTaskPopoverInteractionRef = useRef(0)
   const syncedRecords = useMemo(() => {
     const projectIds = new Set(projects.map((project) => project.id))
     return records.filter((record) => projectIds.has(record.projectId))
@@ -10386,6 +10545,26 @@ function FinanceView({
   const selectedProject = selectedRecord ? projects.find((project) => project.id === selectedRecord.projectId) ?? null : null
   const selectedLedger = selectedRecord ? ledger[selectedRecord.projectId] ?? emptyFinanceLedger() : emptyFinanceLedger()
   const showParticipationView = role === 'controller' && activeFinanceView === 'participation'
+  const projectTaskPopoverProject = projectTaskPopover
+    ? projects.find((project) => project.id === projectTaskPopover.projectId) ?? null
+    : null
+  const popoverStatement = commercialRecords.find((item) => item.id === projectTaskPopover?.projectId)?.statement
+  const projectTaskPopoverItems = useMemo(() => {
+    if (!projectTaskPopoverProject) return []
+
+    const groupedTasks = new Map<string, number>()
+    tasks
+      .filter((task) => task.projectId === projectTaskPopoverProject.id)
+      .forEach((task) => {
+        const label = monthlyParticipationTaskLabel(task, projectTaskPopoverProject)
+        groupedTasks.set(label, (groupedTasks.get(label) ?? 0) + 1)
+      })
+
+    return Array.from(groupedTasks, ([label, count]) => ({ label, count }))
+  }, [projectTaskPopoverProject, tasks])
+  const projectTaskPopoverTaskCount = projectTaskPopoverProject
+    ? tasks.filter((task) => task.projectId === projectTaskPopoverProject.id).length
+    : 0
 
   useEffect(() => {
     if (!financeReady) return
@@ -10445,6 +10624,103 @@ function FinanceView({
       financeLedger: ledger,
     }).catch(() => undefined)
   }, [financeReady, ledger, saveAppData])
+
+  useEffect(() => {
+    const closeProjectTaskPopover = () => hideProjectTaskPopover()
+    const closeProjectTaskPopoverOnScroll = (event: Event) => {
+      const target = event.target
+      if (target instanceof Element && target.closest('.financeProjectTaskPopover')) return
+      hideProjectTaskPopover()
+    }
+    const closeProjectTaskPopoverOutside = (event: PointerEvent) => {
+      const target = event.target
+      if (target instanceof Element && target.closest('.settlementRow, .financeProjectTaskPopover')) return
+      hideProjectTaskPopover()
+    }
+    const closeProjectTaskPopoverOnKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') hideProjectTaskPopover()
+    }
+
+    window.addEventListener('resize', closeProjectTaskPopover)
+    document.addEventListener('scroll', closeProjectTaskPopoverOnScroll, true)
+    document.addEventListener('pointerdown', closeProjectTaskPopoverOutside)
+    window.addEventListener('keydown', closeProjectTaskPopoverOnKeyDown)
+    return () => {
+      window.removeEventListener('resize', closeProjectTaskPopover)
+      document.removeEventListener('scroll', closeProjectTaskPopoverOnScroll, true)
+      document.removeEventListener('pointerdown', closeProjectTaskPopoverOutside)
+      window.removeEventListener('keydown', closeProjectTaskPopoverOnKeyDown)
+      clearProjectTaskPopoverTimer()
+      projectTaskPopoverAnchorRef.current = null
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!showParticipationView) return
+    clearProjectTaskPopoverTimer()
+    projectTaskPopoverInteractionRef.current += 1
+    projectTaskPopoverAnchorRef.current = null
+    setProjectTaskPopover(null)
+  }, [showParticipationView])
+
+  function clearProjectTaskPopoverTimer() {
+    if (projectTaskPopoverHideTimerRef.current !== null) {
+      window.clearTimeout(projectTaskPopoverHideTimerRef.current)
+      projectTaskPopoverHideTimerRef.current = null
+    }
+  }
+
+  function projectTaskPopoverPosition(projectRow: HTMLElement) {
+    const viewportPadding = 16
+    const popoverWidth = Math.min(328, window.innerWidth - viewportPadding * 2)
+    const estimatedPopoverHeight = commercialEnabled ? 290 : 190
+    const rowBounds = projectRow.getBoundingClientRect()
+    const preferredLeft = rowBounds.right + 12
+    const preferredTop = rowBounds.top + (rowBounds.height - estimatedPopoverHeight) / 2
+    const maximumLeft = Math.max(viewportPadding, window.innerWidth - popoverWidth - viewportPadding)
+    const maximumTop = Math.max(viewportPadding, window.innerHeight - estimatedPopoverHeight - viewportPadding)
+
+    return {
+      left: Math.min(maximumLeft, Math.max(viewportPadding, preferredLeft)),
+      top: Math.min(maximumTop, Math.max(viewportPadding, preferredTop)),
+    }
+  }
+
+  function showProjectTaskPopover(projectId: string, projectRow: HTMLElement) {
+    clearProjectTaskPopoverTimer()
+    projectTaskPopoverInteractionRef.current += 1
+    projectTaskPopoverAnchorRef.current = projectRow
+    setProjectTaskPopover({ projectId, ...projectTaskPopoverPosition(projectRow), phase: 'visible' })
+  }
+
+  function hideProjectTaskPopover() {
+    if (!projectTaskPopoverAnchorRef.current) return
+    clearProjectTaskPopoverTimer()
+    const interaction = projectTaskPopoverInteractionRef.current + 1
+    projectTaskPopoverInteractionRef.current = interaction
+    projectTaskPopoverAnchorRef.current = null
+    setProjectTaskPopover((current) => {
+      if (!current) return current
+      return { ...current, phase: 'leaving' }
+    })
+    projectTaskPopoverHideTimerRef.current = window.setTimeout(() => {
+      if (projectTaskPopoverInteractionRef.current !== interaction) return
+      setProjectTaskPopover((current) => {
+        if (!current || current.phase !== 'leaving') return current
+        return null
+      })
+      projectTaskPopoverHideTimerRef.current = null
+    }, financeProjectTaskPopoverExitMs)
+  }
+
+  function toggleProjectTaskPopover(projectId: string, projectRow: HTMLElement) {
+    if (projectTaskPopover?.projectId === projectId && projectTaskPopover.phase === 'visible') {
+      hideProjectTaskPopover()
+      return
+    }
+
+    showProjectTaskPopover(projectId, projectRow)
+  }
 
   function openFinanceAction(action: FinanceAction) {
     if (!selectedRecord) return
@@ -10577,7 +10853,13 @@ function FinanceView({
                     key={record.projectId}
                     className={`settlementRow ${selectedFinanceProjectId === record.projectId ? 'active' : ''}`}
                     type="button"
-                    onClick={() => setSelectedFinanceProjectId(record.projectId)}
+                    title="点击查看项目任务"
+                    aria-expanded={projectTaskPopover?.projectId === record.projectId && projectTaskPopover.phase === 'visible'}
+                    aria-describedby={projectTaskPopover?.projectId === record.projectId ? `finance-project-tasks-${record.projectId}` : undefined}
+                    onClick={(event) => {
+                      setSelectedFinanceProjectId(record.projectId)
+                      toggleProjectTaskPopover(record.projectId, event.currentTarget)
+                    }}
                   >
                     <div>
                       <strong>{project?.name}</strong>
@@ -10607,12 +10889,47 @@ function FinanceView({
             </div>
           </section>
 
+          {projectTaskPopover && projectTaskPopoverProject && createPortal(
+            <div
+              key={projectTaskPopover.projectId}
+              className={`monthlyProjectOverviewPopover financeProjectTaskPopover ${projectTaskPopover.phase === 'leaving' ? 'isLeaving' : ''}`}
+              id={`finance-project-tasks-${projectTaskPopoverProject.id}`}
+              role="tooltip"
+              style={{ left: projectTaskPopover.left, top: projectTaskPopover.top }}
+            >
+              <strong className="monthlyProjectOverviewName" title={projectTaskPopoverProject.name}>
+                {projectTaskPopoverProject.name || '项目名称未填写'}
+              </strong>
+              <span className="monthlyProjectOverviewMeta">
+                {commercialEnabled ? `工作量依据 · ${popoverStatement?.status === 'confirmed' ? '已确认' : popoverStatement?.lines.length ? '待确认' : '待补充'}` : `共 ${projectTaskPopoverTaskCount} 项任务 · ${projectTaskPopoverItems.length} 种工作`}
+              </span>
+              <div className="financeProjectTaskSection">
+                <span>{commercialEnabled ? '工作量明细' : '项目任务'}</span>
+                {commercialEnabled ? <div className="financeProjectTaskList">{popoverStatement?.lines.length ? popoverStatement.lines.map((line) => <span className="financeProjectTaskItem" key={line.id}>{workSummary(line)}</span>) : <span className="financeProjectTaskEmpty">尚未填写工作量依据</span>}</div> : projectTaskPopoverItems.length > 0 ? (
+                  <div className="financeProjectTaskList">
+                    {projectTaskPopoverItems.map((item) => (
+                      <span className="financeProjectTaskItem" key={item.label}>
+                        {item.label}
+                        {item.count > 1 && <small>×{item.count}</small>}
+                      </span>
+                    ))}
+                  </div>
+                ) : (
+                  <span className="financeProjectTaskEmpty">暂无任务</span>
+                )}
+              </div>
+              {commercialEnabled && <button className="commercialPopoverAction" onClick={() => { hideProjectTaskPopover(); onOpenCommercial(projectTaskPopoverProject) }}>查看依据与报价</button>}
+            </div>,
+            document.body,
+          )}
+
           <section className="panel span12 financeDetailPanel">
             <div className="panelHeader">
               <div>
                 <h2>项目商务详情</h2>
                 <p>点击左侧项目后查看具体商务情况</p>
               </div>
+              {commercialEnabled && selectedProject && <div className="panelActions"><button type="button" onClick={() => onOpenCommercial(selectedProject)}>工作量与报价</button></div>}
             </div>
             {selectedProject && selectedRecord ? (
               <FinanceProjectDetail
@@ -13242,6 +13559,10 @@ function assistantReply(
     .sort((left, right) => right.name.length - left.name.length)[0]
   const canAnswerLocally = Boolean(mentionedProject) || /新建项目|创建项目|立项|录入项目|导出项目|项目导出|导出表格|款|开票|财务|交付|日程|撞期|任务|项目|风险|反馈|优先|今天|接下来|下一步|安排|进度|状态|延期|归档|负责人|项目经理|人员负载|工作量|拍摄|素材|收款|合同|资料库|资料集|上传文稿|引用路径|共享路径|共享文件|文件夹|视频|在线链接|表格预览|实用工具|格式转换|转 PDF|转 Word|PDF 合并|合并 PDF|PDF 拆分|拆分 PDF|PDF 压缩|压缩 PDF|怎么用|如何使用|使用说明|单人模式|团队模式|团队服务|发现主机|自动发现|请求连接|连接申请|局域网|访问密钥|VPN|数据保存|权限|账号管理|人员管理|选项管理|软件更新|检查更新|模型|API Key|API 地址|Ollama|能做什么|会什么/.test(prompt)
 
+  if (/报价单|报价依据|工作量明细|费用明细|工作量与报价/.test(prompt)) {
+    return '总控可在选项管理开启“工作量与报价”。项目负责人在项目详情或项目归档中补充工作量与费用明细，确认依据后，财务可在财务结算中生成报价草稿，调整分类、数量、含税单价并保存版本、导出 Excel。已确认报价不会随任务变化自动改写；对外报价不包含内部成本。助理不会代填或确认财务金额。'
+  }
+
   if (/智障|傻|乱答|不对|驴唇不对马嘴/.test(prompt)) {
     return [
       '这个问题我现在答得不够准。',
@@ -14173,6 +14494,7 @@ function normalizeWorkflowOptions(options: Partial<WorkflowOptions> | undefined)
   const primaryCustomerLabel = options?.customerFieldLabels?.primary?.trim()
   const secondaryCustomerLabel = options?.customerFieldLabels?.secondary?.trim()
   return {
+    commercialEnabled: options?.commercialEnabled === true,
     taskWorkTypes: normalizeWorkflowOptionList('taskWorkTypes', options?.taskWorkTypes ?? []),
     nodeStatuses: normalizeWorkflowOptionList('nodeStatuses', options?.nodeStatuses ?? []),
     workflowStages: normalizeWorkflowOptionList('workflowStages', options?.workflowStages ?? []),

@@ -1,0 +1,57 @@
+.commercialModal { width: min(1180px, calc(100vw - 48px)); max-height: calc(100vh - 48px); display: flex; flex-direction: column; }
+.commercialModal > header h2 { font-size: 21px; }
+.commercialTabs, .commercialToolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.commercialTabs { padding: 14px 22px; border-bottom: 1px solid rgba(180,202,216,.14); }
+.commercialTabs > span { margin-left: auto; color: #91e9ef; font-size: 12px; }
+.commercialModal button { cursor: pointer; }
+.commercialTabs button, .commercialToolbar button, .commercialLineHeading button, .commercialRowActions button, .commercialNotice button { display: inline-flex; align-items: center; justify-content: center; gap: 6px; border: 1px solid rgba(128,233,247,.22); border-radius: 8px; padding: 7px 11px; background: rgba(129,237,247,.06); color: #94e5ed; }
+.commercialTabs button.active { background: rgba(129,237,247,.15); border-color: rgba(128,233,247,.5); }
+.commercialModal button:disabled { opacity: .4; cursor: default; }
+.commercialBody { overflow: auto; padding: 20px 22px; min-height: 0; }
+.commercialModal fieldset { min-width: 0; padding: 0; margin: 0; border: 0; }
+.commercialModal label { display: grid; gap: 6px; color: rgba(210,222,235,.72); font-size: 12px; }
+.commercialModal input:not([type=checkbox]), .commercialModal select, .commercialModal textarea { box-sizing: border-box; width: 100%; min-width: 0; min-height: 36px; border: 1px solid rgba(180,202,216,.2); border-radius: 7px; background: #1a2533; color: #f7fbff; padding: 7px 9px; font: inherit; color-scheme: dark; }
+.commercialModal input[type=checkbox] { accent-color: #80e9f7; }
+.commercialModal select option { background: #1a2533; color: #f7fbff; }
+.commercialModal textarea { resize: vertical; min-height: 65px; }
+.commercialToolbar { margin-bottom: 15px; }
+.commercialToolbar > select { width: auto; max-width: 260px; }
+.commercialToolbar label { display: flex; align-items: center; gap: 12px; }
+.commercialToolbar label select { width: 145px; }
+.commercialToolbar > span, .commercialMeta { font-size: 11px; color: rgba(210,222,235,.6); }
+.commercialLines { display: grid; gap: 14px; }
+.commercialWorkLine { padding: 14px; border: 1px solid rgba(180,202,216,.16); border-radius: 12px; background: rgba(255,255,255,.025); }
+.commercialLineHeading { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
+.commercialLineHeading strong { font-size: 14px; }
+.commercialFields { display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); gap: 12px; }
+.commercialWide { grid-column: span 2; }
+.commercialEmpty { text-align: center; color: rgba(210,222,235,.5); padding: 64px 12px; }
+.commercialNotice { color: #efcd87; font-size: 12px; padding: 10px 12px; border-radius: 8px; background: rgba(244,221,143,.06); }
+.commercialNotice button { margin-left: 12px; }
+.commercialQuoteFields > .commercialFields { margin-bottom: 16px; }
+.commercialQuoteTable { overflow: auto; margin-bottom: 14px; }
+.commercialQuoteTable table { border-collapse: collapse; width: 100%; min-width: 1000px; }
+.commercialQuoteTable th { color: #95d6df; font-size: 11px; text-align: left; padding: 8px 5px; }
+.commercialQuoteTable td { border-top: 1px solid rgba(180,202,216,.14); padding: 9px 5px; font-size: 12px; vertical-align: top; }
+.commercialQuoteTable td:nth-child(2) { min-width: 160px; }
+.commercialQuoteTable td:nth-child(3), .commercialQuoteTable td:nth-child(4) { width: 65px; }
+.commercialQuoteTable td:nth-child(5) { width: 74px; }
+.commercialQuoteTable td:nth-child(6) { width: 90px; }
+.commercialQuoteTable td:nth-child(7) { min-width: 75px; }
+.commercialQuoteTable td:nth-child(8) { min-width: 150px; }
+.commercialQuoteTable td input + input { margin-top: 5px; }
+.commercialQuoteTable small { display: block; color: rgba(210,222,235,.5); margin-top: 5px; }
+.commercialRowActions { display: grid; grid-template-columns: repeat(2,26px); gap: 4px; }
+.commercialRowActions button { padding: 5px; }
+.commercialTotals { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 14px; font-size: 12px; padding: 18px 0; }
+.commercialTotals strong { color: #96eced; }
+.commercialSource { color: rgba(210,222,235,.64); font-size: 12px; }
+.commercialSource summary { cursor: pointer; }
+.commercialModal > footer { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.commercialModal > footer button.primary { border-color: rgba(130,230,241,.4); color: #10202a; background: linear-gradient(135deg,#86ecf2,#f0df93); }
+.commercialMessage { flex: 1; font-size: 12px; color: #efcd87; }
+.commercialFeatureToggle { display: flex; align-items: center; gap: 12px; padding: 15px; border: 1px solid rgba(128,233,247,.2); border-radius: 10px; }
+.commercialFeatureToggle input { accent-color: #80e9f7; }
+.commercialFeatureToggle small { color: rgba(210,222,235,.6); }
+.commercialPopoverAction { border: 1px solid rgba(128,233,247,.25); border-radius: 7px; color: #8cebf5; background: rgba(129,237,247,.06); padding: 7px; cursor: pointer; }
+@media (max-width: 850px) { .commercialFields { grid-template-columns: repeat(2,minmax(0,1fr)); } }

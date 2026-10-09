@@ -13,6 +13,7 @@ export const arrayTeamDataCollections = [
   'tasks',
   'calendarItems',
   'financeRecords',
+  'commercialRecords',
   'staffMembers',
   'accounts',
   'holidayItems',
@@ -41,6 +42,7 @@ export function emptyTeamData() {
     tasks: [],
     calendarItems: [],
     financeRecords: [],
+    commercialRecords: [],
     financeLedger: {},
     staffMembers: [],
     accounts: [
@@ -142,6 +144,7 @@ export function normalizeTeamData(data) {
     tasks: Array.isArray(data?.tasks) ? data.tasks : fallback.tasks,
     calendarItems: Array.isArray(data?.calendarItems) ? data.calendarItems : fallback.calendarItems,
     financeRecords: Array.isArray(data?.financeRecords) ? data.financeRecords : fallback.financeRecords,
+    commercialRecords: Array.isArray(data?.commercialRecords) ? data.commercialRecords : fallback.commercialRecords,
     financeLedger: data?.financeLedger && typeof data.financeLedger === 'object' ? data.financeLedger : fallback.financeLedger,
     staffMembers: Array.isArray(data?.staffMembers) ? data.staffMembers : fallback.staffMembers,
     accounts: Array.isArray(data?.accounts) && data.accounts.length > 0 ? data.accounts : fallback.accounts,

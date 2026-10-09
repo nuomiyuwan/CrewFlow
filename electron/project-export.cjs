@@ -107,6 +107,18 @@ async function createProjectWorkbookBuffer(data) {
   workbook.creator = 'CrewFlow'
   workbook.created = new Date()
   sheetDefinitions.forEach((definition) => addSheet(workbook, definition, Array.isArray(data?.[definition.key]) ? data[definition.key] : []))
+  if (data.workEvidence?.length) {
+    addSheet(workbook, {
+      name: '工作量依据',
+      columns: [['项目编号', 'projectId', 27], ['项目名称', 'projectName', 32], ['版本', 'version', 22], ['依据版本', 'revision', 12], ['状态', 'status', 12], ['分类', 'category', 18], ['内容', 'name', 28], ['人员', 'people', 20], ['开始', 'start', 16], ['结束', 'end', 16], ['数量', 'quantity', 12], ['天数', 'days', 12], ['单位', 'unit', 12], ['内部成本', 'cost', 16, '#,##0.00'], ['备注', 'note', 40], ['依据编号', 'id', 24], ['任务编号', 'taskId', 24], ['确认人', 'confirmedBy', 16], ['确认时间', 'confirmedAt', 26]],
+    }, data.workEvidence)
+  }
+  if (data.quoteRows?.length) {
+    addSheet(workbook, {
+      name: '报价版本',
+      columns: [['项目编号', 'projectId', 27], ['项目名称', 'projectName', 32], ['版本', 'version', 16], ['标题', 'title', 32], ['客户', 'customer', 24], ['报价单位', 'issuer', 24], ['分类', 'category', 18], ['内容', 'name', 28], ['数量', 'quantity', 12], ['天数', 'days', 12], ['单位', 'unit', 12], ['含税单价', 'price', 16, '#,##0.00'], ['备注', 'note', 40], ['报价备注', 'quoteNote', 40], ['依据版本', 'sourceRevision', 12], ['关联依据编号', 'sourceIds', 30], ['确认人', 'confirmedBy', 16], ['确认时间', 'confirmedAt', 26]],
+    }, data.quoteRows)
+  }
   return Buffer.from(await workbook.xlsx.writeBuffer())
 }
 

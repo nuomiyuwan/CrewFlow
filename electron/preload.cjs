@@ -12,6 +12,7 @@ contextBridge.exposeInMainWorld('desktopBridge', {
   selectProjectFile: (title) => ipcRenderer.invoke('project-file:select', title),
   openProjectFile: (filePath) => ipcRenderer.invoke('project-file:open', filePath),
   exportProjects: (payload) => ipcRenderer.invoke('projects:export', payload),
+  exportQuote: (payload) => ipcRenderer.invoke('quote:export', payload),
   selectLibraryFile: (purpose) => ipcRenderer.invoke('library-file:select', purpose),
   identifyLibraryPath: (filePath) => ipcRenderer.invoke('library-path:identify', filePath),
   importLibraryFile: (payload) => ipcRenderer.invoke('library-file:import', payload),

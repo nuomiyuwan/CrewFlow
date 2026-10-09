@@ -35,6 +35,7 @@ const {
 } = require('./library-network-path.cjs')
 const { createUtilityToolsService } = require('./utility-tools.cjs')
 const { createProjectWorkbookBuffer } = require('./project-export.cjs')
+const { createQuoteWorkbookBuffer } = require('./quote-export.cjs')
 const { AUDIO_EXTENSIONS, VIDEO_EXTENSIONS, SPECIAL_AUDIO_EXTENSIONS } = require('./audio/formats.cjs')
 
 const isDev = !app.isPackaged
@@ -1995,6 +1996,17 @@ if (!hasPrimaryInstanceLock) {
       if (result.canceled || !result.filePath) return { canceled: true }
       const outputPath = result.filePath.toLowerCase().endsWith('.xlsx') ? result.filePath : `${result.filePath}.xlsx`
       await fs.promises.writeFile(outputPath, await createProjectWorkbookBuffer(payload))
+      return { canceled: false, filePath: outputPath }
+    })
+
+    ipcMain.handle('quote:export', async (_event, payload = {}) => {
+      const buffer = await createQuoteWorkbookBuffer(payload)
+      const fileName = Array.from(String(payload.title || '项目报价单')).map((character) => character.charCodeAt(0) < 32 || '<>:"/\\|?*'.includes(character) ? '_' : character).join('').slice(0, 100)
+      const options = { title: '导出报价单', defaultPath: path.join(app.getPath('documents'), `${fileName}.xlsx`), filters: [{ name: 'Excel 表格', extensions: ['xlsx'] }] }
+      const result = mainWindow && !mainWindow.isDestroyed() ? await dialog.showSaveDialog(mainWindow, options) : await dialog.showSaveDialog(options)
+      if (result.canceled || !result.filePath) return { canceled: true }
+      const outputPath = result.filePath.toLowerCase().endsWith('.xlsx') ? result.filePath : `${result.filePath}.xlsx`
+      await fs.promises.writeFile(outputPath, buffer)
       return { canceled: false, filePath: outputPath }
     })
 
